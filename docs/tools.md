@@ -30,7 +30,7 @@ Every tool declares a `ToolCategory`, used for access-control filtering and audi
 | `Shell` | `execute_cmd`, `restart` |
 | `Subagent` | `call_agent` (synthetic — not in registry) |
 | `Introspection` | `list_agents`, `list_mcp`, `list_plugins`, `list_cron_jobs`, `image_generate_providers_list` |
-| `Config` | `register_mcp`, `toggle_mcp`, `add_cron_job`, `delete_cron_job`, `toggle_cron_job`, `toggle_plugin`, `configure_plugin`, `image_generate` |
+| `Config` | `register_mcp`, `toggle_mcp`, `add_cron_job`, `delete_cron_job`, `toggle_cron_job`, `toggle_plugin`, `configure_plugin`, `image_generate`, `set_secret`, `list_secrets` |
 
 ---
 
@@ -105,6 +105,8 @@ Filtering happens in `src/session/handler/config.rs` after assembling `base_tool
 | `toggle_cron_job` | `tools::cron_jobs` | Config | No | No |
 | `toggle_plugin` | `tools::toggle_plugin` | Config | No | No |
 | `configure_plugin` | `tools::configure_plugin` | Config | No | No |
+| `set_secret` | `tools::set_secret` | Config | No | No |
+| `list_secrets` | `tools::list_secrets` | Config | No | No |
 | `image_generate_providers_list` | `tools::image_generate` | Introspection | No | No |
 | `image_generate` | `tools::image_generate` | Config | No | No |
 | `update_scratchpad` | synthetic | — | No | No |

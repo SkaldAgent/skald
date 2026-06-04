@@ -20,7 +20,9 @@ mod server;
 mod session;
 mod tic;
 mod tools;
+mod secrets;
 mod transcribe;
+mod tts;
 
 use std::sync::Arc;
 
@@ -40,7 +42,9 @@ use server::{AppState, WebServer};
 use session::manager::ChatSessionManager;
 use tools::ToolRegistry;
 use tools::fs as fs_tools;
+use secrets::SecretsStore;
 use transcribe::TranscribeManager;
+use tts::TtsManager;
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
 
@@ -102,6 +106,9 @@ async fn main() -> Result<()> {
         });
     }
 
+    let secrets = SecretsStore::new(Arc::clone(&pool));
+    info!("secrets store ready");
+
     let mcp = Arc::new(mcp::McpManager::new(Arc::clone(&pool)));
     let mcp_init = Arc::clone(&mcp);
     tokio::spawn(async move { mcp_init.initialize().await; });
@@ -125,6 +132,7 @@ async fn main() -> Result<()> {
     plugin_manager.register(plugin::WhisperLocalPlugin::new());
     plugin_manager.register(plugin_tailscale_remote::RemotePlugin::new());
     plugin_manager.register(plugin::ComfyUIPlugin::new());
+    plugin_manager.register(plugin_tts_orpheus_3b::OrpheusTtsPlugin::new());
     info!("plugins registered");
     let plugin_manager = Arc::new(plugin_manager);
 
@@ -142,6 +150,8 @@ async fn main() -> Result<()> {
     tool_registry.register(tools::cron_jobs::DeleteCronJob(Arc::clone(&cron)));
     tool_registry.register(tools::cron_jobs::ToggleCronJob(Arc::clone(&cron)));
     tool_registry.register(tools::list_plugins::ListPlugins(Arc::clone(&plugin_manager)));
+    tool_registry.register(tools::set_secret::SetSecret(Arc::clone(&secrets)));
+    tool_registry.register(tools::list_secrets::ListSecrets(Arc::clone(&secrets)));
     tool_registry.register(tools::toggle_plugin::TogglePlugin(Arc::clone(&plugin_manager)));
     tool_registry.register(tools::configure_plugin::ConfigurePlugin(Arc::clone(&plugin_manager)));
 
@@ -219,6 +229,12 @@ async fn main() -> Result<()> {
         "transcribe manager ready",
     );
 
+    let tts_manager = TtsManager::new(Arc::clone(&pool)).await?;
+    info!(
+        db_backed = tts_manager.list_models_info().await.len(),
+        "tts manager ready",
+    );
+
     let chat_hub = chat_hub::ChatHub::new(Arc::clone(&pool), Arc::clone(&manager), Arc::clone(&approval));
     // The "web" source is always present — register it at startup.
     chat_hub.register("web").await;
@@ -250,7 +266,9 @@ async fn main() -> Result<()> {
         approval,
         clarification,
         tools,
+        secrets,
         transcribe_manager,
+        tts_manager,
         image_generator_manager,
         tic_manager,
         event_bus,

@@ -140,3 +140,51 @@ pub trait ImageGenerateRegistry: Send + Sync { async fn register(&self, provider
 | `generate(provider_id, prompt)` | Generates and saves image, returns `(PathBuf, url)` |
 
 The LLM interacts with providers via two tools: `image_generate_providers_list` and `image_generate`. See [image-generate.md](image-generate.md) for the full flow.
+
+---
+
+## TTS and TtsManager
+
+Text-to-speech follows the same split pattern as transcribe and image_generate. `TtsManager` (`src/tts/`) manages both DB-backed and plugin-registered providers. Traits live in `core-api::tts`.
+
+| Kind | Source | Example |
+| --- | --- | --- |
+| **DB-backed** | `tts_models` table, built from `llm_providers` credentials | OpenAI `tts-1-hd` |
+| **Plugin-registered** | Ephemeral — registered at runtime by plugins | `OrpheusTtsPlugin` |
+
+Plugins register via `ctx.tts_registry` (type `Arc<dyn TtsRegistry>`) in `PluginContext`.
+
+```rust
+// crates/core-api/src/tts.rs
+pub trait TextToSpeech: Send + Sync {
+    fn id(&self) -> &str;
+    fn name(&self) -> &str;
+    fn description(&self) -> Option<&str>;
+    fn instructions(&self) -> Option<&str>;  // default voice style
+    async fn synthesize(&self, text: &str, instructions: Option<&str>) -> Result<Vec<u8>>;
+}
+pub trait TtsRegistry: Send + Sync {
+    async fn register(&self, provider: Arc<dyn TextToSpeech>);
+    async fn unregister(&self, id: &str);
+}
+```
+
+| Method | Purpose |
+|---|---|
+| `ctx.tts_registry.register(...)` | Add a plugin TTS provider (ephemeral) |
+| `ctx.tts_registry.unregister(id)` | Remove a plugin provider |
+
+See [tts-providers.md](tts-providers.md) for the full manager API and DB schema.
+
+---
+
+## Plugin catalogue
+
+| Plugin ID | Crate | Description |
+|---|---|---|
+| `honcho` | `crates/plugin-honcho` | Honcho long-term memory backend |
+| `telegram_bot` | `crates/plugin-telegram-bot` | Private Telegram bot interface |
+| `whisper_local` | `crates/plugin-transcribe-whisper-local` | Local STT via whisper.cpp |
+| `tailscale_remote` | `crates/plugin-tailscale-remote` | Remote access via Tailscale mesh |
+| `comfyui` | `crates/plugin-comfyui` | ComfyUI image generation workflows |
+| `orpheus_tts_3b` | `crates/plugin-tts-orpheus-3b` | Local TTS via Orpheus 3B (Python subprocess) |

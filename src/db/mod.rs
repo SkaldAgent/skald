@@ -256,6 +256,23 @@ async fn create_tables(pool: &SqlitePool) -> Result<()> {
     .await?;
 
     sqlx::query(
+        "CREATE TABLE IF NOT EXISTS tts_models (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider_id  INTEGER NOT NULL REFERENCES llm_providers(id),
+            model_id     TEXT    NOT NULL,
+            name         TEXT    NOT NULL UNIQUE,
+            description  TEXT,
+            instructions TEXT,
+            priority     INTEGER NOT NULL DEFAULT 100,
+            removed_at   TEXT,
+            created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(provider_id, model_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS sources (
             id                TEXT    PRIMARY KEY,
             active_session_id INTEGER REFERENCES chat_sessions(id),
@@ -269,6 +286,17 @@ async fn create_tables(pool: &SqlitePool) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS config (
             key        TEXT PRIMARY KEY,
             value      TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS secrets (
+            key        TEXT PRIMARY KEY,
+            value      TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )",
     )

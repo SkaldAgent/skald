@@ -22,7 +22,9 @@ use crate::session::manager::ChatSessionManager;
 use crate::tic::TicManager;
 use crate::tools::ToolRegistry;
 use crate::image_generate::ImageGeneratorManager;
+use crate::secrets::SecretsStore;
 use crate::transcribe::TranscribeManager;
+use crate::tts::TtsManager;
 
 
 #[derive(Clone)]
@@ -37,7 +39,9 @@ pub struct AppState {
     pub approval:           Arc<ApprovalManager>,
     pub clarification:      Arc<ClarificationManager>,
     pub tools:              Arc<ToolRegistry>,
+    pub secrets:                  Arc<SecretsStore>,
     pub transcribe_manager:       Arc<TranscribeManager>,
+    pub tts_manager:              Arc<TtsManager>,
     pub image_generator_manager:  Arc<ImageGeneratorManager>,
     pub tic_manager:        Arc<TicManager>,
     pub event_bus:          Arc<ChatEventBus>,

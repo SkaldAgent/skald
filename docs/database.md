@@ -201,6 +201,37 @@ Only providers that declare `ModelType::ImageGenerate` in `ProviderCaps::support
 
 ---
 
+### secrets
+
+| Column | Type | Constraints |
+| --- | --- | --- |
+| `key` | TEXT | PRIMARY KEY (uppercase by convention, e.g. `HUGGINGFACE_TOKEN`) |
+| `value` | TEXT | NOT NULL — stored in plain text, never log |
+| `created_at` | TEXT | NOT NULL DEFAULT `datetime('now')` |
+| `updated_at` | TEXT | NOT NULL DEFAULT `datetime('now')` — updated on upsert |
+
+Managed via `SecretsStore` (`src/secrets.rs`). See [secrets.md](secrets.md).
+
+---
+
+### tts_models
+
+| Column | Type | Constraints |
+| --- | --- | --- |
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT |
+| `provider_id` | INTEGER | NOT NULL REFERENCES `llm_providers(id)` |
+| `model_id` | TEXT | NOT NULL (provider's internal model name, e.g. `tts-1-hd`) |
+| `name` | TEXT | NOT NULL UNIQUE (display name, also used as the synthesiser `id()`) |
+| `description` | TEXT | nullable; human-readable description shown in UI |
+| `instructions` | TEXT | nullable; default voice style / tone / speed (overridable per call) |
+| `priority` | INTEGER | NOT NULL DEFAULT 100 (lower = tried first by `TtsManager`) |
+| `removed_at` | TEXT | nullable; soft-delete |
+| `created_at` | TEXT | NOT NULL DEFAULT `datetime('now')` |
+
+See [tts-providers.md](tts-providers.md).
+
+---
+
 ### scheduled_jobs
 
 | Column | Type | Constraints |

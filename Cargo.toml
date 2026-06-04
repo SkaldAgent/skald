@@ -10,6 +10,7 @@ members = [
     "crates/plugin-transcribe-whisper-local",
     "crates/plugin-telegram-bot",
     "crates/plugin-comfyui",
+    "crates/plugin-tts-orpheus-3b",
 ]
 resolver = "2"
 
@@ -56,3 +57,4 @@ plugin-honcho                    = { path = "crates/plugin-honcho" }
 plugin-transcribe-whisper-local  = { path = "crates/plugin-transcribe-whisper-local", optional = true }
 plugin-telegram-bot              = { path = "crates/plugin-telegram-bot" }
 plugin-comfyui                   = { path = "crates/plugin-comfyui" }
+plugin-tts-orpheus-3b            = { path = "crates/plugin-tts-orpheus-3b" }

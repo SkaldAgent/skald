@@ -8,4 +8,6 @@ pub mod memory;
 pub mod plugin;
 pub mod remote;
 pub mod tool;
+pub mod secrets;
 pub mod transcribe;
+pub mod tts;

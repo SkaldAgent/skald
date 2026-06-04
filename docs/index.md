@@ -13,6 +13,21 @@ This includes:
 
 ---
 
+## Key paths (agent: read this first)
+
+| Resource | Default path | Override |
+|---|---|---|
+| **SQLite database** | `./database.db` | `db.path` in `config.yml` |
+| **Config file** | `./config.yml` | — (copy from `default.config.yaml`) |
+| **Secrets folder** | `./secrets/` | — |
+| **Model cache** | `./models/` | — |
+| **Log files** | `./logs/` | — |
+| **Static web assets** | `./web/` | `web.static_dir` in `config.yml` |
+
+When looking for the database, **always use `./database.db`** unless `config.yml` says otherwise.
+
+---
+
 ## Project Summary
 
 A local chat server (Axum + Tokio + SQLite) where an LLM handles user queries via tool calls. The app can rewrite and restart its own source code autonomously. Multiple specialized agents collaborate via a recursive sub-agent system. External tools are integrated via MCP (Model Context Protocol). Entry point: `run.sh`.
@@ -24,7 +39,7 @@ The project is a Cargo workspace. Extracted crates live in `crates/`:
 | Crate | Path | Notes |
 |---|---|---|
 | `skald` | `.` (root) | Main application binary |
-| `core-api` | `crates/core-api/` | Shared types and traits: `ServerEvent`, `GlobalEvent`, `ChatHubApi`, `Tool`, `Memory`, `Transcribe`, `LocationManager`, `InterfaceTool`, `Plugin`, `PluginContext`, `RemoteAccess` |
+| `core-api` | `crates/core-api/` | Shared types and traits: `ServerEvent`, `GlobalEvent`, `ChatHubApi`, `Tool`, `Memory`, `Transcribe`, `TextToSpeech`, `SecretsApi`, `LocationManager`, `InterfaceTool`, `Plugin`, `PluginContext`, `RemoteAccess` |
 | `llm-client` | `crates/llm-client/` | `ChatbotClient` trait + provider implementations (Anthropic, OpenAI, Ollama, LmStudio) |
 | `mcp-client` | `crates/mcp-client/` | MCP protocol layer: `McpServer` (stdio), `McpHttpServer`, `McpServerClient` trait, config types |
 | `honcho-client` | `crates/honcho-client/` | Honcho v3 REST API client — zero dependencies on the main crate |
@@ -32,6 +47,7 @@ The project is a Cargo workspace. Extracted crates live in `crates/`:
 | `plugin-tailscale-remote` | `crates/plugin-tailscale-remote/` | Remote connectivity via Tailscale mesh |
 | `plugin-transcribe-whisper-local` | `crates/plugin-transcribe-whisper-local/` | Local STT via whisper.cpp (Metal-accelerated) |
 | `plugin-telegram-bot` | `crates/plugin-telegram-bot/` | Private Telegram bot interface |
+| `plugin-tts-orpheus-3b` | `crates/plugin-tts-orpheus-3b/` | Local TTS via Orpheus 3B (Python subprocess) |
 
 To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace].members` list in the root `Cargo.toml`, then add a `path` dependency in `[dependencies]`.
 
@@ -60,8 +76,11 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 | `crates/plugin-tailscale-remote/` | Remote connectivity via Tailscale mesh (standalone crate) | [remote.md](remote.md) |
 | `crates/plugin-transcribe-whisper-local/` | Local STT via whisper.cpp (standalone crate) | [whisper-local.md](whisper-local.md) |
 | `crates/plugin-telegram-bot/` | Private Telegram bot (standalone crate) | [telegram.md](telegram.md) |
+| `crates/plugin-tts-orpheus-3b/` | Orpheus TTS 3B — local TTS via Python subprocess (standalone crate) | [tts-providers.md](tts-providers.md) |
 | `crates/honcho-client/` | Honcho v3 REST API client (standalone crate) | [honcho.md](honcho.md) |
+| `src/secrets.rs` | SecretsStore — centralised token/key store over SQLite | [secrets.md](secrets.md) |
 | `src/transcribe/` | Transcribe trait, TranscribeManager, OpenAiAudioTranscriber | [transcribe-providers.md](transcribe-providers.md) |
+| `src/tts/` | TextToSpeech trait, TtsManager (DB-backed + plugin slots), OpenAiTtsSynthesiser | [tts-providers.md](tts-providers.md) |
 | `src/image_generate/` | ImageGenerate trait, ImageGeneratorManager (DB-backed + plugin slots), OpenRouterImageGenerator | [image-generate.md](image-generate.md) |
 | `src/db/` | SQLite schema and queries | [database.md](database.md) |
 | `src/events.rs` | WS protocol types | [frontend.md](frontend.md) |
@@ -113,7 +132,9 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 - [honcho.md](honcho.md) — Honcho memory plugin: setup, config, filtering, lifecycle
 - [telegram.md](telegram.md) — Telegram bot setup, pairing, whitelist, HITL approval
 - [whisper-local.md](whisper-local.md) — Local STT via whisper.cpp, model setup, TranscribeManager integration
+- [secrets.md](secrets.md) — SecretsApi trait, SecretsStore, well-known keys, security notes
 - [transcribe-providers.md](transcribe-providers.md) — Cloud STT via OpenAI-compatible audio API, transcribe_models DB table
+- [tts-providers.md](tts-providers.md) — Text-to-Speech: trait, manager, OpenAiTtsSynthesiser, tts_models DB table
 - [image-generate.md](image-generate.md) — Image generation: trait, manager, async task system, LLM tools, REST endpoint
 - [skills.md](skills.md) — Skills system: reusable Python capability packages
 - [notifications.md](notifications.md) — Notification preferences: `data/notifications.md` format, how TIC uses it, how the main agent updates it

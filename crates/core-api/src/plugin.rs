@@ -11,7 +11,9 @@ use crate::image_generate::ImageGenerateRegistry;
 use crate::location::LocationUpdater;
 use crate::memory::Memory;
 use crate::remote::RemoteAccess;
+use crate::secrets::SecretsApi;
 use crate::transcribe::{TranscribeProvider, TranscribeRegistry};
+use crate::tts::TtsRegistry;
 
 /// Closure that builds a fresh Axum router (e.g. for the mesh-facing server).
 pub type RouterFactory = Arc<dyn Fn() -> axum::Router + Send + Sync>;
@@ -25,9 +27,11 @@ pub type RouterFactory = Arc<dyn Fn() -> axum::Router + Send + Sync>;
 #[derive(Clone)]
 pub struct PluginContext {
     pub chat_hub:                Arc<dyn ChatHubApi>,
+    pub secrets:                 Arc<dyn SecretsApi>,
     pub transcribe:              Arc<dyn TranscribeProvider>,
     pub transcribe_registry:     Arc<dyn TranscribeRegistry>,
     pub image_generate_registry: Arc<dyn ImageGenerateRegistry>,
+    pub tts_registry:            Arc<dyn TtsRegistry>,
     pub location:                Arc<dyn LocationUpdater>,
     pub event_bus:               Arc<ChatEventBus>,
     pub web_port:                u16,

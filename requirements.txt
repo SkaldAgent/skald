@@ -3,3 +3,15 @@ google-auth-oauthlib
 google-api-python-client
 googlemaps
 requests
+
+# Orpheus TTS 3B (plugin-tts-orpheus-3b) — heavy deps, only needed when plugin is enabled
+torch
+transformers
+snac
+bitsandbytes
+huggingface_hub
+fastapi
+uvicorn
+scipy
+numpy
+pydantic
