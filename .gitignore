@@ -1,0 +1,53 @@
+# ── Runtime config & secrets ──────────────────────────────────────────────────
+# Copy of default.config.yaml with real API keys — never commit
+/config.yml
+# OAuth tokens, credentials, WhatsApp session data
+/secrets/
+!/secrets/.gitkeep
+
+# ── Database & runtime data ───────────────────────────────────────────────────
+/database.db
+/data/
+/logs/
+/tmp/
+
+# ── Rust build artifacts ──────────────────────────────────────────────────────
+/target/
+
+# ── Python environment ────────────────────────────────────────────────────────
+/.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# ── Node / WhatsApp bridge ────────────────────────────────────────────────────
+node_modules/
+# whatsapp-web.js local auth & cache
+.wwebjs_auth/
+.wwebjs_cache/
+
+# ── LLM models (large binary files) ──────────────────────────────────────────
+/models/
+
+# ── Uploads ───────────────────────────────────────────────────────────────────
+/uploads/
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+
+# ── Private skills ────────────────────────────────────────────────────────────
+skills/.gitignore
+
+# ── Editors & IDEs ────────────────────────────────────────────────────────────
+.claude/
+.idea/
+.vscode/
+*.swp
+*.swo
+run-log.sh
+debug/
+
+# Honcho Docker secrets
+honcho/.env
+# Istanza personale — non nel repo
+honcho-local/

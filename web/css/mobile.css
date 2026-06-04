@@ -1,0 +1,343 @@
+:root {
+  --mobile-nav-height: 60px;
+  --mobile-chat-size: 56px;
+
+  --mobile-bg:           #ffffff;
+  --mobile-nav-bg:       #ffffff;
+  --mobile-nav-border:   #dee2e6;
+  --mobile-nav-color:    #6c757d;
+  --mobile-nav-active:   #0d6efd;
+  --mobile-chat-bg:      #0d6efd;
+}
+
+[data-bs-theme="dark"] {
+  --mobile-bg:           #1c1c1e;
+  --mobile-nav-bg:       #1c1c1e;
+  --mobile-nav-border:   #3a3a3c;
+  --mobile-nav-color:    #8e8e93;
+  --mobile-nav-active:   #6ea8fe;
+  --mobile-chat-bg:      #0d6efd;
+}
+
+body {
+  background: var(--mobile-bg);
+  color-scheme: light dark;
+}
+
+/* Account for iOS status bar overlay (black-translucent) */
+#mobile-root {
+  padding-top: env(safe-area-inset-top);
+}
+
+/* ── Section header ─────────────────────────────────── */
+
+.mobile-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--mobile-nav-border);
+  flex-shrink: 0;
+}
+
+.mobile-section-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--bs-body-color, #212529);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mobile-alert-error {
+  margin: 12px 16px;
+  padding: 10px 14px;
+  background: #f8d7da;
+  color: #842029;
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+
+/* ── Inbox ──────────────────────────────────────────── */
+
+.mobile-inbox {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.mobile-inbox-list {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.inbox-section-label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--mobile-nav-color);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* ── Footer buttons ──────────────────────────────────── */
+
+.inbox-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  border-radius: 10px;
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.inbox-btn-approve {
+  background: #198754;
+  color: #fff;
+}
+
+.inbox-btn-reject {
+  background: transparent;
+  color: #dc3545;
+  border: 1.5px solid #dc3545;
+}
+
+/* ── Empty state override (full-height inside mobile-inbox) ── */
+
+.mobile-inbox .inbox-empty {
+  flex: 1;
+  height: auto;
+  padding: 40px 20px;
+}
+
+#mobile-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  height: 100dvh;
+}
+
+.mobile-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Coming soon ────────────────────────────────────── */
+
+.mobile-coming-soon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100%;
+  color: var(--mobile-nav-color);
+}
+
+.mobile-coming-soon i { font-size: 2.5rem; opacity: 0.35; }
+
+.mobile-coming-soon p {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 500;
+  opacity: 0.6;
+}
+
+/* ── Bottom nav ─────────────────────────────────────── */
+
+.mobile-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  height: var(--mobile-nav-height);
+  background: var(--mobile-nav-bg);
+  border-top: 1px solid var(--mobile-nav-border);
+  padding-bottom: env(safe-area-inset-bottom);
+  position: relative;
+  z-index: 100;
+}
+
+.mobile-nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  flex: 1;
+  height: 100%;
+  cursor: pointer;
+  color: var(--mobile-nav-color);
+  font-size: 0.62rem;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 0.15s;
+}
+
+.mobile-nav-item.active {
+  color: var(--mobile-nav-active);
+}
+
+.mobile-nav-item i {
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+/* ── Center chat FAB ────────────────────────────────── */
+
+.mobile-nav-item.chat-btn {
+  position: relative;
+  top: -14px;
+  flex: 1.2;
+}
+
+.chat-fab {
+  width: var(--mobile-chat-size);
+  height: var(--mobile-chat-size);
+  border-radius: 50%;
+  background: var(--mobile-chat-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.chat-fab i {
+  font-size: 1.5rem;
+  color: #fff !important;
+}
+
+.mobile-nav-item.chat-btn.active .chat-fab {
+  box-shadow: 0 4px 14px rgba(13, 110, 253, 0.45);
+  transform: scale(1.06);
+}
+
+.mobile-nav-item.chat-btn span {
+  margin-top: 6px;
+  font-size: 0.6rem;
+}
+
+/* ── Chat page ──────────────────────────────────────── */
+
+.chat-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Wider bubbles on narrow screens */
+.chat-page .copilot-msg {
+  max-width: 96%;
+  font-size: 0.92rem;
+}
+
+.chat-page-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-page-provider-select {
+  max-width: 130px;
+  font-size: 0.8rem;
+}
+
+.chat-page-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-page-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 100%;
+  color: var(--mobile-nav-color);
+}
+
+.chat-page-empty i {
+  font-size: 2rem;
+  opacity: 0.4;
+}
+
+.chat-page-empty p {
+  margin: 0;
+  font-size: 0.9rem;
+  opacity: 0.6;
+}
+
+.chat-page-input-area {
+  padding: 10px 12px;
+  padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--mobile-nav-border);
+  background: var(--mobile-bg);
+}
+
+.chat-page-input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.chat-page-input-row .form-control {
+  flex: 1;
+  resize: none;
+  border-radius: 18px;
+  padding: 10px 14px;
+  font-size: 0.95rem;
+  line-height: 1.4;
+  min-height: 44px;
+  max-height: 120px;
+}
+
+.chat-page-input-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 2px;
+}
+
+.chat-page-send {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* MCP dropdown opens upward on mobile */
+.chat-page-gear-dropdown {
+  bottom: 100%;
+  top: auto;
+  margin-bottom: 6px;
+}

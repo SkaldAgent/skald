@@ -1,0 +1,7 @@
+{
+  "name": "QA",
+  "description": "Runs build and test commands, reports results.",
+  "scope": "coding",
+  "strength": "average",
+  "icon": "icon.png"
+}

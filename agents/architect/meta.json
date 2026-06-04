@@ -1,0 +1,7 @@
+{
+  "name": "Architect",
+  "description": "Plans code changes and delegates to engineer and qa.",
+  "scope": "reasoning",
+  "strength": "high",
+  "icon": "icon.png"
+}

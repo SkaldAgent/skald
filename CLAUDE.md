@@ -1,0 +1,107 @@
+
+# Skald — codebase guide
+
+Rust async web app (Tokio + Axum). Runs as a local chat server with LLM tool-calling, a sub-agent system, and the ability to rewrite and restart itself.
+
+## Key modules
+
+| Path | Role |
+| ---- | ---- |
+| `src/main.rs` | Startup: config, DB, tool registry, session manager |
+| `src/server.rs` | Axum router, static file serving |
+| `src/api/` | HTTP + WebSocket handlers |
+| `src/session/handler/` | Core LLM loop — `mod.rs`, `llm_loop.rs` (`run_agent_turn`), `agent_dispatch.rs`, `dispatcher.rs`, `approval.rs`, `resume.rs`, `messages.rs`, `config.rs`, `interface_tools.rs` |
+| `src/session/manager.rs` | Creates/retrieves `ChatSessionHandler` per session |
+| `src/chat_hub/` | `ChatHub`: broadcast events to all connected WS clients |
+| `src/chat_event_bus.rs` | Global async bus for cross-session events |
+| `src/agents.rs` | Discovers agents from `agents/*/`, loads meta + system prompt |
+| `src/tools/` | Built-in tools: `exec`, `restart`, `list_agents`, `fs/*`, `notify`, `ast_outline`, `image_generate`, MCP tools, plugin tools, cron tools |
+| `src/events.rs` | `ServerEvent` enum streamed over WebSocket to the frontend |
+| `src/db/` | sqlx SQLite — see below |
+| `src/config.rs` | Loads `config.yml`; LLM clients, strength/use_cases, data root |
+| `src/mcp/` | MCP client manager (connects to external MCP servers) |
+| `src/plugin/` | Plugin system: discovery, enable/disable, tool registration |
+| `src/cron/` | Scheduled job runner |
+| `src/compactor.rs` | Context compaction (summarises history when token budget exceeded) |
+| `src/approval/` | Approval rules engine |
+| `src/clarification/` | `ClarificationManager`: background-session question/answer |
+| `src/remote/` | Remote agent dispatch |
+| `src/llm/` | LLM client abstraction (OpenAI-compat, Anthropic, Ollama…) |
+| `src/transcribe/` | Transcription providers |
+| `src/image_generate/` | Image generation providers |
+| `src/memory/` | Agent memory tools |
+| `web/components/` | Lit web components (see below) |
+
+## DB tables (sqlx SQLite)
+
+`chat_sessions`, `chat_sessions_stack`, `chat_history`, `chat_llm_tools`, `chat_summaries`, `llm_requests`, `scheduled_jobs`, `job_runs`, `mcp_servers`, `mcp_events`, `plugins`, `approval_rules`, `sources`, `scratchpad`, `session_mcp_grants`, `stack_mcp_grants`
+
+## Sub-agent system
+
+- `call_agent` is **not** a plain `Tool` — it is intercepted in `run_agent_turn` before registry dispatch.
+- `dispatch_call_agent` creates a child `chat_sessions_stack` row, runs `run_agent_turn` recursively, then terminates the frame.
+- Max recursion depth: `MAX_AGENT_DEPTH = 5`.
+- Client resolution order: `args.client` → `meta.json client` → AUTO selection by scope/strength.
+- **The parent's resolved client is NOT inherited.** Passing a concrete model name to `resolve()` bypasses strength/scope checks; sub-agents always auto-select unless overridden explicitly.
+- `list_agents` is a plain tool; returns JSON excluding `main`.
+
+## Approval gate
+
+`needs_approval()` returns true for `execute_cmd`, `restart`, and any write-file tool targeting paths outside `memory/`. Approval is a `oneshot` channel registered in `approval_registry`; resolved via `resolve_approval()` from the WS handler.
+
+## Self-restart
+
+`restart` tool calls `std::process::exit(-1)` (= exit code 255). `run.sh` supervisor loop: exit 255 → rebuild+restart, exit 0 → stop clean.
+
+## Build & run
+
+```sh
+cargo build
+./run.sh        # supervisor loop (rebuilds on exit -1)
+```
+
+Tracing filter: `RUST_LOG=skald=debug,info`
+
+## Adding an agent
+
+Create `agents/<id>/meta.json` and `agents/<id>/AGENT.md`. The agent is discovered at runtime (no restart needed for prompt edits). Optionally set `"client": "<name>"` in meta.json to pin a specific LLM.
+
+## Documentation
+
+Project documentation lives in `docs/`. **Always update `docs/` alongside any code change** — never leave it outdated. The main entry point is `docs/index.md`; each subsystem has its own file (e.g. `docs/frontend.md`, `docs/session.md`, `docs/tools.md`).
+
+## Config
+
+Copy `default.config.yaml` → `config.yml`. Never commit `config.yml` (contains API keys).
+
+## Python environment
+
+All Python scripts (MCP servers, setup scripts) use a local virtualenv at `.venv/` in the project root.
+
+`run.sh` creates it automatically on first launch (using `uv` if available, otherwise `python3 -m venv`) and installs `requirements.txt`. It then prepends `.venv/bin` to `PATH` before starting the app, so every child process — MCP server launches, `execute_cmd` shell calls — resolves `python3` to the venv automatically. No manual activation needed. **Python is optional**: if neither `uv` nor `python3` is found, the app starts normally and only Python-based MCP servers will be unavailable.
+
+To add a Python dependency: add it to `requirements.txt`. It will be installed on the next `./run.sh` invocation if `.venv` does not yet exist — or run `uv pip install -r requirements.txt` manually.
+
+## Frontend components (`web/components/`)
+
+All extend `LightElement` from `web/lib/base.js` (Lit). `ChatSession` (`web/lib/chat-session.js`) is the shared base for WS-connected chat UIs.
+
+| File | Element | Notes |
+| ---- | ------- | ----- |
+| `copilot.js` | `<app-copilot>` | Desktop copilot (`_wsSource='web'`); composer input with model pill, auto-resize textarea |
+| `shared/chat-page.js` | `<chat-page>` | Mobile chat (`_wsSource='mobile'`) |
+| `copilot-render.js` | (helpers) | `renderMsg`, `renderTool`, `renderDiff`, etc. — shared by copilot and chat-page |
+| `sidebar.js` | `<app-sidebar>` | Nav sidebar; polls `/api/inbox` every 10 s for badge |
+| `topbar.js` | `<app-topbar>` | Top nav bar |
+| `editor.js` | — | File editor panel |
+| `home-page.js` | `<home-page>` | Landing / dashboard |
+| `agents.js` | `<agents-page>` | Agent discovery and config |
+| `agent-inbox.js` | `<agent-inbox-page>` | Pending approvals + clarifications from background sessions |
+| `approval-rules.js` | `<approval-rules-page>` | Approval rule management |
+| `cron-jobs.js` | `<cron-jobs-page>` | Scheduled job management |
+| `llm-providers.js` | `<llm-providers-page>` | LLM provider management |
+| `models-hub.js` | `<models-hub-page>` | Models hub landing (LLM / Transcription / Image) |
+| `models-llm.js` | `<models-llm-section>` | LLM model CRUD + drag-and-drop priority |
+| `models-transcribe.js` | `<models-transcribe-section>` | Transcription model CRUD |
+| `models-image.js` | `<models-image-section>` | Image generation model CRUD |
+| `mobile-app.js` | `<mobile-app>` | Mobile app shell |

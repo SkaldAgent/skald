@@ -1,0 +1,58 @@
+[workspace]
+members = [
+    ".",
+    "crates/honcho-client",
+    "crates/llm-client",
+    "crates/core-api",
+    "crates/mcp-client",
+    "crates/plugin-tailscale-remote",
+    "crates/plugin-honcho",
+    "crates/plugin-transcribe-whisper-local",
+    "crates/plugin-telegram-bot",
+    "crates/plugin-comfyui",
+]
+resolver = "2"
+
+[package]
+name = "skald"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["whisper-local"]
+whisper-local = ["dep:plugin-transcribe-whisper-local"]
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1.52.3", features = ["full"] }
+tower-http = { version = "0.6.11", features = ["fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+anyhow = "1"
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite"] }
+reqwest = { version = "0.13.4", features = ["json", "multipart"] }
+async-trait = "0.1"
+serde_json = "1"
+indexmap = { version = "2", features = ["serde"] }
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender   = "0.2"
+chrono             = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono-tz          = "0.10"
+cron               = "0.16"
+rand               = "0.10.1"
+syn                = { version = "2", features = ["full"] }
+quote              = "1"
+regex              = "1"
+glob               = "0.3"
+libc               = "0.2"
+base64             = "0.22"
+honcho-client            = { path = "crates/honcho-client" }
+llm-client               = { path = "crates/llm-client" }
+core-api                 = { path = "crates/core-api" }
+mcp-client               = { path = "crates/mcp-client" }
+plugin-tailscale-remote          = { path = "crates/plugin-tailscale-remote" }
+plugin-honcho                    = { path = "crates/plugin-honcho" }
+plugin-transcribe-whisper-local  = { path = "crates/plugin-transcribe-whisper-local", optional = true }
+plugin-telegram-bot              = { path = "crates/plugin-telegram-bot" }
+plugin-comfyui                   = { path = "crates/plugin-comfyui" }

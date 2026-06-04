@@ -1,0 +1,7 @@
+{
+  "name": "Main Assistant",
+  "description": "General-purpose assistant: helps the user with any task using tools, and persists all relevant information in data/memory",
+  "inject_memory": ["data/memory/index.md", "data/memory/SOUL.md", "skills/index.md"],
+  "is_system_agent": true,
+  "icon": "icon.png"
+}

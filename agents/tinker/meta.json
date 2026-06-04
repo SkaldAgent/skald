@@ -1,0 +1,7 @@
+{
+  "name": "Tinker",
+  "description": "Executes simple well-defined tasks: file edits, shell commands, batch operations. No planning or QA.",
+  "scope": "general",
+  "strength": "average",
+  "icon": "icon.png"
+}

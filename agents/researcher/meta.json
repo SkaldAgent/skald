@@ -1,0 +1,7 @@
+{
+  "name": "Researcher",
+  "description": "Multi-step web research; returns a structured summary and saves findings to the scratchpad.",
+  "scope": "general",
+  "strength": "average",
+  "icon": "icon.png"
+}

@@ -1,0 +1,261 @@
+/* ── Cron Jobs page ─────────────────────────────────────────────────────────── */
+
+.cron-page {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+
+.cron-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  min-height: 54px;
+  border-bottom: 1px solid var(--bs-border-color);
+  background: var(--bs-tertiary-bg);
+  flex-shrink: 0;
+}
+
+.cron-page-title {
+  margin: 0;
+  font-weight: 700;
+  font-size: 1.05rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Empty state ── */
+
+.cron-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 40px;
+  color: var(--bs-secondary-color);
+}
+
+.cron-empty i {
+  font-size: 2.5rem;
+  margin-bottom: 12px;
+  opacity: 0.5;
+}
+
+.cron-empty p {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.cron-empty code {
+  font-size: 0.82rem;
+}
+
+/* ── Grid ── */
+
+.cron-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 16px;
+  padding: 20px;
+  align-content: start;
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* ── Card ── */
+
+.cron-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--bs-body-bg);
+  border: 1px solid var(--bs-border-color);
+  border-radius: 10px;
+  padding: 16px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.cron-card:hover {
+  border-color: var(--bs-primary-border-subtle, #9ec5fe);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+}
+
+.cron-card--disabled {
+  opacity: 0.6;
+}
+
+/* ── Card header ── */
+
+.cron-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cron-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.cron-card-title {
+  font-weight: 600;
+  font-size: 0.92rem;
+  line-height: 1.3;
+}
+
+.cron-badge {
+  font-size: 0.62rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.15em 0.55em;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.cron-badge--oneshot {
+  background: var(--bs-secondary-bg, #e9ecef);
+  color: var(--bs-secondary-color, #6c757d);
+}
+
+.cron-card-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--bs-danger, #dc3545);
+  opacity: 0.5;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.12s;
+}
+
+.cron-card-delete:hover {
+  opacity: 1;
+  background: var(--bs-danger-bg-subtle, rgba(220,53,69,0.08));
+}
+
+/* ── Card description ── */
+
+.cron-card-desc {
+  font-size: 0.82rem;
+  color: var(--bs-secondary-color);
+  line-height: 1.4;
+}
+
+/* ── Cron expression ── */
+
+.cron-card-expr {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: var(--bs-tertiary-bg, rgba(0,0,0,0.02));
+  border: 1px solid var(--bs-border-color);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.cron-card-expr i {
+  color: var(--bs-primary, #0d6efd);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.cron-card-expr-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.cron-card-human {
+  font-size: 0.88rem;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.cron-card-raw {
+  font-family: var(--bs-font-monospace, monospace);
+  font-size: 0.7rem;
+  color: var(--bs-secondary-color);
+  word-break: break-all;
+  line-height: 1.3;
+  background: transparent;
+  padding: 0;
+}
+
+/* ── Meta info ── */
+
+.cron-card-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 16px;
+  font-size: 0.78rem;
+}
+
+.cron-card-meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.cron-card-meta-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--bs-secondary-color);
+}
+
+.cron-card-meta-value {
+  color: var(--bs-body-color);
+}
+
+/* ── Card footer ── */
+
+.cron-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-top: 6px;
+  border-top: 1px solid var(--bs-border-color);
+  margin-top: auto;
+}
+
+.cron-card-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.cron-card-toggle-label {
+  font-size: 0.78rem;
+  font-weight: 500;
+  user-select: none;
+}
+
+/* ── Footer note ── */
+
+.cron-footer-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 20px;
+  font-size: 0.76rem;
+  color: var(--bs-secondary-color);
+  border-top: 1px solid var(--bs-border-color);
+  flex-shrink: 0;
+}
