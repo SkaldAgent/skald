@@ -133,8 +133,7 @@ export class AppCopilot extends ChatSession {
       <div class="copilot-messages">
         ${this._messages.length === 0 ? html`
           <div class="copilot-msg assistant">
-            Hello! I'm here to help you write your book.
-            Select a chapter or ask me anything.
+            Hello! How can I help you today?
           </div>
         ` : this._messages.map(m => renderMsg(this, m))}
 

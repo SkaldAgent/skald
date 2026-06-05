@@ -488,19 +488,8 @@ export class HomePage extends InboxMixin(LightElement) {
           </div>
         ` : nothing}
 
-        <!-- ── Pending inbox ── -->
-        <div class="home-section-title">
-          <i class="bi bi-inbox"></i>
-          <span>Pending</span>
-          ${inboxTotal > 0 ? html`<span class="badge bg-danger">${inboxTotal}</span>` : nothing}
-          <button class="inbox-refresh-btn ms-auto" title="Refresh" @click=${() => this._loadInbox()}>
-            <i class="bi bi-arrow-clockwise"></i>
-          </button>
-        </div>
-        ${this._renderInboxSection()}
-
         <!-- ── LLM Stats ── -->
-        <div class="home-section-title" style="margin-top: 0.5rem">
+        <div class="home-section-title">
           <i class="bi bi-bar-chart-fill"></i>
           <span>LLM Stats</span>
           <div class="home-stats-range ms-auto">
@@ -511,6 +500,17 @@ export class HomePage extends InboxMixin(LightElement) {
           </div>
         </div>
         ${this._renderStats()}
+
+        <!-- ── Pending inbox ── -->
+        <div class="home-section-title">
+          <i class="bi bi-inbox"></i>
+          <span>Pending</span>
+          ${inboxTotal > 0 ? html`<span class="badge bg-danger">${inboxTotal}</span>` : nothing}
+          <button class="inbox-refresh-btn ms-auto" title="Refresh" @click=${() => this._loadInbox()}>
+            <i class="bi bi-arrow-clockwise"></i>
+          </button>
+        </div>
+        ${this._renderInboxSection()}
 
         <!-- ── Honcho tip ── -->
         ${!this._honchoActive ? html`

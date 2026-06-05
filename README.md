@@ -102,11 +102,17 @@ More can be added at runtime — the agent can write new MCP servers from scratc
 
 ### 🌐 Web app
 
-<table><tr><td width="270"><a href="assets/images/screenshot-web-app-agents-page.png"><img src="assets/images/screenshot-web-app-agents-page.png" alt="Web app — Agents page" width="250"></a></td><td>
+<table><tr><td width="270"><a href="assets/images/screenshot-home-page.png"><img src="assets/images/screenshot-home-page.png" alt="Web app — Home page" width="250"></a></td><td>
 
 The UI runs in the browser — **localhost:3000**. Open it from any device on your network. Pair it with the Tailscale plugin and it's accessible from anywhere.
 
 Use it as a pinned tab, a standalone window, or your phone browser.
+
+</td></tr></table>
+
+<table><tr><td width="270"><a href="assets/images/screenshot-web-app-agents-page.png"><img src="assets/images/screenshot-web-app-agents-page.png" alt="Web app — Agents page" width="250"></a></td><td>
+
+The **Agents** page lets you browse and configure sub-agents — each with its own system prompt, tool set, and model selection.
 
 </td></tr></table>
 
