@@ -21,12 +21,11 @@ use tracing::{info, warn};
 
 use core_api::image_generate::ImageGenerateRegistry;
 
-use crate::config::LlmProvider;
 use crate::llm::LlmProviderRecord;
 use crate::llm::db as llm_db;
+use crate::provider::ProviderRegistry;
 use crate::tools::Tool;
 
-use super::openrouter_image::OpenRouterImageGenerator;
 use super::{ImageGenerate, ImageGenerateInfo, ImageGenerateModelInfo, ImageGenerateModelRecord};
 use super::db as image_db;
 
@@ -49,14 +48,20 @@ struct ManagerState {
 
 pub struct ImageGeneratorManager {
     pool:      Arc<SqlitePool>,
+    registry:  Arc<ProviderRegistry>,
     state:     RwLock<ManagerState>,
     data_root: PathBuf,
 }
 
 impl ImageGeneratorManager {
-    pub async fn new(pool: Arc<SqlitePool>, data_root: impl Into<PathBuf>) -> Result<Arc<Self>> {
+    pub async fn new(
+        pool:      Arc<SqlitePool>,
+        registry:  Arc<ProviderRegistry>,
+        data_root: impl Into<PathBuf>,
+    ) -> Result<Arc<Self>> {
         let mgr = Arc::new(Self {
             pool,
+            registry,
             state: RwLock::new(ManagerState {
                 db_slots: Vec::new(),
                 plugins:  Vec::new(),
@@ -260,7 +265,10 @@ impl ImageGeneratorManager {
                 }
             };
 
-            match build_generator(&provider, &model) {
+            let result = self.registry.get(&provider.provider)
+                .and_then(|p| p.build_image_generator(&provider, &model))
+                .unwrap_or_else(|| anyhow::bail!("provider '{}' does not support image generation", provider.provider));
+            match result {
                 Ok(generator) => db_slots.push(ImageGenerateSlot { record: model, provider, generator }),
                 Err(e) => warn!(model = %model.name, error = %e, "failed to build image generator, skipping"),
             }
@@ -273,37 +281,6 @@ impl ImageGeneratorManager {
     }
 }
 
-// ── Builder ───────────────────────────────────────────────────────────────────
-
-fn build_generator(
-    provider: &LlmProviderRecord,
-    model:    &ImageGenerateModelRecord,
-) -> Result<Arc<dyn ImageGenerate>> {
-    let (base_url, api_key) = match provider.provider {
-        LlmProvider::OpenRouter => (
-            provider.base_url.clone()
-                .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string()),
-            provider.api_key.clone()
-                .with_context(|| format!("provider '{}': api_key required for openrouter", provider.name))?,
-        ),
-        LlmProvider::OpenAi => (
-            provider.base_url.clone()
-                .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
-            provider.api_key.clone()
-                .with_context(|| format!("provider '{}': api_key required for open_ai", provider.name))?,
-        ),
-        other => anyhow::bail!(
-            "provider type '{:?}' does not support image generation", other
-        ),
-    };
-
-    Ok(Arc::new(OpenRouterImageGenerator::new(
-        &model.name,
-        base_url,
-        api_key,
-        &model.model_id,
-    )))
-}
 
 // ── ImageGenerateRegistry impl ────────────────────────────────────────────────
 

@@ -4,6 +4,20 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 
+// ── Record types (DB ↔ manager) ───────────────────────────────────────────────
+
+/// Full model record, mirroring one row in `image_generate_models`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ImageGenerateModelRecord {
+    pub id:          i64,
+    pub provider_id: i64,
+    pub model_id:    String,
+    /// Display alias (also used as the generator `id()`).
+    pub name:        String,
+    /// Lower number = tried first by `get()`.
+    pub priority:    i32,
+}
+
 /// Implemented by any provider that can generate an image from a text prompt.
 /// Returns raw image bytes (PNG expected).
 #[async_trait]

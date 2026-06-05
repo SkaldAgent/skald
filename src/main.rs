@@ -1,5 +1,7 @@
 mod agents;
 mod api;
+mod provider;
+mod service_manager;
 mod approval;
 mod chat_event_bus;
 mod chat_hub;
@@ -38,6 +40,7 @@ use llm::LlmManager;
 use location::LocationManager;
 use memory::MemoryManager;
 use plugin::PluginManager;
+use provider::ProviderRegistry;
 use server::{AppState, WebServer};
 use session::manager::ChatSessionManager;
 use tools::ToolRegistry;
@@ -45,6 +48,7 @@ use tools::fs as fs_tools;
 use secrets::SecretsStore;
 use transcribe::TranscribeManager;
 use tts::TtsManager;
+use core_api::system_bus::SystemEventBus;
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
 
@@ -82,6 +86,9 @@ async fn async_main() -> Result<()> {
     let pool = Arc::new(db::init_pool(&config.db.path).await?);
     info!(path = %config.db.path, "database ready");
 
+    let system_bus = Arc::new(SystemEventBus::new());
+    info!("system event bus ready");
+
     let discovered = agents::discover()?;
     info!(
         count = discovered.len(),
@@ -89,9 +96,20 @@ async fn async_main() -> Result<()> {
         "agents discovered"
     );
 
+    // ── Provider registry ─────────────────────────────────────────────────────
+    let mut provider_registry = ProviderRegistry::new(Arc::clone(&system_bus));
+    provider_registry.register_builtin(llm::providers::openai::OpenAiProvider);
+    provider_registry.register_builtin(llm::providers::anthropic::AnthropicProvider::new());
+    provider_registry.register_builtin(llm::providers::openrouter::OpenRouterProvider::new());
+    provider_registry.register_builtin(llm::providers::ollama::OllamaProvider::new());
+    provider_registry.register_builtin(llm::providers::lm_studio::LmStudioProvider::new());
+    provider_registry.register_builtin(llm::providers::deepseek::DeepSeekProvider::new());
+    let provider_registry = Arc::new(provider_registry);
+    info!("provider registry ready ({} built-in providers)", provider_registry.all().len());
+
     let request_log_cfg     = config.llm.request_log.as_ref();
     let request_log_enabled = request_log_cfg.map_or(false, |r| r.enabled);
-    let llm_manager = LlmManager::new(Arc::clone(&pool), request_log_enabled).await?;
+    let llm_manager = LlmManager::new(Arc::clone(&pool), Arc::clone(&provider_registry), request_log_enabled).await?;
     let client_count = llm_manager.client_names().await.len().saturating_sub(1);
     let default_client = llm_manager.default_name().await;
     info!(clients = client_count, default = %default_client, "LLM clients loaded");
@@ -140,6 +158,7 @@ async fn async_main() -> Result<()> {
     plugin_manager.register(plugin::ComfyUIPlugin::new());
     plugin_manager.register(plugin_tts_orpheus_3b::OrpheusTtsPlugin::new());
     plugin_manager.register(plugin_tts_kokoro::KokoroTtsPlugin::new());
+    plugin_manager.register(plugin_elevenlabs::ElevenLabsPlugin::new());
     info!("plugins registered");
     let plugin_manager = Arc::new(plugin_manager);
 
@@ -176,7 +195,7 @@ async fn async_main() -> Result<()> {
 
     let tools = Arc::new(tool_registry);
 
-    let image_generator_manager = ImageGeneratorManager::new(Arc::clone(&pool), "data").await?;
+    let image_generator_manager = ImageGeneratorManager::new(Arc::clone(&pool), Arc::clone(&provider_registry), "data").await?;
     info!(
         db_backed = image_generator_manager.list_models_info().await.len(),
         "image generator manager ready",
@@ -230,13 +249,13 @@ async fn async_main() -> Result<()> {
     Arc::clone(&cron).start();
     info!("cron scheduler started");
 
-    let transcribe_manager = TranscribeManager::new(Arc::clone(&pool)).await?;
+    let transcribe_manager = TranscribeManager::new(Arc::clone(&pool), Arc::clone(&provider_registry), Arc::clone(&system_bus)).await?;
     info!(
         db_backed = transcribe_manager.list_models_info().await.len(),
         "transcribe manager ready",
     );
 
-    let tts_manager = TtsManager::new(Arc::clone(&pool)).await?;
+    let tts_manager = TtsManager::new(Arc::clone(&pool), Arc::clone(&provider_registry), Arc::clone(&system_bus)).await?;
     info!(
         db_backed = tts_manager.list_models_info().await.len(),
         "tts manager ready",
@@ -275,11 +294,13 @@ async fn async_main() -> Result<()> {
         clarification,
         tools,
         secrets,
+        provider_registry,
         transcribe_manager,
         tts_manager,
         image_generator_manager,
         tic_manager,
         event_bus,
+        system_bus,
         memory_manager,
         remote:          Arc::new(tokio::sync::RwLock::new(None)),
         web_static_dir:  Arc::clone(&web_static_dir),

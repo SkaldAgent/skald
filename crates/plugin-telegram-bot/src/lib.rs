@@ -35,6 +35,7 @@ use core_api::chat_hub::ChatHubApi;
 use core_api::location::LocationUpdater;
 use core_api::plugin::{Plugin, PluginContext};
 use core_api::transcribe::{Transcribe, TranscribeProvider};
+use core_api::tts::TtsProvider;
 
 mod attachments;
 mod auth;
@@ -73,6 +74,7 @@ pub(crate) struct PendingQuestion {
 pub(crate) struct TgShared {
     pub(crate) chat_hub:          Arc<dyn ChatHubApi>,
     pub(crate) transcribe:        Arc<dyn TranscribeProvider>,
+    pub(crate) tts:               Arc<dyn TtsProvider>,
     pub(crate) location:          Arc<dyn LocationUpdater>,
     /// MessageId of the approval message → request_id.
     pub(crate) pending_approvals: Mutex<HashMap<MessageId, i64>>,
@@ -194,6 +196,7 @@ impl Plugin for TelegramPlugin {
         let shared = Arc::new(TgShared {
             chat_hub:          Arc::clone(&ctx.chat_hub),
             transcribe:        Arc::clone(&ctx.transcribe),
+            tts:               Arc::clone(&ctx.tts_provider),
             location:          Arc::clone(&ctx.location),
             pending_approvals: Mutex::new(HashMap::new()),
             pending_question:  Mutex::new(None),

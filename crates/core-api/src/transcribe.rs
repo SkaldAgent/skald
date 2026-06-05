@@ -2,6 +2,32 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+// ── Record types (DB ↔ manager) ───────────────────────────────────────────────
+
+/// Full model record, mirroring one row in `transcribe_models`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TranscribeModelRecord {
+    pub id:          i64,
+    pub provider_id: i64,
+    pub model_id:    String,
+    /// Display alias (also used as the transcriber `id()`).
+    pub name:        String,
+    /// BCP-47 language hint, e.g. `"it"`. `None` → auto-detect.
+    pub language:    Option<String>,
+    /// Lower number = tried first by `get()`.
+    pub priority:    i32,
+}
+
+/// Remote model info returned by a provider's `list_transcribe_models()`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RemoteTranscribeModelInfo {
+    pub id:          String,
+    pub name:        String,
+    pub description: Option<String>,
+    /// BCP-47 language codes supported by this model (empty = unknown).
+    pub languages:   Vec<String>,
+}
+
 /// Implemented by any provider that can convert audio bytes to text.
 /// The `format` hint (e.g. `"ogg"`, `"mp3"`) is advisory.
 #[async_trait]

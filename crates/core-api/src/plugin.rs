@@ -6,10 +6,12 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::bus::ChatEventBus;
+use crate::system_bus::SystemEventBus;
 use crate::chat_hub::ChatHubApi;
 use crate::image_generate::ImageGenerateRegistry;
 use crate::location::LocationUpdater;
 use crate::memory::Memory;
+use crate::provider::ApiProviderRegistry;
 use crate::remote::RemoteAccess;
 use crate::secrets::SecretsApi;
 use crate::transcribe::{TranscribeProvider, TranscribeRegistry};
@@ -33,8 +35,10 @@ pub struct PluginContext {
     pub image_generate_registry: Arc<dyn ImageGenerateRegistry>,
     pub tts_registry:            Arc<dyn TtsRegistry>,
     pub tts_provider:            Arc<dyn TtsProvider>,
+    pub api_provider_registry:   Arc<dyn ApiProviderRegistry>,
     pub location:                Arc<dyn LocationUpdater>,
     pub event_bus:               Arc<ChatEventBus>,
+    pub system_bus:              Arc<SystemEventBus>,
     pub web_port:                u16,
     pub remote_slot:             Arc<RwLock<Option<Arc<dyn RemoteAccess>>>>,
     pub router_factory:          RouterFactory,

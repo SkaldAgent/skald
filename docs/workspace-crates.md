@@ -12,12 +12,16 @@ Shared contract types and traits used by both the main crate and future independ
 
 | Module | Contents |
 | --- | --- |
+| `core_api::chatbot` | `ChatbotClient` trait, `Message`, `Role`, `ChatOptions`, `ChatResponse`, `LlmTurn`, `ToolCall`, `LlmRawMeta` |
+| `core_api::provider` | `ApiProvider` trait, `ApiProviderRegistry` trait, `ProviderUiMeta`, `ProviderField`, `ServiceType`, `BuiltLlmClient`; DB record types: `LlmProviderRecord`, `LlmModelRecord`, `LlmStrength`, `RemoteLlmModelInfo` |
+| `core_api::tts` | `TextToSpeech` trait, `TtsProvider`, `TtsRegistry`; `TtsModelRecord`, `RemoteTtsModelInfo` |
+| `core_api::transcribe` | `Transcribe` trait, `TranscribeProvider`, `TranscribeRegistry`; `TranscribeModelRecord`, `RemoteTranscribeModelInfo` |
+| `core_api::image_generate` | `ImageGenerate` trait, `ImageGenerateRegistry`; `ImageGenerateModelRecord` |
 | `core_api::events` | `ServerEvent`, `GlobalEvent`, `ClientMessage`, `InboundDataMessage` |
 | `core_api::bus` | `ChatEventBus` — in-process broadcast for completed turns |
 | `core_api::interface_tool` | `InterfaceTool`, `ToolFuture` — LLM-callable tools injected by interfaces |
 | `core_api::chat_hub` | `SendMessageOptions`, `ChatHubApi` trait |
-| `core_api::transcribe` | `Transcribe` trait; `TranscribeProvider` — resolves active provider; `TranscribeRegistry` — register/unregister ephemeral providers |
-| `core_api::location` | `GpsCoord`, `LocationEntry`, `LocationManager`; `LocationUpdater` trait — write-only GPS update surface for plugins |
+| `core_api::location` | `GpsCoord`, `LocationEntry`, `LocationManager`; `LocationUpdater` trait |
 | `core_api::tool` | `Tool` trait, `ToolCategory`, `ToolDescriptionLength`, `truncate_label` |
 | `core_api::memory` | `Memory` trait — pluggable long-term memory backend contract |
 | `core_api::remote` | `RemoteAccess` trait — mesh/remote-connectivity provider contract |
@@ -73,19 +77,24 @@ The goal is to allow plugins to live in their own workspace crates without depen
 | `telegram` | `crates/plugin-telegram-bot/` | [telegram.md](telegram.md) |
 | `orpheus_tts_3b` | `crates/plugin-tts-orpheus-3b/` | [tts-providers.md](tts-providers.md) |
 | `kokoro_tts` | `crates/plugin-tts-kokoro/` | [tts-providers.md](tts-providers.md) |
+| `elevenlabs` | `crates/plugin-elevenlabs/` | [tts-providers.md](tts-providers.md) |
 
 ### Remaining in main crate
 
-All plugins have been extracted to independent workspace crates.
+All plugins have been extracted to independent workspace crates. ElevenLabs (TTS + transcription) was extracted into `crates/plugin-elevenlabs/` — it registers itself as an `ApiProvider` so the existing `llm_providers` + `tts_models` / `transcribe_models` UI continues to work unchanged.
 
 ### All `core-api` contracts needed by plugins
 
 | Dependency | Status |
 | --- | --- |
+| `core_api::chatbot::ChatbotClient` (+ associated types) | ✅ In `core-api` |
+| `core_api::provider::{ApiProvider, ApiProviderRegistry, LlmProviderRecord, …}` | ✅ In `core-api` |
+| `core_api::tts::{TextToSpeech, TtsProvider, TtsRegistry, TtsModelRecord, …}` | ✅ In `core-api` |
+| `core_api::transcribe::{Transcribe, TranscribeProvider, TranscribeRegistry, TranscribeModelRecord, …}` | ✅ In `core-api` |
+| `core_api::image_generate::{ImageGenerate, ImageGenerateRegistry, ImageGenerateModelRecord}` | ✅ In `core-api` |
 | `core_api::events::{ServerEvent, GlobalEvent}` | ✅ In `core-api` |
 | `core_api::interface_tool::InterfaceTool` | ✅ In `core-api` |
 | `core_api::chat_hub::{ChatHubApi, SendMessageOptions}` | ✅ In `core-api` |
-| `core_api::transcribe::{Transcribe, TranscribeProvider, TranscribeRegistry}` | ✅ In `core-api` |
 | `core_api::location::{GpsCoord, LocationManager, LocationUpdater}` | ✅ In `core-api` |
 | `core_api::remote::RemoteAccess` | ✅ In `core-api` |
 | `core_api::plugin::{Plugin, PluginContext, RouterFactory}` | ✅ In `core-api` |
@@ -125,7 +134,11 @@ async fn start(&self, ctx: PluginContext) -> Result<()> {
 
 ## `llm-client` — `crates/llm-client/`
 
-LLM provider abstraction. Supports OpenAI-compatible endpoints, native Anthropic API, and Ollama. Used by `LlmManager` in the main crate.
+Concrete LLM provider implementations: OpenAI-compatible, native Anthropic, Ollama, LmStudio.
+
+Depends on `core-api` — `ChatbotClient` and all associated types (`Message`, `Role`, `ChatOptions`, `ChatResponse`, `LlmTurn`, `ToolCall`, `LlmRawMeta`) are defined there and re-exported from `llm-client` for backward compatibility.
+
+Utility functions that depend on `reqwest` (`headers_to_json`, `redact_key`) remain in `llm-client` and are not part of `core-api`.
 
 ---
 
@@ -196,10 +209,12 @@ Independent plugin crate for the private Telegram bot interface. Depends only on
 
 | Module | Contents |
 | --- | --- |
-| `lib.rs` | `TelegramPlugin` — plugin lifecycle, bot startup, dispatcher wiring |
+| `lib.rs` | `TelegramPlugin` — plugin lifecycle, bot startup, dispatcher wiring; `TgShared` holds `Arc<dyn TtsProvider>` |
 | `events.rs` | `persistent_forwarder` — subscribes to ChatHub events and forwards to Telegram; `callback_handler` — inline keyboard button presses |
 | `handlers.rs` | `message_handler`, `edited_message_handler` — incoming message classification and dispatch |
 | `auth.rs` | `WhitelistFile`, pairing flow, `whitelist_watchdog` |
 | `attachments.rs` | `TelegramAttachment` — download and describe documents, photos, locations |
 | `helpers.rs` | `escape_html`, `label_to_html`, `send_long`, Markdown→HTML sanitizer |
-| `tools.rs` | `interface_tools` — `send_attachment` LLM-callable tool |
+| `tools.rs` | `interface_tools` (async) — `send_attachment` always present; `send_voice_message` injected only when at least one TTS provider is active |
+
+`send_voice_message` calls `TtsProvider::get()` at message time, synthesises text via the highest-priority active provider, and sends the result with `bot.send_voice()`. The tool's description automatically includes the provider's `instructions()` field so the LLM knows how to format text for that specific voice engine.

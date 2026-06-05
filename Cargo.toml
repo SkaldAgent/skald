@@ -12,6 +12,7 @@ members = [
     "crates/plugin-comfyui",
     "crates/plugin-tts-orpheus-3b",
     "crates/plugin-tts-kokoro",
+    "crates/plugin-elevenlabs",
 ]
 resolver = "2"
 
@@ -60,3 +61,4 @@ plugin-telegram-bot              = { path = "crates/plugin-telegram-bot" }
 plugin-comfyui                   = { path = "crates/plugin-comfyui" }
 plugin-tts-orpheus-3b            = { path = "crates/plugin-tts-orpheus-3b" }
 plugin-tts-kokoro                = { path = "crates/plugin-tts-kokoro" }
+plugin-elevenlabs                = { path = "crates/plugin-elevenlabs" }

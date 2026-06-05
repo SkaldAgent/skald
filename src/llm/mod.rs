@@ -5,9 +5,9 @@ pub mod providers;
 use std::sync::Arc;
 
 use crate::chatbot::ChatbotClient;
-use crate::config::{LlmProvider, LlmStrength};
-use providers::ModelType;
+use crate::provider::ServiceType;
 
+pub use core_api::provider::{LlmProviderRecord, LlmModelRecord, LlmStrength};
 pub use manager::{LlmManager, sort_models_for_agent};
 
 /// A resolved, ready-to-use LLM client with its associated metadata.
@@ -21,29 +21,11 @@ pub struct LlmEntry {
     pub extra_params:    Option<serde_json::Value>,
     /// Max input context window in tokens, if known.
     pub context_length:  Option<i64>,
-    /// When true, prompt-caching hints are injected into requests:
-    /// - System messages are split into a cached static block and an uncached
-    ///   dynamic block (date/time, scratchpad).
-    /// - The last tool definition is tagged with `cache_control: ephemeral`.
-    /// - The `anthropic-beta: prompt-caching-2024-07-31` header is sent.
-    /// Currently enabled for OpenRouter (Anthropic models) only.
+    /// When true, prompt-caching hints are injected into requests.
     pub prompt_cache:    bool,
 }
 
 // ── Provider ──────────────────────────────────────────────────────────────────
-
-/// Full provider record (includes secrets — only expose over trusted local connections).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct LlmProviderRecord {
-    pub id:          i64,
-    pub name:        String,
-    #[serde(rename = "type")]
-    pub provider:    LlmProvider,
-    pub api_key:     Option<String>,
-    /// Only used by ollama and lm_studio.
-    pub base_url:    Option<String>,
-    pub description: Option<String>,
-}
 
 /// Public provider metadata (no api_key).
 #[derive(Debug, Clone, serde::Serialize)]
@@ -51,36 +33,11 @@ pub struct LlmProviderInfo {
     pub id:              i64,
     pub name:            String,
     #[serde(rename = "type")]
-    pub provider:        LlmProvider,
+    pub provider:        String,
     pub base_url:        Option<String>,
     pub description:     Option<String>,
-    /// Model types this provider supports (hardcoded per provider implementation).
-    pub supported_types: Vec<ModelType>,
-}
-
-// ── Model ─────────────────────────────────────────────────────────────────────
-
-/// Full model record.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct LlmModelRecord {
-    pub id:               i64,
-    pub provider_id:      i64,
-    pub model_id:         String,
-    /// Display alias. If empty/null at the DB level we fall back to model_id.
-    pub name:             String,
-    pub strength:         Option<LlmStrength>,
-    pub scope:            Vec<String>,
-    pub is_default:       bool,
-    pub priority:         i32,
-    pub extra_params:     Option<serde_json::Value>,
-    /// Max input context window in tokens, if known (from provider catalog or manual).
-    pub context_length:   Option<i64>,
-    /// Max output tokens, if known (from provider catalog or manual).
-    pub max_output_tokens: Option<i64>,
-    /// Date string like "2024-09-01", if known.
-    pub knowledge_cutoff: Option<String>,
-    /// Capabilities (e.g. "function_calling", "vision", "streaming", …).
-    pub capabilities:     Vec<String>,
+    /// Service types this provider supports (from ProviderRegistry at runtime).
+    pub supported_types: Vec<ServiceType>,
 }
 
 /// Public model metadata for API responses (includes provider name for convenience).

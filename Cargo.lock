@@ -1945,6 +1945,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "core-api",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
@@ -2394,6 +2395,20 @@ dependencies = [
  "core-api",
  "reqwest 0.13.4",
  "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "plugin-elevenlabs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "core-api",
+ "parking_lot",
+ "reqwest 0.13.4",
  "serde_json",
  "tokio",
  "tracing",
@@ -3380,6 +3395,7 @@ dependencies = [
  "llm-client",
  "mcp-client",
  "plugin-comfyui",
+ "plugin-elevenlabs",
  "plugin-honcho",
  "plugin-tailscale-remote",
  "plugin-telegram-bot",

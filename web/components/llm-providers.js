@@ -1,62 +1,36 @@
 import { html } from 'lit';
 import { LightElement } from '../lib/base.js';
 
-const PROVIDER_TYPE_LABELS = {
-  anthropic:   'Anthropic',
-  open_ai:     'OpenAI',
-  openrouter:  'OpenRouter',
-  deepseek:    'DeepSeek',
-  ollama:      'Ollama',
-  lm_studio:   'LM Studio',
-  elevenlabs:  'ElevenLabs',
-};
-
-const PROVIDER_TYPES = Object.keys(PROVIDER_TYPE_LABELS);
-
-const TYPE_COLORS = {
-  anthropic:   '#d4a574',
-  open_ai:     '#10a37f',
-  openrouter:  '#8b5cf6',
-  deepseek:    '#0ea5e9',
-  ollama:      '#f97316',
-  lm_studio:   '#6b7280',
-  elevenlabs:  '#f59e0b',
-};
-
-const TYPE_ICONS = {
-  anthropic:   'bi-chat-square-dots',
-  open_ai:     'bi-lightning-charge',
-  openrouter:  'bi-hdd-stack',
-  deepseek:    'bi-search',
-  ollama:      'bi-terminal',
-  lm_studio:   'bi-window-stack',
-  elevenlabs:  'bi-waveform',
-};
-
-function emptyForm() {
-  return { name: '', type: 'anthropic', api_key: '', base_url: '', description: '' };
+function emptyForm(firstTypeId = '') {
+  return { name: '', type: firstTypeId, api_key: '', base_url: '', description: '' };
 }
 
 export class LlmProvidersPage extends LightElement {
   static properties = {
-    _open:      { state: true },
-    _providers: { state: true },
-    _modelCounts: { state: true },
-    _modal:     { state: true },
-    _saving:    { state: true },
-    _error:     { state: true },
-    _form:      { state: true },
+    _open:          { state: true },
+    _providers:     { state: true },
+    _providerTypes: { state: true },
+    _modelCounts:   { state: true },
+    _modal:         { state: true },
+    _saving:        { state: true },
+    _error:         { state: true },
+    _form:          { state: true },
   };
 
   constructor() {
     super();
-    this._open      = false;
-    this._providers = [];
-    this._modelCounts = {};
-    this._modal     = null;
-    this._saving    = false;
-    this._error     = null;
-    this._form      = emptyForm();
+    this._open          = false;
+    this._providers     = [];
+    this._providerTypes = [];
+    this._modelCounts   = {};
+    this._modal         = null;
+    this._saving        = false;
+    this._error         = null;
+    this._form          = emptyForm();
+  }
+
+  _typeMeta(typeId) {
+    return this._providerTypes.find(t => t.type_id === typeId) ?? { display_name: typeId, color: '#888', icon: 'bi-box', fields: [] };
   }
 
   connectedCallback() {
@@ -70,24 +44,33 @@ export class LlmProvidersPage extends LightElement {
 
   async _load() {
     try {
-      const [provRes, modelsRes] = await Promise.all([
+      const [typesRes, provRes, modelsRes] = await Promise.all([
+        fetch('/api/llm/providers/types'),
         fetch('/api/llm/providers'),
         fetch('/api/llm/models'),
       ]);
-      if (!provRes.ok)  throw new Error(`Providers: HTTP ${provRes.status}`);
+      if (!typesRes.ok)  throw new Error(`Provider types: HTTP ${typesRes.status}`);
+      if (!provRes.ok)   throw new Error(`Providers: HTTP ${provRes.status}`);
       if (!modelsRes.ok) throw new Error(`Models: HTTP ${modelsRes.status}`);
-      const providers = await provRes.json();
-      const models    = await modelsRes.json();
 
-      // Count models per provider
+      const providerTypes = await typesRes.json();
+      const providers     = await provRes.json();
+      const models        = await modelsRes.json();
+
       const counts = {};
       for (const m of models) {
         const pid = String(m.provider_id);
         counts[pid] = (counts[pid] || 0) + 1;
       }
 
-      this._providers   = providers;
-      this._modelCounts = counts;
+      this._providerTypes = providerTypes;
+      this._providers     = providers;
+      this._modelCounts   = counts;
+
+      // Set default form type to first available provider type
+      if (!this._form.type && providerTypes.length > 0) {
+        this._form = { ...this._form, type: providerTypes[0].type_id };
+      }
     } catch (e) {
       this._error = e.message;
     }
@@ -97,7 +80,7 @@ export class LlmProvidersPage extends LightElement {
 
   _openAdd() {
     this._error = null;
-    this._form  = emptyForm();
+    this._form  = emptyForm(this._providerTypes[0]?.type_id ?? '');
     this._modal = { mode: 'add' };
   }
 
@@ -138,7 +121,8 @@ export class LlmProvidersPage extends LightElement {
     this._error  = null;
 
     const f = this._form;
-    const needsBaseUrl = f.type === 'ollama' || f.type === 'lm_studio';
+    const meta = this._typeMeta(f.type);
+    const needsBaseUrl = meta.fields.some(field => field.key === 'base_url');
     const payload = {
       name:        f.name,
       type:        f.type,
@@ -175,12 +159,13 @@ export class LlmProvidersPage extends LightElement {
   // ── Render helpers ────────────────────────────────────────────────────────
 
   _renderCard(p) {
-    const color    = TYPE_COLORS[p.type] ?? '#888';
-    const icon     = TYPE_ICONS[p.type] ?? 'bi-box';
-    const label    = PROVIDER_TYPE_LABELS[p.type] ?? p.type;
+    const meta     = this._typeMeta(p.type);
+    const color    = meta.color;
+    const icon     = meta.icon;
+    const label    = meta.display_name;
     const count    = this._modelCounts[String(p.id)];
     const hasKey   = Boolean(p.api_key);
-    const needsUrl = p.type === 'ollama' || p.type === 'lm_studio';
+    const needsUrl = meta.fields.some(f => f.key === 'base_url');
 
     return html`
       <div class="pv-card" style="--pv-color: ${color}">
@@ -236,10 +221,11 @@ export class LlmProvidersPage extends LightElement {
   // ── Modal ─────────────────────────────────────────────────────────────────
 
   _renderModal() {
-    const isEdit     = this._modal?.mode === 'edit';
-    const f          = this._form;
-    const needsKey   = f.type !== 'ollama' && f.type !== 'lm_studio';
-    const needsUrl   = f.type === 'ollama' || f.type === 'lm_studio';
+    const isEdit   = this._modal?.mode === 'edit';
+    const f        = this._form;
+    const meta     = this._typeMeta(f.type);
+    const needsKey = meta.fields.some(field => field.key === 'api_key');
+    const needsUrl = meta.fields.some(field => field.key === 'base_url');
 
     return html`
       <div class="agent-dialog-backdrop" @click=${(e) => { if (e.target === e.currentTarget) this._closeModal(); }}>
@@ -265,7 +251,7 @@ export class LlmProvidersPage extends LightElement {
               <label class="form-label fw-semibold" style="font-size:0.82rem">Type</label>
               <select class="form-select form-select-sm" .value=${f.type}
                 @change=${(e) => this._setField('type', e.target.value)}>
-                ${PROVIDER_TYPES.map(t => html`<option value=${t}>${PROVIDER_TYPE_LABELS[t]}</option>`)}
+                ${this._providerTypes.map(t => html`<option value=${t.type_id}>${t.display_name}</option>`)}
               </select>
             </div>
 

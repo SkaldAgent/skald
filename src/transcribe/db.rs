@@ -28,6 +28,30 @@ pub async fn load_all(pool: &SqlitePool) -> Result<Vec<TranscribeModelRecord>> {
 }
 
 pub async fn insert(pool: &SqlitePool, r: &TranscribeModelRecord) -> Result<i64> {
+    let restored = sqlx::query_scalar::<_, i64>(
+        "UPDATE transcribe_models
+         SET provider_id=?1, model_id=?2, name=?3, language=?4, priority=?5, removed_at=NULL
+         WHERE id = (
+             SELECT id FROM transcribe_models
+             WHERE removed_at IS NOT NULL
+               AND (provider_id=?1 AND model_id=?2 OR name=?3)
+             LIMIT 1
+         )
+         RETURNING id",
+    )
+    .bind(r.provider_id)
+    .bind(&r.model_id)
+    .bind(&r.name)
+    .bind(&r.language)
+    .bind(r.priority as i64)
+    .fetch_optional(pool)
+    .await
+    .context("transcribe_models: restore soft-deleted")?;
+
+    if let Some(id) = restored {
+        return Ok(id);
+    }
+
     sqlx::query_scalar::<_, i64>(
         "INSERT INTO transcribe_models (provider_id, model_id, name, language, priority)
          VALUES (?1, ?2, ?3, ?4, ?5)

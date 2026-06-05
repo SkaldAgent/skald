@@ -3,6 +3,8 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+pub use core_api::provider::LlmStrength;
+
 const DEFAULT_CONFIG: &str = "default.config.yaml";
 const CONFIG: &str = "config.yml";
 
@@ -145,40 +147,7 @@ pub struct LlmRequestLogConfig {
 
 fn default_retention_days() -> u32 { 14 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LlmStrength {
-    VeryLow,
-    Low,
-    Average,
-    High,
-    VeryHigh,
-}
 
-/// Discriminator stored in the `llm_providers` DB table and used throughout the
-/// provider/manager/builder chain to route credentials to the right client.
-///
-/// **Legacy name** — despite being called `LlmProvider`, this enum covers *all*
-/// external API providers, including those that do only TTS or only Transcription
-/// (e.g. ElevenLabs). Renaming it to `ApiProvider` or `ServiceProvider` would be
-/// the right call but requires a wide refactor; left for a future pass.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LlmProvider {
-    LmStudio,
-    Ollama,
-    OpenAi,
-    // Serialized as "openrouter" (not "open_router") to match the DB representation
-    // and the frontend's PROVIDER_TYPE_LABELS key. The rename overrides snake_case.
-    #[serde(rename = "openrouter")]
-    OpenRouter,
-    Anthropic,
-    #[serde(rename = "deepseek")]
-    DeepSeek,
-    /// TTS + Transcription only — does not support LLM chat/completion.
-    #[serde(rename = "elevenlabs")]
-    ElevenLabs,
-}
 
 impl Config {
     pub fn load() -> Result<Self> {

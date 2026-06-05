@@ -494,7 +494,7 @@ export class ModelsLlmSection extends LightElement {
           <div class="llm-modal-title">Add Model — Choose Provider</div>
           ${this._error ? html`<div class="alert alert-danger py-2 mb-3" style="font-size:0.85rem">${this._error}</div>` : ''}
           <div class="llm-provider-grid">
-            ${this._providers.map(p => html`
+            ${this._providers.filter(p => (p.supported_types ?? []).includes('llm')).map(p => html`
               <button class="llm-provider-card" @click=${() => this._pickProvider(p)}>
                 <div class="llm-provider-card-name">${p.name}</div>
                 <div class="llm-provider-card-type text-muted" style="font-size:0.75rem">${p.type}</div>

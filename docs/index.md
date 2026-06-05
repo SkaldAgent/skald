@@ -5,6 +5,7 @@
 **Every source code change — made by a human or by an LLM — must be accompanied by an update to the relevant doc file(s). No exception.**
 
 This includes:
+
 - Adding or removing a tool → update [tools.md](tools.md)
 - Changing a table schema → update [database.md](database.md)
 - Modifying the approval gate or tool loop → update [session.md](session.md)
@@ -16,7 +17,7 @@ This includes:
 ## Key paths (agent: read this first)
 
 | Resource | Default path | Override |
-|---|---|---|
+| --- | --- | --- |
 | **SQLite database** | `./database.db` | `db.path` in `config.yml` |
 | **Config file** | `./config.yml` | — (copy from `default.config.yaml`) |
 | **Secrets folder** | `./secrets/` | — |
@@ -37,10 +38,10 @@ A local chat server (Axum + Tokio + SQLite) where an LLM handles user queries vi
 The project is a Cargo workspace. Extracted crates live in `crates/`:
 
 | Crate | Path | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `skald` | `.` (root) | Main application binary |
-| `core-api` | `crates/core-api/` | Shared types and traits: `ServerEvent`, `GlobalEvent`, `ChatHubApi`, `Tool`, `Memory`, `Transcribe`, `TextToSpeech`, `SecretsApi`, `LocationManager`, `InterfaceTool`, `Plugin`, `PluginContext`, `RemoteAccess` |
-| `llm-client` | `crates/llm-client/` | `ChatbotClient` trait + provider implementations (Anthropic, OpenAI, Ollama, LmStudio) |
+| `core-api` | `crates/core-api/` | Shared types and traits: `ServerEvent`, `GlobalEvent`, `ChatHubApi`, `Tool`, `Memory`, `ChatbotClient`, `Transcribe`, `TextToSpeech`, `ImageGenerate`, `SecretsApi`, `LocationManager`, `InterfaceTool`, `Plugin`, `PluginContext`, `ApiProvider`, `ApiProviderRegistry`, `RemoteAccess`. Also owns all DB record types: `LlmProviderRecord`, `LlmModelRecord`, `TtsModelRecord`, `TranscribeModelRecord`, `ImageGenerateModelRecord`. |
+| `llm-client` | `crates/llm-client/` | OpenAI-compatible, Anthropic, Ollama, LmStudio implementations of `ChatbotClient`. Depends on `core-api` and re-exports the trait and associated types for backward compatibility. |
 | `mcp-client` | `crates/mcp-client/` | MCP protocol layer: `McpServer` (stdio), `McpHttpServer`, `McpServerClient` trait, config types |
 | `honcho-client` | `crates/honcho-client/` | Honcho v3 REST API client — zero dependencies on the main crate |
 | `plugin-honcho` | `crates/plugin-honcho/` | Honcho memory sink plugin |
@@ -57,12 +58,14 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 ## Module Map
 
 | Source path | Role | Doc |
-|---|---|---|
+| --- | --- | --- |
 | `src/main.rs` | Startup, wiring | [architecture.md](architecture.md) |
 | `src/session/handler/` | Core LLM loop, tool dispatch, approval | [session.md](session.md) |
 | `src/session/manager.rs` | Session factory | [session.md](session.md) |
 | `src/agents.rs` | Agent discovery, prompt loading | [agents.md](agents.md) |
 | `src/tools/` | Built-in tool registry | [tools.md](tools.md) |
+| `src/provider/` | `ProviderRegistry` (implements `ApiProviderRegistry`) — thin wrapper around `core-api::provider`. All types re-exported for internal use. | [llm-clients.md](llm-clients.md) |
+| `src/service_manager.rs` | `ServiceManager` trait — lightweight umbrella for all model managers | [llm-clients.md](llm-clients.md) |
 | `src/chatbot/` | LLM provider clients | [llm-clients.md](llm-clients.md) |
 | `src/llm/manager.rs` | LLM selection, health tracking | [llm-clients.md](llm-clients.md) |
 | `src/chat_event_bus.rs` | In-process broadcast bus for chat turns and compaction events | [chat-event-bus.md](chat-event-bus.md) |
@@ -81,12 +84,12 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 | `crates/plugin-tts-kokoro/` | Kokoro ONNX — lightweight local TTS, multilingual (standalone crate) | [tts-providers.md](tts-providers.md) |
 | `crates/honcho-client/` | Honcho v3 REST API client (standalone crate) | [honcho.md](honcho.md) |
 | `src/secrets.rs` | SecretsStore — centralised token/key store over SQLite | [secrets.md](secrets.md) |
-| `src/transcribe/` | Transcribe trait, TranscribeManager, OpenAiAudioTranscriber, ElevenLabsTranscriber | [transcribe-providers.md](transcribe-providers.md) |
-| `src/tts/` | TextToSpeech trait, TtsManager (DB-backed + plugin slots), OpenAiTtsSynthesiser, ElevenLabsTtsSynthesiser | [tts-providers.md](tts-providers.md) |
+| `src/transcribe/` | TranscribeManager, OpenAiAudioTranscriber, ElevenLabsTranscriber. Traits and record types re-exported from `core-api`. | [transcribe-providers.md](transcribe-providers.md) |
+| `src/tts/` | TtsManager (DB-backed + plugin slots), OpenAiTtsSynthesiser, ElevenLabsTtsSynthesiser. Traits and record types re-exported from `core-api`. | [tts-providers.md](tts-providers.md) |
 | `src/image_generate/` | ImageGenerate trait, ImageGeneratorManager (DB-backed + plugin slots), OpenRouterImageGenerator | [image-generate.md](image-generate.md) |
 | `src/db/` | SQLite schema and queries | [database.md](database.md) |
 | `src/events.rs` | WS protocol types | [frontend.md](frontend.md) |
-| `src/config.rs` | Config file loading; `LlmProvider` enum (legacy name — covers all API providers including TTS-only ones like ElevenLabs) | [logging-config.md](logging-config.md) |
+| `src/config.rs` | Config file loading | [logging-config.md](logging-config.md) |
 | `web/components/` | Lit frontend components | [frontend.md](frontend.md) |
 | `run.sh` | Supervisor loop | [self-rewriting.md](self-rewriting.md) |
 
@@ -95,7 +98,7 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 ## Critical Constants
 
 | Constant | Value | Location |
-|---|---|---|
+| --- | --- | --- |
 | `MAX_AGENT_DEPTH` | **5** | `src/session/handler/mod.rs` |
 | `DEFAULT_MAX_TOOL_ROUNDS` | **20** | `src/session/handler/mod.rs` |
 | `FAILURE_DEGRADED` | **3** consecutive failures | `src/llm/manager.rs` |
@@ -117,7 +120,7 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 - [session.md](session.md) — ChatSessionHandler, tool loop, approval gate
 - [agents.md](agents.md) — agent discovery, meta.json, call_agent, depth limit
 - [tools.md](tools.md) — Tool trait, ToolRegistry, built-in catalogue
-- [llm-clients.md](llm-clients.md) — ChatbotClient trait, LlmManager, AUTO selection
+- [llm-clients.md](llm-clients.md) — ChatbotClient trait, LlmManager, ApiProvider, ProviderRegistry, AUTO selection
 - [compaction.md](compaction.md) — context compaction: trigger, summarisation flow, DB schema, config
 - [mcp.md](mcp.md) — McpManager, transports, naming convention, enable/disable
 - [gcal-mcp.md](gcal-mcp.md) — Google Calendar read-only MCP server (custom Python)

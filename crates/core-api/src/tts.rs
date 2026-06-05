@@ -3,6 +3,40 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 
+// ── Record types (DB ↔ manager) ───────────────────────────────────────────────
+
+/// Full model record, mirroring one row in `tts_models`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TtsModelRecord {
+    pub id:           i64,
+    pub provider_id:  i64,
+    pub model_id:     String,
+    /// Voice/speaker identifier, if the provider requires it separately from the model.
+    pub voice_id:     Option<String>,
+    /// Display alias (also used as the synthesiser `id()`).
+    pub name:         String,
+    pub description:  Option<String>,
+    /// Default voice instructions (tone, speed, style).
+    pub instructions: Option<String>,
+    /// Lower number = tried first by `get()`.
+    pub priority:     i32,
+}
+
+/// Remote model info returned by a provider's `list_tts_models()`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RemoteTtsModelInfo {
+    pub id:          String,
+    pub name:        String,
+    pub description: Option<String>,
+    /// BCP-47 language codes supported by this model (empty = unknown).
+    pub languages:    Vec<String>,
+    /// Cost multiplier relative to the provider's base rate (1.0 = standard).
+    pub cost_factor:  Option<f64>,
+    /// Usage instructions: supported tags, markup, etc. Shown in UI and passed
+    /// to the LLM when generating text destined for this synthesiser.
+    pub instructions: Option<String>,
+}
+
 /// Implemented by any provider that can convert text to audio bytes.
 /// Returns raw audio bytes (MP3 expected unless the provider states otherwise).
 #[async_trait]

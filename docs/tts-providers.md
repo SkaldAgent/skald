@@ -11,13 +11,20 @@ crates/core-api/src/tts.rs
   — TextToSpeech trait (provider interface)
   — TtsProvider trait (resolve active provider)
   — TtsRegistry trait (plugin write-side: register/unregister)
+  — TtsModelRecord     (DB record type — moved here from main crate)
+  — RemoteTtsModelInfo (remote catalog type — moved here from main crate)
 
 src/tts/
-  mod.rs              — TtsModelRecord/Info, re-exports TextToSpeech/TtsProvider/TtsRegistry
+  mod.rs              — TtsModelInfo (API response type), re-exports from core-api
   db.rs               — SQL layer for tts_models table
   manager.rs          — TtsManager (DB-aware, owns the table, impls TtsProvider + TtsRegistry)
   openai_tts.rs       — OpenAiTtsSynthesiser: impl TextToSpeech via OpenAI-compatible HTTP JSON
-  elevenlabs_tts.rs   — ElevenLabsTtsSynthesiser: impl TextToSpeech via ElevenLabs v1 API
+
+crates/plugin-elevenlabs/src/lib.rs
+  ElevenLabsTtsSynthesiser: impl TextToSpeech via ElevenLabs v1 API
+  ElevenLabsTranscriber:    impl Transcribe via ElevenLabs Scribe API
+  ElevenLabsProvider:       impl ApiProvider (model listing, build_tts, build_transcriber)
+  ElevenLabsPlugin:         impl Plugin — registers ElevenLabsProvider on start
 ```
 
 Two kinds of providers coexist:
@@ -73,7 +80,7 @@ This lets the LLM (or a plugin) say "respond in a cheerful tone" on a per-turn b
 
 ```rust
 // Async constructor — loads DB models on startup
-TtsManager::new(pool: Arc<SqlitePool>) -> Result<Arc<Self>>
+TtsManager::new(pool: Arc<SqlitePool>, registry: Arc<ProviderRegistry>) -> Result<Arc<Self>>
 
 // Resolution
 tts_manager.get().await    // → Option<Arc<dyn TextToSpeech>>  (plugins first, then DB)
@@ -91,7 +98,12 @@ tts_manager.get_model(id).await            // → Option<TtsModelRecord>
 // Listings
 tts_manager.list_models_info().await       // DB-backed only → Vec<TtsModelInfo>
 tts_manager.list_all_info().await          // plugin + DB → Vec<TtsModelInfo>
+
+// Remote model catalog (calls ApiProvider::list_tts_models)
+tts_manager.list_provider_models(provider_id).await  // → Result<Vec<RemoteTtsModelInfo>>
 ```
+
+`RemoteTtsModelInfo` fields: `id`, `name`, `description`, `languages` (BCP-47 codes), `cost_factor: Option<f64>` (relative cost multiplier, e.g. `1.0` = standard), `instructions: Option<String>` (usage guidance for LLM and UI pre-fill).
 
 ---
 
@@ -122,18 +134,26 @@ Returns raw MP3 bytes.
 
 ## ElevenLabsTtsSynthesiser
 
-Implemented in `src/tts/elevenlabs_tts.rs`.
+Implemented in `crates/plugin-elevenlabs/src/lib.rs` (via `plugin-elevenlabs`).
 
 Calls `POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}` with auth header `xi-api-key` (not Bearer).
 
 | Field in DB record | Meaning |
 | ------------------ | ------- |
-| `model_id` | ElevenLabs **voice ID** (e.g. `21m00Tcm4TlvDq8ikWAM`) |
+| `model_id` | ElevenLabs **generation model** (e.g. `eleven_multilingual_v2`, `eleven_turbo_v2_5`) |
+| `voice_id` | ElevenLabs **voice ID** (e.g. `21m00Tcm4TlvDq8ikWAM`). Required for ElevenLabs. |
 | `instructions` | Injected into LLM system prompt; not sent to ElevenLabs API |
 
-The ElevenLabs generation model is fixed to `eleven_multilingual_v2`. Returns raw MP3 bytes.
+**Legacy fallback:** if `voice_id` is `NULL` (records created before the field split), `model_id` is treated as the voice ID and the generation model defaults to `eleven_multilingual_v2`. This keeps existing records working after the migration.
 
-Provider type: `elevenlabs` — requires an `xi-api-key` stored in `llm_providers.api_key`. No `base_url` needed.
+Returns raw MP3 bytes. Provider type: `elevenlabs` — requires an `xi-api-key` stored in `llm_providers.api_key`. No `base_url` needed.
+
+### Remote model catalog
+
+`ElevenLabsProvider::list_tts_models()` calls `GET https://api.elevenlabs.io/v1/models`, filters entries where `can_do_text_to_speech: true`, and returns `RemoteTtsModelInfo` with:
+
+- `cost_factor` from the `token_cost_factor` field
+- `instructions` from `elevenlabs_tts_instructions(model_id)` — per-model usage guidance (supported tags, non-verbal sound syntax, etc.)
 
 ---
 
@@ -146,6 +166,9 @@ Provider type: `elevenlabs` — requires an `xi-api-key` stored in `llm_provider
 | `GET` | `/api/tts/models/{id}` | Get a DB-backed model record |
 | `PUT` | `/api/tts/models/{id}` | Update a DB-backed model |
 | `DELETE` | `/api/tts/models/{id}` | Soft-delete a DB-backed model |
+| `GET` | `/api/tts/providers/{id}/models` | List remote TTS models from a configured provider (`RemoteTtsModelInfo[]`) |
+
+The provider models endpoint calls `TtsManager::list_provider_models()` → `ApiProvider::list_tts_models()`. Returns an error if the provider does not support model listing.
 
 Handled by `src/api/tts_models.rs`.
 
@@ -157,7 +180,8 @@ Handled by `src/api/tts_models.rs`.
 CREATE TABLE tts_models (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     provider_id  INTEGER NOT NULL REFERENCES llm_providers(id),
-    model_id     TEXT    NOT NULL,
+    model_id     TEXT    NOT NULL,  -- generation model (e.g. eleven_multilingual_v2, tts-1-hd)
+    voice_id     TEXT,              -- speaker voice (required for ElevenLabs; NULL for OpenAI)
     name         TEXT    NOT NULL UNIQUE,
     description  TEXT,                        -- human-readable, shown in UI
     instructions TEXT,                        -- default voice style / tone / speed
@@ -167,6 +191,8 @@ CREATE TABLE tts_models (
     UNIQUE(provider_id, model_id)
 )
 ```
+
+`voice_id` was added in **schema version 2** via `ALTER TABLE tts_models ADD COLUMN voice_id TEXT`. See [database.md](database.md#migration-pattern).
 
 ---
 
@@ -257,6 +283,30 @@ toggle_plugin("orpheus_tts_3b", true)
 | ----- | ------ | ------- |
 | `quantization` | none / int8 / int4 | int8 |
 | `voice` | tara / dan / leah / zac / zoe / mia / julia / leo | tara |
+
+---
+
+## DB insert — soft-delete revival
+
+`tts_models` has two `UNIQUE` constraints: `name` and `(provider_id, model_id)`. Soft-deleted rows (where `removed_at IS NOT NULL`) still hold those unique values, which would cause a plain `INSERT` to fail when re-adding a previously deleted model.
+
+`db::insert()` handles this by first attempting to revive the soft-deleted row: it runs an `UPDATE … RETURNING id` that matches on `removed_at IS NOT NULL AND (provider_id=? AND model_id=? OR name=?)`. If a row is found it is restored with the new values and its `removed_at` is set to `NULL`; only if no match is found does a plain `INSERT` run. The same pattern is applied in `transcribe/db.rs` and `image_generate/db.rs`.
+
+---
+
+## Telegram `send_voice_message` tool
+
+When the Telegram plugin is active and at least one TTS provider is available, the LLM-callable tool `send_voice_message` is injected into every Telegram session. It is absent when no TTS provider is configured.
+
+| Aspect | Detail |
+| --- | --- |
+| Tool name | `send_voice_message` |
+| Parameter | `text: String` — the text to synthesise |
+| Provider selection | Highest-priority active provider (`TtsProvider::get()`) |
+| Transport | `bot.send_voice()` — Telegram voice message |
+| Instructions | The provider's `instructions()` string is embedded in the tool description so the LLM knows how to format text for that engine |
+
+The tool resolves the synthesiser at call time (not at registration time), so a TTS provider that becomes available mid-conversation is picked up automatically on the next call.
 
 ---
 

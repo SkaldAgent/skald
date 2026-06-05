@@ -1,7 +1,7 @@
 use axum::{Json, extract::State, http::StatusCode};
 use serde::Deserialize;
 
-use crate::tts::{TtsModelInfo, TtsModelRecord};
+use crate::tts::{RemoteTtsModelInfo, TtsModelInfo, TtsModelRecord};
 use crate::server::AppState;
 use super::ApiError;
 
@@ -19,6 +19,7 @@ pub async fn list_models(
 pub struct ModelPayload {
     pub provider_id:  i64,
     pub model_id:     String,
+    pub voice_id:     Option<String>,
     pub name:         String,
     pub description:  Option<String>,
     pub instructions: Option<String>,
@@ -31,6 +32,7 @@ impl From<ModelPayload> for TtsModelRecord {
             id:           0,
             provider_id:  p.provider_id,
             model_id:     p.model_id.clone(),
+            voice_id:     p.voice_id.filter(|v| !v.is_empty()),
             name:         if p.name.is_empty() { p.model_id } else { p.name },
             description:  p.description,
             instructions: p.instructions,
@@ -67,6 +69,16 @@ pub async fn update_model(
 ) -> Result<StatusCode, ApiError> {
     state.tts_manager.update_model(id, TtsModelRecord::from(payload)).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ── GET /api/tts/providers/{id}/models ───────────────────────────────────────
+
+pub async fn provider_models(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Result<Json<Vec<RemoteTtsModelInfo>>, ApiError> {
+    let models = state.tts_manager.list_provider_models(id).await?;
+    Ok(Json(models))
 }
 
 // ── DELETE /api/tts/models/{id} ───────────────────────────────────────────────

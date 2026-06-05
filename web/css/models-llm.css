@@ -447,3 +447,64 @@
   padding: 0.05em 0.35em;
   border-radius: 3px;
 }
+
+/* ── TTS remote model picker ─────────────────────────────────────────────── */
+
+.tts-model-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.tts-model-pick-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--bs-border-color);
+  border-radius: 8px;
+  background: var(--bs-body-bg);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.tts-model-pick-item:hover {
+  border-color: var(--bs-primary);
+  background: var(--bs-primary-bg-subtle, rgba(13,110,253,0.06));
+}
+
+.tts-model-pick-name {
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.tts-model-pick-desc {
+  font-size: 0.78rem;
+  color: var(--bs-secondary-color);
+  margin-top: 0.2rem;
+}
+
+.tts-model-pick-langs {
+  font-size: 0.72rem;
+  color: var(--bs-secondary-color);
+  margin-top: 0.15rem;
+  font-style: italic;
+}
+
+.tts-model-pick-row1 {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.tts-model-pick-cost {
+  margin-left: auto;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--bs-secondary-color);
+  white-space: nowrap;
+}

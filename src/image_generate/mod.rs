@@ -3,21 +3,8 @@ pub mod manager;
 pub mod openrouter_image;
 
 pub use core_api::image_generate::ImageGenerate;
+pub use core_api::image_generate::ImageGenerateModelRecord;
 pub use manager::ImageGeneratorManager;
-
-// ── Record types (DB ↔ manager) ───────────────────────────────────────────────
-
-/// Full model record, mirroring one row in `image_generate_models`.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ImageGenerateModelRecord {
-    pub id:          i64,
-    pub provider_id: i64,
-    pub model_id:    String,
-    /// Display alias (also used as the generator `id()`).
-    pub name:        String,
-    /// Lower number = tried first by `get()`.
-    pub priority:    i32,
-}
 
 /// Public model metadata for API responses.
 #[derive(Debug, Clone, serde::Serialize)]

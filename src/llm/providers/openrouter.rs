@@ -1,23 +1,31 @@
-use async_trait::async_trait;
-use anyhow::{anyhow, Result};
+use std::sync::Arc;
 
-use super::{ModelType, ProviderCaps, RemoteModelInfo};
+use anyhow::{Context, Result, anyhow};
+
+use crate::chatbot::openai::OpenAiClient;
+use crate::image_generate::ImageGenerateModelRecord;
+use crate::image_generate::openrouter_image::OpenRouterImageGenerator;
+use crate::llm::{LlmModelRecord, LlmProviderRecord};
+use crate::llm::providers::RemoteLlmModelInfo;
+use crate::transcribe::TranscribeModelRecord;
+use crate::transcribe::openai_audio::OpenAiAudioTranscriber;
+use crate::tts::TtsModelRecord;
+use crate::tts::openai_tts::OpenAiTtsSynthesiser;
+use crate::provider::{ApiProvider, BuiltLlmClient, ProviderField, ProviderUiMeta, ServiceType};
 
 pub struct OpenRouterProvider {
-    api_key: String,
-    http:    reqwest::Client,
+    http: reqwest::Client,
 }
 
 impl OpenRouterProvider {
-    pub fn new(api_key: impl Into<String>) -> Self {
-        Self { api_key: api_key.into(), http: reqwest::Client::new() }
+    pub fn new() -> Self {
+        Self { http: reqwest::Client::new() }
     }
 
-    /// Fetches the raw model list from the OpenRouter catalog endpoint.
-    pub async fn fetch_catalog(&self) -> Result<Vec<RemoteModelInfo>> {
+    async fn fetch_catalog(&self, api_key: &str) -> Result<Vec<RemoteLlmModelInfo>> {
         let resp: serde_json::Value = self.http
             .get("https://openrouter.ai/api/v1/models")
-            .bearer_auth(&self.api_key)
+            .bearer_auth(api_key)
             .send()
             .await
             .map_err(|e| anyhow!("OpenRouter request failed: {e}"))?
@@ -29,63 +37,125 @@ impl OpenRouterProvider {
             .as_array()
             .ok_or_else(|| anyhow!("unexpected OpenRouter response shape"))?
             .iter()
-            .filter_map(|m| self.parse_model(m))
+            .filter_map(|m| {
+                let id   = m["id"].as_str()?.to_string();
+                let name = m["name"].as_str().unwrap_or(&id).to_string();
+                let context_length = m["context_length"].as_u64();
+                let price_input  = m["pricing"]["prompt"].as_str()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .map(|v| v * 1_000_000.0);
+                let price_output = m["pricing"]["completion"].as_str()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .map(|v| v * 1_000_000.0);
+                let capabilities = {
+                    let mut caps = vec!["function_calling".to_string()];
+                    if let Some(params) = m["supported_parameters"].as_array() {
+                        for p in params {
+                            if let Some(s) = p.as_str() {
+                                match s {
+                                    "tools" => caps.push("function_calling".to_string()),
+                                    "vision" | "image" => caps.push("vision".to_string()),
+                                    "stream" => caps.push("streaming".to_string()),
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    caps.sort();
+                    caps.dedup();
+                    caps
+                };
+                let vision = Some(capabilities.contains(&"vision".to_string()));
+                Some(RemoteLlmModelInfo {
+                    id, name, context_length,
+                    max_completion_tokens:    None,
+                    knowledge_cutoff:         None,
+                    capabilities,
+                    vision,
+                    price_input_per_million:  price_input,
+                    price_output_per_million: price_output,
+                })
+            })
             .collect();
 
         Ok(models)
     }
 }
 
-impl OpenRouterProvider {
-    fn parse_model(&self, m: &serde_json::Value) -> Option<RemoteModelInfo> {
-        let id   = m["id"].as_str()?.to_string();
-        let name = m["name"].as_str().unwrap_or(&id).to_string();
-
-        let context_length        = m["context_length"].as_u64();
-        let max_completion_tokens = m["top_provider"]["max_completion_tokens"].as_u64();
-        let knowledge_cutoff      = m["top_provider"]["knowledge_cutoff"].as_str().map(str::to_string);
-
-        let price_input_per_million = m["pricing"]["prompt"].as_str()
-            .and_then(|s| s.parse::<f64>().ok())
-            .map(|p| p * 1_000_000.0);
-        let price_output_per_million = m["pricing"]["completion"].as_str()
-            .and_then(|s| s.parse::<f64>().ok())
-            .map(|p| p * 1_000_000.0);
-
-        let capabilities = m["supported_parameters"]
-            .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
-            .unwrap_or_default();
-
-        Some(RemoteModelInfo { id, name, context_length, max_completion_tokens, knowledge_cutoff, capabilities, price_input_per_million, price_output_per_million })
-    }
-}
-
-#[async_trait]
-impl ProviderCaps for OpenRouterProvider {
-    fn supported_types(&self) -> &'static [ModelType] {
-        &[ModelType::Llm, ModelType::Transcribe, ModelType::ImageGenerate, ModelType::Tts]
+#[async_trait::async_trait]
+impl ApiProvider for OpenRouterProvider {
+    fn type_id(&self) -> &'static str { "openrouter" }
+    fn display_name(&self) -> &'static str { "OpenRouter" }
+    fn supported_types(&self) -> &'static [ServiceType] {
+        &[ServiceType::Llm, ServiceType::Transcribe, ServiceType::ImageGenerate, ServiceType::Tts]
     }
 
-    async fn list_models(&self) -> Result<Option<Vec<RemoteModelInfo>>> {
-        self.fetch_catalog().await.map(Some)
+    async fn list_llm_models(&self, record: &LlmProviderRecord) -> Result<Option<Vec<RemoteLlmModelInfo>>> {
+        let api_key = record.api_key.as_deref()
+            .ok_or_else(|| anyhow!("provider '{}': api_key required for openrouter model listing", record.name))?;
+        Ok(Some(self.fetch_catalog(api_key).await?))
     }
 
-    async fn model_info(&self, model_id: &str) -> Result<Option<RemoteModelInfo>> {
-        let url = format!("https://openrouter.ai/api/v1/models/{model_id}");
-        let resp: serde_json::Value = self.http
-            .get(&url)
-            .bearer_auth(&self.api_key)
-            .send()
-            .await
-            .map_err(|e| anyhow!("OpenRouter model_info request failed: {e}"))?
-            .json()
-            .await
-            .map_err(|e| anyhow!("OpenRouter model_info response parse failed: {e}"))?;
+    fn build_llm(&self, record: &LlmProviderRecord, model: &LlmModelRecord) -> Option<Result<BuiltLlmClient>> {
+        Some((|| {
+            let key = record.api_key.as_deref()
+                .with_context(|| format!("provider '{}': api_key required for openrouter", record.name))?;
+            // Anthropic prompt-caching only works for models served by Anthropic on OpenRouter.
+            let prompt_cache = model.model_id.starts_with("anthropic/");
+            let extra = model.extra_params.clone();
+            Ok(BuiltLlmClient {
+                client: Arc::new(OpenAiClient::new("https://openrouter.ai/api/v1", key, extra, prompt_cache)),
+                prompt_cache,
+            })
+        })())
+    }
 
-        match resp["data"].as_object() {
-            Some(_) => Ok(self.parse_model(&resp["data"])),
-            None    => Err(anyhow!("unexpected OpenRouter model_info response shape")),
+    fn build_tts(&self, record: &LlmProviderRecord, model: &TtsModelRecord) -> Option<Result<Arc<dyn crate::tts::TextToSpeech>>> {
+        Some((|| {
+            let base_url = record.base_url.clone()
+                .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
+            let api_key = record.api_key.clone()
+                .with_context(|| format!("provider '{}': api_key required for openrouter", record.name))?;
+            Ok(Arc::new(OpenAiTtsSynthesiser::new(
+                &model.name, base_url, api_key, &model.model_id, model.instructions.clone(),
+            )) as Arc<dyn crate::tts::TextToSpeech>)
+        })())
+    }
+
+    fn build_transcriber(&self, record: &LlmProviderRecord, model: &TranscribeModelRecord) -> Option<Result<Arc<dyn crate::transcribe::Transcribe>>> {
+        Some((|| {
+            let base_url = record.base_url.clone()
+                .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
+            let api_key = record.api_key.clone()
+                .with_context(|| format!("provider '{}': api_key required for openrouter", record.name))?;
+            Ok(Arc::new(OpenAiAudioTranscriber::new(
+                &model.name, base_url, api_key, &model.model_id, model.language.clone(),
+            )) as Arc<dyn crate::transcribe::Transcribe>)
+        })())
+    }
+
+    fn build_image_generator(&self, record: &LlmProviderRecord, model: &ImageGenerateModelRecord) -> Option<Result<Arc<dyn crate::image_generate::ImageGenerate>>> {
+        Some((|| {
+            let base_url = record.base_url.clone()
+                .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
+            let api_key = record.api_key.clone()
+                .with_context(|| format!("provider '{}': api_key required for openrouter", record.name))?;
+            Ok(Arc::new(OpenRouterImageGenerator::new(
+                &model.name, base_url, api_key, &model.model_id,
+            )) as Arc<dyn crate::image_generate::ImageGenerate>)
+        })())
+    }
+
+    fn ui_meta(&self) -> ProviderUiMeta {
+        ProviderUiMeta {
+            type_id:      "openrouter",
+            display_name: "OpenRouter",
+            description:  None,
+            color:        "#8b5cf6",
+            icon:         "bi-hdd-stack",
+            fields: &[
+                ProviderField { key: "api_key", label: "API Key", required: true, secret: true },
+            ],
         }
     }
 }

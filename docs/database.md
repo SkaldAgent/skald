@@ -181,7 +181,7 @@ Models are **never hard-deleted**. `DELETE /api/llm/models/{id}` sets `removed_a
 | `removed_at` | TEXT | nullable; soft-delete |
 | `created_at` | TEXT | NOT NULL DEFAULT `datetime('now')` |
 
-Only providers that declare `ModelType::Transcribe` in `ProviderCaps::supported_types()` should have rows here (OpenAI, OpenRouter). See [transcribe-providers.md](transcribe-providers.md).
+Only providers that declare `ServiceType::Transcribe` in `ApiProvider::supported_types()` should have rows here (OpenAI, OpenRouter). See [transcribe-providers.md](transcribe-providers.md).
 
 ---
 
@@ -197,7 +197,7 @@ Only providers that declare `ModelType::Transcribe` in `ProviderCaps::supported_
 | `removed_at` | TEXT | nullable; soft-delete |
 | `created_at` | TEXT | NOT NULL DEFAULT `datetime('now')` |
 
-Only providers that declare `ModelType::ImageGenerate` in `ProviderCaps::supported_types()` should have rows here (OpenRouter, OpenAI). See [image-generate.md](image-generate.md).
+Only providers that declare `ServiceType::ImageGenerate` in `ApiProvider::supported_types()` should have rows here (OpenRouter, OpenAI). See [image-generate.md](image-generate.md).
 
 ---
 
@@ -220,7 +220,8 @@ Managed via `SecretsStore` (`src/secrets.rs`). See [secrets.md](secrets.md).
 | --- | --- | --- |
 | `id` | INTEGER | PRIMARY KEY AUTOINCREMENT |
 | `provider_id` | INTEGER | NOT NULL REFERENCES `llm_providers(id)` |
-| `model_id` | TEXT | NOT NULL (provider's internal model name, e.g. `tts-1-hd`) |
+| `model_id` | TEXT | NOT NULL (generation model, e.g. `tts-1-hd`, `eleven_multilingual_v2`) |
+| `voice_id` | TEXT | nullable; speaker voice ID — required for ElevenLabs, NULL for OpenAI (added in schema v2) |
 | `name` | TEXT | NOT NULL UNIQUE (display name, also used as the synthesiser `id()`) |
 | `description` | TEXT | nullable; human-readable description shown in UI |
 | `instructions` | TEXT | nullable; default voice style / tone / speed (overridable per call) |
@@ -425,14 +426,31 @@ Primary key: `(session_id, key)`.
 
 ## Migration Pattern
 
-**Only additive column migrations are supported.** New columns are added with `ALTER TABLE ... ADD COLUMN` inside `create_tables()`, with the error silently ignored:
+Additive column migrations use a versioned system in `migrate_tables()`. A `schema_version` key in the `config` table tracks the current version; each version block runs its `ALTER TABLE` statements then bumps the version.
 
 ```rust
-let _ = sqlx::query("ALTER TABLE chat_sessions ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'")
-    .execute(pool).await;
+async fn migrate_tables(pool: &SqlitePool) -> Result<()> {
+    let version: u32 = /* read config.schema_version, default 0 */;
+
+    if version < 1 {
+        // ... bump to 1
+    }
+    if version < 2 {
+        sqlx::query("ALTER TABLE tts_models ADD COLUMN voice_id TEXT")
+            .execute(pool).await.ok(); // .ok() — no-op if column already exists
+        // bump to 2
+    }
+}
 ```
 
-This is idempotent: no-op if the column already exists. **Renaming columns, changing types, or dropping columns is not supported** with this pattern — those require a proper versioned migration system that does not currently exist.
+`.ok()` on the ALTER makes the block idempotent. **Renaming columns, changing types, or dropping columns is not supported** — those require a new migration strategy.
+
+### Schema version history
+
+| Version | Change |
+| ------- | ------ |
+| 1 | Initial (no-op bump — establishes versioning) |
+| 2 | `tts_models`: added `voice_id TEXT` (speaker voice, separate from generation model) |
 
 ---
 

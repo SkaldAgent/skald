@@ -1,21 +1,27 @@
-use async_trait::async_trait;
-use anyhow::{anyhow, Result};
+use std::sync::Arc;
 
-use super::{ModelType, ProviderCaps, RemoteModelInfo};
+use anyhow::{Result, anyhow};
+
+use crate::chatbot::ollama::OllamaClient;
+use crate::llm::{LlmModelRecord, LlmProviderRecord};
+use crate::llm::providers::RemoteLlmModelInfo;
+use crate::provider::{ApiProvider, BuiltLlmClient, ProviderField, ProviderUiMeta, ServiceType};
 
 pub struct OllamaProvider {
-    base_url: String,
-    http:     reqwest::Client,
+    http: reqwest::Client,
 }
 
 impl OllamaProvider {
-    pub fn new(base_url: impl Into<String>) -> Self {
-        Self { base_url: base_url.into(), http: reqwest::Client::new() }
+    pub fn new() -> Self {
+        Self { http: reqwest::Client::new() }
     }
-}
 
-impl OllamaProvider {
-    fn parse_model_info(&self, show: &serde_json::Value, model_id: &str) -> RemoteModelInfo {
+    fn base_url(record: &LlmProviderRecord) -> String {
+        record.base_url.clone()
+            .unwrap_or_else(|| "http://localhost:11434".to_string())
+    }
+
+    fn parse_model_info(show: &serde_json::Value, model_id: &str) -> RemoteLlmModelInfo {
         let context_length = show["model_info"]["llm.context_length"]
             .as_u64()
             .or_else(|| {
@@ -23,29 +29,30 @@ impl OllamaProvider {
                     .as_str()
                     .and_then(|s| s.parse::<u64>().ok())
             });
-
-        RemoteModelInfo {
+        RemoteLlmModelInfo {
             name:                     model_id.to_string(),
             id:                       model_id.to_string(),
             context_length,
             max_completion_tokens:    None,
             knowledge_cutoff:         None,
             capabilities:             vec![],
+            vision:                   None,
             price_input_per_million:  None,
             price_output_per_million: None,
         }
     }
 }
 
-#[async_trait]
-impl ProviderCaps for OllamaProvider {
-    fn supported_types(&self) -> &'static [ModelType] {
-        &[ModelType::Llm]
+#[async_trait::async_trait]
+impl ApiProvider for OllamaProvider {
+    fn type_id(&self) -> &'static str { "ollama" }
+    fn display_name(&self) -> &'static str { "Ollama" }
+    fn supported_types(&self) -> &'static [ServiceType] {
+        &[ServiceType::Llm]
     }
 
-    async fn list_models(&self) -> Result<Option<Vec<RemoteModelInfo>>> {
-        let url = format!("{}/api/tags", self.base_url.trim_end_matches('/'));
-
+    async fn list_llm_models(&self, record: &LlmProviderRecord) -> Result<Option<Vec<RemoteLlmModelInfo>>> {
+        let url = format!("{}/api/tags", Self::base_url(record).trim_end_matches('/'));
         let resp: serde_json::Value = self.http
             .get(&url)
             .send()
@@ -61,13 +68,13 @@ impl ProviderCaps for OllamaProvider {
             .iter()
             .filter_map(|m| {
                 let id = m["name"].as_str()?.to_string();
-                Some(RemoteModelInfo {
-                    name:                     id.clone(),
-                    id,
+                Some(RemoteLlmModelInfo {
+                    name: id.clone(), id,
                     context_length:           None,
                     max_completion_tokens:    None,
                     knowledge_cutoff:         None,
                     capabilities:             vec![],
+                    vision:                   None,
                     price_input_per_million:  None,
                     price_output_per_million: None,
                 })
@@ -77,10 +84,9 @@ impl ProviderCaps for OllamaProvider {
         Ok(Some(models))
     }
 
-    async fn model_info(&self, model_id: &str) -> Result<Option<RemoteModelInfo>> {
-        let url = format!("{}/api/show", self.base_url.trim_end_matches('/'));
+    async fn llm_model_info(&self, record: &LlmProviderRecord, model_id: &str) -> Result<Option<RemoteLlmModelInfo>> {
+        let url  = format!("{}/api/show", Self::base_url(record).trim_end_matches('/'));
         let body = serde_json::json!({ "name": model_id });
-
         let resp: serde_json::Value = self.http
             .post(&url)
             .json(&body)
@@ -90,7 +96,26 @@ impl ProviderCaps for OllamaProvider {
             .json()
             .await
             .map_err(|e| anyhow!("Ollama model_info response parse failed: {e}"))?;
+        Ok(Some(Self::parse_model_info(&resp, model_id)))
+    }
 
-        Ok(Some(self.parse_model_info(&resp, model_id)))
+    fn build_llm(&self, record: &LlmProviderRecord, _model: &LlmModelRecord) -> Option<Result<BuiltLlmClient>> {
+        Some(Ok(BuiltLlmClient {
+            client: Arc::new(OllamaClient::new(record.base_url.as_deref())),
+            prompt_cache: false,
+        }))
+    }
+
+    fn ui_meta(&self) -> ProviderUiMeta {
+        ProviderUiMeta {
+            type_id:      "ollama",
+            display_name: "Ollama",
+            description:  Some("Local models via Ollama"),
+            color:        "#f97316",
+            icon:         "bi-terminal",
+            fields: &[
+                ProviderField { key: "base_url", label: "Base URL", required: false, secret: false },
+            ],
+        }
     }
 }

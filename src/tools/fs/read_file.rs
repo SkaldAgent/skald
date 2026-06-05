@@ -80,6 +80,8 @@ impl Tool for ReadFile {
                 start_line = start + 1));
         }
 
+        let end = end.max(start);
+
         let width = total.to_string().len().max(3);
         let numbered = lines[start..end]
             .iter()

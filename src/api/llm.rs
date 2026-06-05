@@ -3,9 +3,10 @@ use std::time::Duration;
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 
-use crate::config::{LlmProvider, LlmStrength};
-use crate::llm::providers::RemoteModelInfo;
+use crate::config::LlmStrength;
+use crate::llm::providers::RemoteLlmModelInfo;
 use crate::llm::{LlmModelInfo, LlmModelRecord, LlmProviderInfo, LlmProviderRecord};
+use crate::provider::ProviderUiMeta;
 use crate::server::AppState;
 use super::ApiError;
 
@@ -14,7 +15,7 @@ use super::ApiError;
 pub async fn provider_models(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<i64>,
-) -> Result<Json<Vec<RemoteModelInfo>>, ApiError> {
+) -> Result<Json<Vec<RemoteLlmModelInfo>>, ApiError> {
     let models = state.manager.llm_manager().list_provider_models(id).await?;
     Ok(Json(models))
 }
@@ -54,17 +55,16 @@ pub struct ProviderPayload {
     pub description: Option<String>,
 }
 
-impl TryFrom<ProviderPayload> for LlmProviderRecord {
-    type Error = ApiError;
-    fn try_from(p: ProviderPayload) -> Result<Self, ApiError> {
-        Ok(LlmProviderRecord {
+impl From<ProviderPayload> for LlmProviderRecord {
+    fn from(p: ProviderPayload) -> Self {
+        LlmProviderRecord {
             id:          0, // assigned by DB
             name:        p.name,
-            provider:    parse_provider(&p.provider)?,
+            provider:    p.provider,
             api_key:     p.api_key,
             base_url:    p.base_url,
             description: p.description,
-        })
+        }
     }
 }
 
@@ -72,7 +72,8 @@ pub async fn create_provider(
     State(state): State<AppState>,
     Json(payload): Json<ProviderPayload>,
 ) -> Result<StatusCode, ApiError> {
-    let record = LlmProviderRecord::try_from(payload)?;
+    validate_provider_type(&state, &payload.provider)?;
+    let record = LlmProviderRecord::from(payload);
     state.manager.llm_manager().add_provider(record).await?;
     Ok(StatusCode::CREATED)
 }
@@ -91,7 +92,8 @@ pub async fn update_provider(
     axum::extract::Path(id): axum::extract::Path<i64>,
     Json(payload): Json<ProviderPayload>,
 ) -> Result<StatusCode, ApiError> {
-    let record = LlmProviderRecord::try_from(payload)?;
+    validate_provider_type(&state, &payload.provider)?;
+    let record = LlmProviderRecord::from(payload);
     state.manager.llm_manager().update_provider(id, record).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -207,18 +209,25 @@ pub async fn delete_model(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ── GET /api/llm/providers/types ──────────────────────────────────────────────
+
+pub async fn provider_types(
+    State(state): State<AppState>,
+) -> Json<Vec<ProviderUiMeta>> {
+    let metas = state.provider_registry.all()
+        .iter()
+        .map(|p| p.ui_meta())
+        .collect();
+    Json(metas)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn parse_provider(s: &str) -> Result<LlmProvider, ApiError> {
-    match s {
-        "lm_studio"  => Ok(LlmProvider::LmStudio),
-        "ollama"     => Ok(LlmProvider::Ollama),
-        "open_ai"    => Ok(LlmProvider::OpenAi),
-        "openrouter" => Ok(LlmProvider::OpenRouter),
-        "anthropic"  => Ok(LlmProvider::Anthropic),
-        "deepseek"   => Ok(LlmProvider::DeepSeek),
-        "elevenlabs" => Ok(LlmProvider::ElevenLabs),
-        other        => Err(ApiError::bad_request(format!("unknown provider type '{other}'"))),
+fn validate_provider_type(state: &AppState, type_id: &str) -> Result<(), ApiError> {
+    if state.provider_registry.contains(type_id) {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(format!("unknown provider type '{type_id}'")))
     }
 }
 

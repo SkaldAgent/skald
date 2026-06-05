@@ -9,6 +9,7 @@ use tower_http::services::ServeDir;
 use crate::api;
 use crate::approval::ApprovalManager;
 use crate::chat_event_bus::ChatEventBus;
+use core_api::system_bus::SystemEventBus;
 use crate::chat_hub::ChatHub;
 use crate::clarification::ClarificationManager;
 use crate::config::ServerConfig;
@@ -22,6 +23,7 @@ use crate::session::manager::ChatSessionManager;
 use crate::tic::TicManager;
 use crate::tools::ToolRegistry;
 use crate::image_generate::ImageGeneratorManager;
+use crate::provider::ProviderRegistry;
 use crate::secrets::SecretsStore;
 use crate::transcribe::TranscribeManager;
 use crate::tts::TtsManager;
@@ -40,11 +42,13 @@ pub struct AppState {
     pub clarification:      Arc<ClarificationManager>,
     pub tools:              Arc<ToolRegistry>,
     pub secrets:                  Arc<SecretsStore>,
+    pub provider_registry:        Arc<ProviderRegistry>,
     pub transcribe_manager:       Arc<TranscribeManager>,
     pub tts_manager:              Arc<TtsManager>,
     pub image_generator_manager:  Arc<ImageGeneratorManager>,
     pub tic_manager:        Arc<TicManager>,
     pub event_bus:          Arc<ChatEventBus>,
+    pub system_bus:         Arc<SystemEventBus>,
     pub memory_manager:     Arc<MemoryManager>,
     /// Active remote-connectivity provider (e.g. Tailscale).
     /// None when the remote_connectivity plugin is disabled or not yet started.

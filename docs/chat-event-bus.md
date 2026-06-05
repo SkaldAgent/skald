@@ -1,4 +1,17 @@
-# Chat Event Bus
+# Event Buses
+
+Two independent in-process buses:
+
+| Bus | Type | Purpose |
+| --- | ---- | ------- |
+| **Chat** | `ChatEventBus` | Chat-turn events (user messages, assistant responses, compaction) |
+| **System** | `SystemEventBus` | Infrastructure lifecycle events (provider registration, etc.) |
+
+See below for details on each.
+
+---
+
+## Chat Event Bus
 
 `src/chat_event_bus.rs` — thin re-export of `crates/core-api/src/bus.rs`.
 All types (`ChatEventBus`, `BusEvent`, `ChatEvent`, `CompactionEvent`, etc.) are defined in `core-api` and re-exported here for backward compatibility.
@@ -119,6 +132,7 @@ tokio::spawn(async move {
 | Sub-agent turns (`dispatch_call_agent`) | — | ❌ never (only root turns publish) |
 
 Per each successful turn, **two events** are published in order:
+
 1. `BusEvent::UserMessage` — content of the user message
 2. `BusEvent::AssistantResponse` — content of the assistant response + tool calls
 
@@ -155,3 +169,47 @@ misses intermediate events.  Tune via `ChatEventBus::with_capacity(n)`.
 - New fields added to `ChatEvent`, `ToolCallEvent`, or `CompactionEvent`
 - Publication rules change (new sources, new conditions)
 - A new consumer is wired up in `main.rs`
+
+---
+
+## System Event Bus
+
+`crates/core-api/src/system_bus.rs` — infrastructure lifecycle events, separate from chat-turn events.
+
+### `SystemEvent`
+
+```rust
+pub enum SystemEvent {
+    ApiProviderRegistered   { type_id: String },
+    ApiProviderUnregistered { type_id: String },
+}
+```
+
+### Wiring
+
+- **Created** early in `main.rs` (no dependencies), stored in `AppState::system_bus` and `PluginContext::system_bus`.
+- **Producers**: `ProviderRegistry::register_plugin()` / `unregister_plugin()` emit automatically — plugins do not need to touch the bus directly.
+- **Consumers**: `TtsManager` and `TranscribeManager` subscribe at construction time and call `reload()` on `ApiProviderRegistered` / `ApiProviderUnregistered`. This ensures DB-backed models whose provider was not yet in the registry at startup are picked up as soon as the plugin starts.
+
+### Adding a consumer
+
+```rust
+let mut rx = system_bus.subscribe();
+tokio::spawn(async move {
+    loop {
+        match rx.recv().await {
+            Ok(SystemEvent::ApiProviderRegistered { type_id })   => { /* ... */ }
+            Ok(SystemEvent::ApiProviderUnregistered { type_id }) => { /* ... */ }
+            Err(RecvError::Lagged(n)) => warn!("system_bus lagged by {n}"),
+            Err(RecvError::Closed)    => break,
+        }
+    }
+});
+```
+
+### Adding a new `SystemEvent` variant
+
+1. Add the variant to `SystemEvent` in `crates/core-api/src/system_bus.rs`.
+2. Emit it from the relevant producer.
+3. Update consumers that need to react.
+4. Update this file.

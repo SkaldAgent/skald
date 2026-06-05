@@ -7,26 +7,30 @@ function emptyTForm() {
 
 export class ModelsTranscribeSection extends LightElement {
   static properties = {
-    onback:    { attribute: false },
-    _models:   { state: true },
-    _providers: { state: true },
-    _modal:    { state: true },
-    _form:     { state: true },
-    _saving:   { state: true },
-    _error:    { state: true },
-    _provider: { state: true },
+    onback:         { attribute: false },
+    _models:        { state: true },
+    _providers:     { state: true },
+    _modal:         { state: true },
+    _form:          { state: true },
+    _saving:        { state: true },
+    _error:         { state: true },
+    _provider:      { state: true },
+    _remoteModels:  { state: true },
+    _loadingModels: { state: true },
   };
 
   constructor() {
     super();
-    this.onback     = null;
-    this._models    = [];
-    this._providers = [];
-    this._modal     = null;
-    this._form      = emptyTForm();
-    this._saving    = false;
-    this._error     = null;
-    this._provider  = null;
+    this.onback         = null;
+    this._models        = [];
+    this._providers     = [];
+    this._modal         = null;
+    this._form          = emptyTForm();
+    this._saving        = false;
+    this._error         = null;
+    this._provider      = null;
+    this._remoteModels  = null;
+    this._loadingModels = false;
   }
 
   connectedCallback() {
@@ -58,10 +62,32 @@ export class ModelsTranscribeSection extends LightElement {
     this._modal    = 'pick-provider';
   }
 
-  _pickProvider(provider) {
-    this._provider = provider;
-    this._form     = { ...emptyTForm(), provider_id: provider.id };
-    this._modal    = 'add';
+  async _pickProvider(provider) {
+    this._provider      = provider;
+    this._remoteModels  = null;
+    this._form          = { ...emptyTForm(), provider_id: provider.id };
+    this._loadingModels = true;
+    this._modal         = 'pick-model';
+    try {
+      const res = await fetch(`/api/transcribe/providers/${provider.id}/models`);
+      this._remoteModels = res.ok ? await res.json() : null;
+    } catch {
+      this._remoteModels = null;
+    } finally {
+      this._loadingModels = false;
+      if (!this._remoteModels || this._remoteModels.length === 0) {
+        this._modal = 'add';
+      }
+    }
+  }
+
+  _pickRemoteModel(remote) {
+    this._form  = {
+      ...this._form,
+      model_id: remote.id,
+      name:     remote.name,
+    };
+    this._modal = 'add';
   }
 
   // ── Edit flow ────────────────────────────────────────────────────────────────
@@ -220,6 +246,43 @@ export class ModelsTranscribeSection extends LightElement {
     `;
   }
 
+  _renderPickModel() {
+    const p = this._provider;
+    return html`
+      <div class="agent-dialog-backdrop" @click=${(e) => { if (e.target === e.currentTarget) this._closeModal(); }}>
+        <div class="agent-dialog llm-modal">
+          <div class="llm-modal-title">
+            Add Transcription Model
+            <span class="badge bg-secondary ms-2" style="font-size:0.7rem;font-weight:400">${p?.name}</span>
+          </div>
+          ${this._loadingModels ? html`
+            <div class="text-center py-4 text-muted" style="font-size:0.85rem">
+              <div class="spinner-border spinner-border-sm me-2"></div>Loading models…
+            </div>
+          ` : html`
+            <div class="tts-model-pick-list">
+              ${(this._remoteModels ?? []).map(m => html`
+                <button class="tts-model-pick-item" @click=${() => this._pickRemoteModel(m)}>
+                  <div class="tts-model-pick-name">${m.name}</div>
+                  ${m.description ? html`<div class="tts-model-pick-desc">${m.description}</div>` : ''}
+                  ${m.languages?.length ? html`
+                    <div class="tts-model-pick-langs">${m.languages.slice(0, 6).join(', ')}${m.languages.length > 6 ? ` +${m.languages.length - 6}` : ''}</div>
+                  ` : ''}
+                </button>
+              `)}
+            </div>
+            <div class="agent-dialog-actions mt-3">
+              <button type="button" class="btn btn-sm btn-secondary" @click=${() => this._closeModal()}>Cancel</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary" @click=${() => { this._modal = 'add'; }}>
+                Enter model ID manually
+              </button>
+            </div>
+          `}
+        </div>
+      </div>
+    `;
+  }
+
   _renderForm(isEdit = false) {
     const f = this._form;
     const p = this._provider;
@@ -344,9 +407,10 @@ export class ModelsTranscribeSection extends LightElement {
         `}
       </div>
 
-      ${this._modal === 'pick-provider'  ? this._renderPickProvider() : ''}
-      ${this._modal === 'add'            ? this._renderForm(false)    : ''}
-      ${this._modal?.mode === 'edit'     ? this._renderForm(true)     : ''}
+      ${this._modal === 'pick-provider' ? this._renderPickProvider() : ''}
+      ${this._modal === 'pick-model'    ? this._renderPickModel()    : ''}
+      ${this._modal === 'add'           ? this._renderForm(false)    : ''}
+      ${this._modal?.mode === 'edit'    ? this._renderForm(true)     : ''}
     `;
   }
 }

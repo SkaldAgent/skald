@@ -16,14 +16,14 @@ use sqlx::SqlitePool;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+use core_api::system_bus::{SystemEvent, SystemEventBus};
+
 use async_trait::async_trait;
 
-use crate::config::LlmProvider;
 use crate::llm::LlmProviderRecord;
 use crate::llm::db as llm_db;
+use crate::provider::ProviderRegistry;
 
-use super::elevenlabs_audio::ElevenLabsTranscriber;
-use super::openai_audio::OpenAiAudioTranscriber;
 use super::{Transcribe, TranscribeModelInfo, TranscribeModelRecord};
 use super::db as transcribe_db;
 
@@ -48,20 +48,45 @@ struct ManagerState {
 // ── TranscribeManager ─────────────────────────────────────────────────────────
 
 pub struct TranscribeManager {
-    pool:  Arc<SqlitePool>,
-    state: RwLock<ManagerState>,
+    pool:     Arc<SqlitePool>,
+    registry: Arc<ProviderRegistry>,
+    state:    RwLock<ManagerState>,
 }
 
 impl TranscribeManager {
-    pub async fn new(pool: Arc<SqlitePool>) -> Result<Arc<Self>> {
+    pub async fn new(
+        pool:       Arc<SqlitePool>,
+        registry:   Arc<ProviderRegistry>,
+        system_bus: Arc<SystemEventBus>,
+    ) -> Result<Arc<Self>> {
         let mgr = Arc::new(Self {
             pool,
+            registry,
             state: RwLock::new(ManagerState {
                 db_slots: Vec::new(),
                 plugins:  Vec::new(),
             }),
         });
         mgr.reload().await?;
+
+        // Reload whenever an ApiProvider is registered or unregistered.
+        let weak = Arc::downgrade(&mgr);
+        let mut rx = system_bus.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(SystemEvent::ApiProviderRegistered { .. } | SystemEvent::ApiProviderUnregistered { .. }) => {
+                        match weak.upgrade() {
+                            Some(m) => { if let Err(e) = m.reload().await { warn!(error = %e, "transcribe_manager: reload failed"); } }
+                            None    => break,
+                        }
+                    }
+                    Err(core_api::system_bus::RecvError::Lagged(n)) => warn!(n, "transcribe_manager: system_bus lagged"),
+                    Err(core_api::system_bus::RecvError::Closed)    => break,
+                }
+            }
+        });
+
         Ok(mgr)
     }
 
@@ -97,6 +122,18 @@ impl TranscribeManager {
         if state.plugins.len() < before {
             info!(provider = %id, "transcribe provider unregistered (ephemeral)");
         }
+    }
+
+    /// Fetch the list of transcription models available from a configured provider.
+    /// Returns an error if the provider doesn't support model listing.
+    pub async fn list_provider_models(&self, provider_id: i64) -> Result<Vec<crate::transcribe::RemoteTranscribeModelInfo>> {
+        let record = llm_db::load_all_providers(&self.pool).await?
+            .into_iter().find(|p| p.id == provider_id)
+            .ok_or_else(|| anyhow!("provider {provider_id} not found"))?;
+        let provider = self.registry.get(&record.provider)
+            .ok_or_else(|| anyhow!("unknown provider type '{}' for provider {provider_id}", record.provider))?;
+        provider.list_transcribe_models(&record).await?
+            .ok_or_else(|| anyhow!("provider '{}' does not support transcription model listing", record.name))
     }
 
     // ── Model CRUD (DB-backed) ────────────────────────────────────────────────
@@ -193,7 +230,10 @@ impl TranscribeManager {
                 }
             };
 
-            match build_transcriber(&provider, &model) {
+            let result = self.registry.get(&provider.provider)
+                .and_then(|p| p.build_transcriber(&provider, &model))
+                .unwrap_or_else(|| anyhow::bail!("provider '{}' does not support transcription", provider.provider));
+            match result {
                 Ok(transcriber) => db_slots.push(TranscribeSlot { record: model, provider, transcriber }),
                 Err(e) => warn!(model = %model.name, error = %e, "failed to build transcriber, skipping"),
             }
@@ -231,44 +271,3 @@ impl TranscribeRegistry for TranscribeManager {
     }
 }
 
-// ── Builder ───────────────────────────────────────────────────────────────────
-
-fn build_transcriber(
-    provider: &LlmProviderRecord,
-    model:    &TranscribeModelRecord,
-) -> Result<Arc<dyn Transcribe>> {
-    let (base_url, api_key) = match provider.provider {
-        LlmProvider::OpenAi => (
-            provider.base_url.clone()
-                .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
-            provider.api_key.clone()
-                .with_context(|| format!("provider '{}': api_key required for open_ai", provider.name))?,
-        ),
-        LlmProvider::OpenRouter => (
-            provider.base_url.clone()
-                .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string()),
-            provider.api_key.clone()
-                .with_context(|| format!("provider '{}': api_key required for openrouter", provider.name))?,
-        ),
-        LlmProvider::ElevenLabs => {
-            let api_key = provider.api_key.clone()
-                .with_context(|| format!("provider '{}': api_key required for elevenlabs", provider.name))?;
-            return Ok(Arc::new(ElevenLabsTranscriber::new(
-                &model.name,
-                api_key,
-                &model.model_id,
-            )));
-        }
-        other => anyhow::bail!(
-            "provider type '{:?}' does not support audio transcription", other
-        ),
-    };
-
-    Ok(Arc::new(OpenAiAudioTranscriber::new(
-        &model.name,
-        base_url,
-        api_key,
-        &model.model_id,
-        model.language.clone(),
-    )))
-}

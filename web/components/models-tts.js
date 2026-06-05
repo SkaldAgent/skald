@@ -2,31 +2,35 @@ import { html } from 'lit';
 import { LightElement } from '../lib/base.js';
 
 function emptyTtsForm() {
-  return { provider_id: '', model_id: '', name: '', description: '', instructions: '', priority: 100 };
+  return { provider_id: '', model_id: '', voice_id: '', name: '', description: '', instructions: '', priority: 100 };
 }
 
 export class ModelsTtsSection extends LightElement {
   static properties = {
-    onback:     { attribute: false },
-    _models:    { state: true },
-    _providers: { state: true },
-    _modal:     { state: true },
-    _form:      { state: true },
-    _saving:    { state: true },
-    _error:     { state: true },
-    _provider:  { state: true },
+    onback:         { attribute: false },
+    _models:        { state: true },
+    _providers:     { state: true },
+    _modal:         { state: true },
+    _form:          { state: true },
+    _saving:        { state: true },
+    _error:         { state: true },
+    _provider:      { state: true },
+    _remoteModels:  { state: true },
+    _loadingModels: { state: true },
   };
 
   constructor() {
     super();
-    this.onback     = null;
-    this._models    = [];
-    this._providers = [];
-    this._modal     = null;
-    this._form      = emptyTtsForm();
-    this._saving    = false;
-    this._error     = null;
-    this._provider  = null;
+    this.onback         = null;
+    this._models        = [];
+    this._providers     = [];
+    this._modal         = null;
+    this._form          = emptyTtsForm();
+    this._saving        = false;
+    this._error         = null;
+    this._provider      = null;
+    this._remoteModels  = null;
+    this._loadingModels = false;
   }
 
   connectedCallback() {
@@ -58,10 +62,34 @@ export class ModelsTtsSection extends LightElement {
     this._modal    = 'pick-provider';
   }
 
-  _pickProvider(provider) {
-    this._provider = provider;
-    this._form     = { ...emptyTtsForm(), provider_id: provider.id };
-    this._modal    = 'add';
+  async _pickProvider(provider) {
+    this._provider      = provider;
+    this._remoteModels  = null;
+    this._form          = { ...emptyTtsForm(), provider_id: provider.id };
+    this._loadingModels = true;
+    this._modal         = 'pick-model';
+    try {
+      const res = await fetch(`/api/tts/providers/${provider.id}/models`);
+      this._remoteModels = res.ok ? await res.json() : null;
+    } catch {
+      this._remoteModels = null;
+    } finally {
+      this._loadingModels = false;
+      if (!this._remoteModels || this._remoteModels.length === 0) {
+        this._modal = 'add';
+      }
+    }
+  }
+
+  _pickRemoteModel(remote) {
+    this._form  = {
+      ...this._form,
+      model_id:     remote.id,
+      name:         remote.name,
+      description:  remote.description ?? '',
+      instructions: remote.instructions ?? '',
+    };
+    this._modal = 'add';
   }
 
   // ── Edit flow ─────────────────────────────────────────────────────────────────
@@ -76,6 +104,7 @@ export class ModelsTtsSection extends LightElement {
       this._form = {
         provider_id:  r.provider_id,
         model_id:     r.model_id,
+        voice_id:     r.voice_id     ?? '',
         name:         r.name,
         description:  r.description  ?? '',
         instructions: r.instructions ?? '',
@@ -107,6 +136,7 @@ export class ModelsTtsSection extends LightElement {
     return {
       provider_id:  Number(f.provider_id),
       model_id:     f.model_id,
+      voice_id:     f.voice_id     || null,
       name:         f.name || f.model_id,
       description:  f.description  || null,
       instructions: f.instructions || null,
@@ -189,6 +219,7 @@ export class ModelsTtsSection extends LightElement {
         <div class="llm-card-row2">
           ${!isPlugin ? html`<span class="llm-provider-name">${m.provider_name}</span>` : ''}
           <span class="llm-model-id">${isPlugin ? m.model_id || m.id : m.model_id}</span>
+          ${m.voice_id ? html`<span class="llm-model-id" style="opacity:0.6" title="Voice ID">${m.voice_id}</span>` : ''}
           ${!isPlugin ? html`<span class="ig-priority-tag" title="Priority">#${m.priority}</span>` : ''}
         </div>
 
@@ -230,6 +261,50 @@ export class ModelsTtsSection extends LightElement {
     `;
   }
 
+  // ── Modal: pick remote model ──────────────────────────────────────────────────
+
+  _renderPickModel() {
+    const p = this._provider;
+    return html`
+      <div class="agent-dialog-backdrop" @click=${(e) => { if (e.target === e.currentTarget) this._closeModal(); }}>
+        <div class="agent-dialog llm-modal">
+          <div class="llm-modal-title">
+            Add TTS Model
+            <span class="badge bg-secondary ms-2" style="font-size:0.7rem;font-weight:400">${p?.name}</span>
+          </div>
+          ${this._loadingModels ? html`
+            <div class="text-center py-4 text-muted" style="font-size:0.85rem">
+              <div class="spinner-border spinner-border-sm me-2"></div>Loading models…
+            </div>
+          ` : html`
+            <div class="tts-model-pick-list">
+              ${(this._remoteModels ?? []).map(m => html`
+                <button class="tts-model-pick-item" @click=${() => this._pickRemoteModel(m)}>
+                  <div class="tts-model-pick-row1">
+                    <span class="tts-model-pick-name">${m.name}</span>
+                    ${m.cost_factor != null ? html`
+                      <span class="tts-model-pick-cost" title="Cost multiplier relative to base rate">×${m.cost_factor.toFixed(1)}</span>
+                    ` : ''}
+                  </div>
+                  ${m.description ? html`<div class="tts-model-pick-desc">${m.description}</div>` : ''}
+                  ${m.languages?.length ? html`
+                    <div class="tts-model-pick-langs">${m.languages.slice(0, 6).join(', ')}${m.languages.length > 6 ? ` +${m.languages.length - 6}` : ''}</div>
+                  ` : ''}
+                </button>
+              `)}
+            </div>
+            <div class="agent-dialog-actions mt-3">
+              <button type="button" class="btn btn-sm btn-secondary" @click=${() => this._closeModal()}>Cancel</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary" @click=${() => { this._modal = 'add'; }}>
+                Enter model ID manually
+              </button>
+            </div>
+          `}
+        </div>
+      </div>
+    `;
+  }
+
   // ── Modal: add / edit form ────────────────────────────────────────────────────
 
   _renderForm(isEdit = false) {
@@ -255,6 +330,16 @@ export class ModelsTtsSection extends LightElement {
                 ?disabled=${isEdit}
                 @input=${(e) => this._form = { ...this._form, model_id: e.target.value }} />
               ${isEdit ? html`<div class="form-text">Model ID cannot be changed after creation.</div>` : ''}
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label fw-semibold" style="font-size:0.82rem">
+                Voice ID <span class="text-muted fw-normal">(optional — required for ElevenLabs)</span>
+              </label>
+              <input type="text" class="form-control form-control-sm" .value=${f.voice_id}
+                placeholder="e.g. 21m00Tcm4TlvDq8ikWAM"
+                @input=${(e) => this._form = { ...this._form, voice_id: e.target.value }} />
+              <div class="form-text">For providers where voice and model are separate (e.g. ElevenLabs).</div>
             </div>
 
             <div class="mb-3">
@@ -365,6 +450,7 @@ export class ModelsTtsSection extends LightElement {
       </div>
 
       ${this._modal === 'pick-provider' ? this._renderPickProvider() : ''}
+      ${this._modal === 'pick-model'    ? this._renderPickModel()    : ''}
       ${this._modal === 'add'           ? this._renderForm(false)    : ''}
       ${this._modal?.mode === 'edit'    ? this._renderForm(true)     : ''}
     `;

@@ -1,7 +1,7 @@
 use axum::{Json, extract::State, http::StatusCode};
 use serde::Deserialize;
 
-use crate::transcribe::{TranscribeModelInfo, TranscribeModelRecord};
+use crate::transcribe::{RemoteTranscribeModelInfo, TranscribeModelInfo, TranscribeModelRecord};
 use crate::server::AppState;
 use super::ApiError;
 
@@ -65,6 +65,16 @@ pub async fn update_model(
 ) -> Result<StatusCode, ApiError> {
     state.transcribe_manager.update_model(id, TranscribeModelRecord::from(payload)).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ── GET /api/transcribe/providers/{id}/models ─────────────────────────────────
+
+pub async fn provider_models(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Result<Json<Vec<RemoteTranscribeModelInfo>>, ApiError> {
+    let models = state.transcribe_manager.list_provider_models(id).await?;
+    Ok(Json(models))
 }
 
 // ── DELETE /api/transcribe/models/{id} ───────────────────────────────────────

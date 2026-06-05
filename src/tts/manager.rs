@@ -16,14 +16,14 @@ use sqlx::SqlitePool;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+use core_api::system_bus::{SystemEvent, SystemEventBus};
+
 use async_trait::async_trait;
 
-use crate::config::LlmProvider;
 use crate::llm::LlmProviderRecord;
 use crate::llm::db as llm_db;
+use crate::provider::ProviderRegistry;
 
-use super::elevenlabs_tts::ElevenLabsTtsSynthesiser;
-use super::openai_tts::OpenAiTtsSynthesiser;
 use super::{TextToSpeech, TtsModelInfo, TtsModelRecord};
 use super::db as tts_db;
 
@@ -47,20 +47,45 @@ struct ManagerState {
 // ── TtsManager ────────────────────────────────────────────────────────────────
 
 pub struct TtsManager {
-    pool:  Arc<SqlitePool>,
-    state: RwLock<ManagerState>,
+    pool:     Arc<SqlitePool>,
+    registry: Arc<ProviderRegistry>,
+    state:    RwLock<ManagerState>,
 }
 
 impl TtsManager {
-    pub async fn new(pool: Arc<SqlitePool>) -> Result<Arc<Self>> {
+    pub async fn new(
+        pool:       Arc<SqlitePool>,
+        registry:   Arc<ProviderRegistry>,
+        system_bus: Arc<SystemEventBus>,
+    ) -> Result<Arc<Self>> {
         let mgr = Arc::new(Self {
             pool,
+            registry,
             state: RwLock::new(ManagerState {
                 db_slots: Vec::new(),
                 plugins:  Vec::new(),
             }),
         });
         mgr.reload().await?;
+
+        // Reload whenever an ApiProvider is registered or unregistered.
+        let weak = Arc::downgrade(&mgr);
+        let mut rx = system_bus.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(SystemEvent::ApiProviderRegistered { .. } | SystemEvent::ApiProviderUnregistered { .. }) => {
+                        match weak.upgrade() {
+                            Some(m) => { if let Err(e) = m.reload().await { warn!(error = %e, "tts_manager: reload failed"); } }
+                            None    => break,
+                        }
+                    }
+                    Err(core_api::system_bus::RecvError::Lagged(n)) => warn!(n, "tts_manager: system_bus lagged"),
+                    Err(core_api::system_bus::RecvError::Closed)    => break,
+                }
+            }
+        });
+
         Ok(mgr)
     }
 
@@ -100,6 +125,18 @@ impl TtsManager {
 
     // ── Model CRUD (DB-backed) ────────────────────────────────────────────────
 
+    /// Fetch the list of TTS models available from a configured provider.
+    /// Returns an error if the provider doesn't support model listing.
+    pub async fn list_provider_models(&self, provider_id: i64) -> Result<Vec<crate::tts::RemoteTtsModelInfo>> {
+        let record = llm_db::load_all_providers(&self.pool).await?
+            .into_iter().find(|p| p.id == provider_id)
+            .ok_or_else(|| anyhow!("provider {provider_id} not found"))?;
+        let provider = self.registry.get(&record.provider)
+            .ok_or_else(|| anyhow!("unknown provider type '{}' for provider {provider_id}", record.provider))?;
+        provider.list_tts_models(&record).await?
+            .ok_or_else(|| anyhow!("provider '{}' does not support TTS model listing", record.name))
+    }
+
     pub async fn add_model(&self, record: TtsModelRecord) -> Result<i64> {
         let id = tts_db::insert(&self.pool, &record).await?;
         self.reload().await?;
@@ -129,6 +166,7 @@ impl TtsManager {
             provider_id:   s.provider.id,
             provider_name: s.provider.name.clone(),
             model_id:      s.record.model_id.clone(),
+            voice_id:      s.record.voice_id.clone(),
             name:          s.record.name.clone(),
             description:   s.record.description.clone(),
             instructions:  s.record.instructions.clone(),
@@ -146,6 +184,7 @@ impl TtsManager {
             provider_id:   0,
             provider_name: "Plugin".into(),
             model_id:      p.id().to_string(),
+            voice_id:      None,
             name:          p.name().to_string(),
             description:   p.description().map(str::to_string),
             instructions:  p.instructions().map(str::to_string),
@@ -158,6 +197,7 @@ impl TtsManager {
             provider_id:   s.provider.id,
             provider_name: s.provider.name.clone(),
             model_id:      s.record.model_id.clone(),
+            voice_id:      s.record.voice_id.clone(),
             name:          s.record.name.clone(),
             description:   s.record.description.clone(),
             instructions:  s.record.instructions.clone(),
@@ -194,7 +234,10 @@ impl TtsManager {
                 }
             };
 
-            match build_synthesiser(&provider, &model) {
+            let result = self.registry.get(&provider.provider)
+                .and_then(|p| p.build_tts(&provider, &model))
+                .unwrap_or_else(|| anyhow::bail!("provider '{}' does not support TTS", provider.provider));
+            match result {
                 Ok(synthesiser) => db_slots.push(TtsSlot { record: model, provider, synthesiser }),
                 Err(e) => warn!(model = %model.name, error = %e, "failed to build tts synthesiser, skipping"),
             }
@@ -228,45 +271,3 @@ impl TtsRegistry for TtsManager {
     }
 }
 
-// ── Builder ───────────────────────────────────────────────────────────────────
-
-fn build_synthesiser(
-    provider: &LlmProviderRecord,
-    model:    &TtsModelRecord,
-) -> Result<Arc<dyn TextToSpeech>> {
-    let (base_url, api_key) = match provider.provider {
-        LlmProvider::OpenAi => (
-            provider.base_url.clone()
-                .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
-            provider.api_key.clone()
-                .with_context(|| format!("provider '{}': api_key required for open_ai", provider.name))?,
-        ),
-        LlmProvider::OpenRouter => (
-            provider.base_url.clone()
-                .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string()),
-            provider.api_key.clone()
-                .with_context(|| format!("provider '{}': api_key required for openrouter", provider.name))?,
-        ),
-        LlmProvider::ElevenLabs => {
-            let api_key = provider.api_key.clone()
-                .with_context(|| format!("provider '{}': api_key required for elevenlabs", provider.name))?;
-            return Ok(Arc::new(ElevenLabsTtsSynthesiser::new(
-                &model.name,
-                api_key,
-                &model.model_id,
-                model.instructions.clone(),
-            )));
-        }
-        other => anyhow::bail!(
-            "provider type '{:?}' does not support text-to-speech", other
-        ),
-    };
-
-    Ok(Arc::new(OpenAiTtsSynthesiser::new(
-        &model.name,
-        base_url,
-        api_key,
-        &model.model_id,
-        model.instructions.clone(),
-    )))
-}

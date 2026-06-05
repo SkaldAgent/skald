@@ -443,5 +443,20 @@ async fn migrate_tables(pool: &SqlitePool) -> Result<()> {
         .await?;
     }
 
+    if version < 2 {
+        sqlx::query(
+            "ALTER TABLE tts_models ADD COLUMN voice_id TEXT",
+        )
+        .execute(pool)
+        .await
+        .ok(); // ok() — column may already exist if re-running on a new DB
+        sqlx::query(
+            "INSERT OR REPLACE INTO config(key, value, updated_at)
+             VALUES('schema_version', '2', datetime('now'))",
+        )
+        .execute(pool)
+        .await?;
+    }
+
     Ok(())
 }

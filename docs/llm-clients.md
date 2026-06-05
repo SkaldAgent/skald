@@ -48,18 +48,54 @@ Both variants carry an optional `reasoning_content: Option<String>`. Populated o
 
 ---
 
-## Supported Providers
+## Provider Registry
 
-| Enum variant  | Client struct     | api_key required | Default base_url                   | Prompt cache                   |
+Providers are no longer identified by a hard-coded enum. Instead, each provider is a struct implementing the `ApiProvider` trait (`src/provider/mod.rs`), registered at startup in `main.rs` via `ProviderRegistry::register_builtin()`. The DB column `llm_providers.type` stores the provider's `type_id` string.
+
+```rust
+// src/provider/mod.rs
+#[async_trait]
+pub trait ApiProvider: Send + Sync {
+    fn type_id(&self) -> &'static str;         // e.g. "open_ai", "anthropic"
+    fn display_name(&self) -> &'static str;
+    fn supported_types(&self) -> &'static [ServiceType];
+
+    // ── Remote model catalogs (default: Ok(None)) ─────────────────────────────
+    async fn list_llm_models(&self, record: &LlmProviderRecord) -> Result<Option<Vec<RemoteLlmModelInfo>>>;
+    async fn llm_model_info(&self, record: &LlmProviderRecord, model_id: &str) -> Result<Option<RemoteLlmModelInfo>>;
+    async fn list_tts_models(&self, record: &LlmProviderRecord) -> Result<Option<Vec<RemoteTtsModelInfo>>>;
+    async fn list_transcribe_models(&self, record: &LlmProviderRecord) -> Result<Option<Vec<RemoteTranscribeModelInfo>>>;
+
+    // ── Factories (default: None) ─────────────────────────────────────────────
+    fn build_llm(&self, record: &LlmProviderRecord, model: &LlmModelRecord) -> Option<Result<BuiltLlmClient>>;
+    fn build_tts(&self, record: &LlmProviderRecord, model: &TtsModelRecord) -> Option<Result<Arc<dyn TextToSpeech>>>;
+    fn build_transcriber(&self, record: &LlmProviderRecord, model: &TranscribeModelRecord) -> Option<Result<Arc<dyn Transcribe>>>;
+    fn build_image_generator(&self, record: &LlmProviderRecord, model: &ImageGenerateModelRecord) -> Option<Result<Arc<dyn ImageGenerate>>>;
+    fn ui_meta(&self) -> ProviderUiMeta;  // served to frontend via GET /api/llm/providers/types
+}
+```
+
+`list_tts_models` and `list_transcribe_models` have a default implementation returning `Ok(None)` — providers that don't support listing do not need to implement them. Only `ElevenLabsProvider` currently overrides both, calling `GET https://api.elevenlabs.io/v1/models` and filtering by capability flag.
+
+`BuiltLlmClient` bundles the constructed `Arc<dyn ChatbotClient>` with a `prompt_cache: bool` flag that controls whether Anthropic KV-cache headers are injected by the session loop.
+
+**`ProviderRegistry`** (`src/provider/mod.rs`) holds built-in and plugin providers separately. Plugin providers shadow built-in ones with the same `type_id`. Plugins can call `registry.register_plugin()` / `registry.unregister_plugin()` at any time after startup.
+
+`LlmManager`, `TranscribeManager`, `TtsManager`, and `ImageGeneratorManager` all receive an `Arc<ProviderRegistry>` at construction and use it to build clients and look up `supported_types`.
+
+### Built-in Providers
+
+| `type_id`     | Client struct     | api_key required | Default base_url                   | Prompt cache                   |
 | ------------- | ----------------- | ---------------- | ---------------------------------- | ------------------------------ |
-| `LmStudio`    | `LmStudioClient`  | No               | `http://localhost:1234/v1`         | ❌                             |
-| `Ollama`      | `OllamaClient`    | No               | `http://localhost:11434`           | ❌                             |
-| `OpenAi`      | `OpenAiClient`    | **Yes**          | `https://api.openai.com/v1`        | ❌                             |
-| `OpenRouter`  | `OpenAiClient`    | **Yes**          | `https://openrouter.ai/api/v1`     | ✅ `anthropic/*` only          |
-| `Anthropic`   | `AnthropicClient` | **Yes**          | `https://api.anthropic.com`        | ❌ (planned)                   |
-| `DeepSeek`    | `OpenAiClient`    | **Yes**          | `https://api.deepseek.com/v1`      | ✅ automatic (see below)       |
+| `lm_studio`   | `LmStudioClient`  | No               | `http://localhost:1234/v1`         | ❌                             |
+| `ollama`      | `OllamaClient`    | No               | `http://localhost:11434`           | ❌                             |
+| `open_ai`     | `OpenAiClient`    | **Yes**          | `https://api.openai.com/v1`        | ❌                             |
+| `openrouter`  | `OpenAiClient`    | **Yes**          | `https://openrouter.ai/api/v1`     | ✅ `anthropic/*` models only   |
+| `anthropic`   | `AnthropicClient` | **Yes**          | `https://api.anthropic.com`        | ❌ (planned)                   |
+| `deepseek`    | `OpenAiClient`    | **Yes**          | `https://api.deepseek.com/v1`      | ✅ automatic (see below)       |
+| `elevenlabs`  | —                 | **Yes**          | `https://api.elevenlabs.io`        | ❌ (TTS + Transcribe only)     |
 
-`OpenRouter` and `DeepSeek` reuse `OpenAiClient` with different base URLs.
+`openrouter` and `deepseek` reuse `OpenAiClient` with different base URLs. `elevenlabs` does not support LLM chat — `build_llm()` returns `None`.
 
 ---
 
@@ -273,54 +309,48 @@ Setting `is_default = true` on a model automatically clears the flag on all othe
 
 ---
 
-## ProviderCaps — Model Types
+## ApiProvider — Service Types
 
-Each provider declares which model kinds it supports via `ProviderCaps::supported_types() -> &'static [ModelType]`. This is hardcoded per implementation — not stored in the DB.
+Each provider declares which service kinds it supports via `ApiProvider::supported_types() -> &'static [ServiceType]`. Hardcoded per implementation — not stored in the DB.
 
-| Provider   | `supported_types()`                    |
-| ---------- | -------------------------------------- |
-| OpenRouter | `[Llm, Transcribe, ImageGenerate]`     |
-| OpenAi     | `[Llm, Transcribe, ImageGenerate]`     |
-| Anthropic  | `[Llm]`                                |
-| Ollama     | `[Llm]`                                |
-| LmStudio   | `[Llm]`                                |
-| DeepSeek   | `[Llm]`                                |
+`ServiceType` replaces the old `ModelType` enum (previously in `src/llm/providers/mod.rs`); it now lives in `src/provider/mod.rs` and is re-exported as `providers::ServiceType` for backwards compatibility.
 
-`supported_types` is included in the `GET /api/llm/providers` response so the frontend can filter the provider dropdown when adding transcription or image generation models.
+| Provider (`type_id`) | `supported_types()`                              |
+| -------------------- | ------------------------------------------------ |
+| `openrouter`         | `[Llm, Transcribe, ImageGenerate, Tts]`          |
+| `open_ai`            | `[Llm, Transcribe, Tts]`                         |
+| `anthropic`          | `[Llm]`                                          |
+| `ollama`             | `[Llm]`                                          |
+| `lm_studio`          | `[Llm]`                                          |
+| `deepseek`           | `[Llm]`                                          |
+| `elevenlabs`         | `[Tts, Transcribe]`                              |
+
+`supported_types` is included in the `GET /api/llm/providers` response so the frontend can filter provider dropdowns when adding TTS, transcription, LLM, or image generation models.
+
+`GET /api/llm/providers/types` returns **all** registered provider types (no service-type filter). The frontend filters each picker independently using the `supported_types` array — e.g. the LLM model picker shows only providers where `supported_types.includes('llm')`.
 
 ---
 
-## ProviderCaps — Remote Model Catalog
+## ApiProvider — Remote Model Catalog
 
-`src/llm/providers/` defines a second trait orthogonal to `ChatbotClient`, used to query provider metadata (model list, pricing, per-model info):
+`list_llm_models()` and `llm_model_info()` are methods on `ApiProvider`. They both receive the full `LlmProviderRecord` so they can read the `api_key` and `base_url` without constructing a separate credentials struct.
 
-```rust
-#[async_trait]
-pub trait ProviderCaps: Send + Sync {
-    /// List all models available on this provider, with metadata.
-    async fn list_models(&self) -> Result<Option<Vec<RemoteModelInfo>>>;
+`RemoteLlmModelInfo` fields: `id`, `name`, `context_length`, `max_completion_tokens`,
+`knowledge_cutoff`, `capabilities`, `vision: Option<bool>`, `price_input_per_million`, `price_output_per_million` (USD/M tokens).
 
-    /// Fetch metadata for a single model by its provider-specific ID.
-    /// Default impl returns `None` (provider does not support per-model queries).
-    async fn model_info(&self, model_id: &str) -> Result<Option<RemoteModelInfo>> {
-        Ok(None)
-    }
-}
-```
+`vision` is `Some(true/false)` when the provider reports it explicitly (e.g. OpenRouter `supported_parameters`), `None` when unknown.
 
-`RemoteModelInfo` fields: `id`, `name`, `context_length`, `max_completion_tokens`,
-`knowledge_cutoff`, `capabilities`, `price_avg_per_million` (USD/M tokens, avg of prompt+completion).
+| Provider (`type_id`) | `list_llm_models()` | `llm_model_info()` |
+| --- | --- | --- |
+| `openrouter` | `GET /api/v1/models` — sets `vision` from `supported_parameters` | — |
+| `ollama` | `GET /api/tags` | `POST /api/show` |
+| `anthropic` | `None` | `GET /v1/models/{id}` |
+| `deepseek` | `GET /models` | `None` |
+| `lm_studio` | `GET /v1/models` | `None` |
+| `open_ai` | `None` | `None` |
+| `elevenlabs` | `None` (LLM not supported) | `None` |
 
-| Provider | Implementation | `list_models()` | `model_info()` |
-| --- | --- | --- | --- |
-| `OpenRouter` | `OpenRouterProvider` | `GET /api/v1/models` | `GET /api/v1/models/{id}` |
-| `Ollama` | `OllamaProvider` | `GET /api/tags` | `POST /api/show` |
-| `Anthropic` | `AnthropicProvider` | `None` | `GET /v1/models/{id}` |
-| `DeepSeek` | `DeepSeekProvider` | `GET /models` | `None` |
-| `LmStudio` | `LmStudioProvider` | `GET /v1/models` | `None` |
-| `OpenAi` | `OpenAiProvider` | `None` | `None` |
-
-Instances are created on-demand via `providers::build_caps(record)`.
+Provider instances are obtained via `ProviderRegistry::get(type_id)` — no on-demand factory needed.
 
 ### Model Catalog Cache
 
@@ -344,8 +374,8 @@ This ensures the compactor and any future `max_tokens` logic always have a reaso
 
 ```text
 LlmManager::list_provider_models(provider_id)
-  → cache hit  (< 24h old) → return cached Vec<RemoteModelInfo>
-  → cache miss / expired   → fetch via ProviderCaps, store, return
+  → cache hit  (< 24h old) → return cached Vec<RemoteLlmModelInfo>
+  → cache miss / expired   → fetch via ApiProvider, store, return
 ```
 
 API endpoint: `GET /api/llm/providers/{id}/models`
@@ -356,7 +386,8 @@ Used by the frontend "Add Model" wizard to populate the searchable model picker 
 
 ## When to Update This File
 
-- A new provider type is added to `LlmProvider` enum
+- A new built-in provider is registered in `main.rs` (add row to the tables above)
+- A new method is added to the `ApiProvider` trait
 - The AUTO selection algorithm changes
 - Health thresholds (`FAILURE_DEGRADED`, `FAILURE_DOWN`) change
-- `ProviderCaps` gains new methods or a new provider gets an implementation
+- `ProviderRegistry` plugin API changes (register/unregister)

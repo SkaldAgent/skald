@@ -27,6 +27,29 @@ pub async fn load_all(pool: &SqlitePool) -> Result<Vec<ImageGenerateModelRecord>
 }
 
 pub async fn insert(pool: &SqlitePool, r: &ImageGenerateModelRecord) -> Result<i64> {
+    let restored = sqlx::query_scalar::<_, i64>(
+        "UPDATE image_generate_models
+         SET provider_id=?1, model_id=?2, name=?3, priority=?4, removed_at=NULL
+         WHERE id = (
+             SELECT id FROM image_generate_models
+             WHERE removed_at IS NOT NULL
+               AND (provider_id=?1 AND model_id=?2 OR name=?3)
+             LIMIT 1
+         )
+         RETURNING id",
+    )
+    .bind(r.provider_id)
+    .bind(&r.model_id)
+    .bind(&r.name)
+    .bind(r.priority as i64)
+    .fetch_optional(pool)
+    .await
+    .context("image_generate_models: restore soft-deleted")?;
+
+    if let Some(id) = restored {
+        return Ok(id);
+    }
+
     sqlx::query_scalar::<_, i64>(
         "INSERT INTO image_generate_models (provider_id, model_id, name, priority)
          VALUES (?1, ?2, ?3, ?4)

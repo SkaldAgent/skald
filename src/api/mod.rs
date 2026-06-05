@@ -38,21 +38,24 @@ pub fn router() -> Router<AppState> {
         // LLM selector (for copilot dropdown)
         .route("/llm/models/selector",          get(llm::selector))
         // LLM providers
+        .route("/llm/providers/types",          get(llm::provider_types))
         .route("/llm/providers",                get(llm::list_providers).post(llm::create_provider))
         .route("/llm/providers/{id}",           get(llm::get_provider).put(llm::update_provider).delete(llm::delete_provider))
-        .route("/llm/providers/{id}/models",            get(llm::provider_models))
+        .route("/llm/providers/{id}/models",    get(llm::provider_models))
         // LLM models
         .route("/llm/models",                   get(llm::list_models).post(llm::create_model))
         .route("/llm/models/{id}",              get(llm::get_model).put(llm::update_model).delete(llm::delete_model))
         // Transcription models
-        .route("/transcribe/models",            get(transcribe_models::list_models).post(transcribe_models::create_model))
-        .route("/transcribe/models/{id}",       get(transcribe_models::get_model).put(transcribe_models::update_model).delete(transcribe_models::delete_model))
+        .route("/transcribe/models",                   get(transcribe_models::list_models).post(transcribe_models::create_model))
+        .route("/transcribe/models/{id}",              get(transcribe_models::get_model).put(transcribe_models::update_model).delete(transcribe_models::delete_model))
+        .route("/transcribe/providers/{id}/models",    get(transcribe_models::provider_models))
         // Image generation models
         .route("/image-generate/models",        get(image_generate_models::list_models).post(image_generate_models::create_model))
         .route("/image-generate/models/{id}",   get(image_generate_models::get_model).put(image_generate_models::update_model).delete(image_generate_models::delete_model))
         // TTS models
         .route("/tts/models",                   get(tts_models::list_models).post(tts_models::create_model))
         .route("/tts/models/{id}",              get(tts_models::get_model).put(tts_models::update_model).delete(tts_models::delete_model))
+        .route("/tts/providers/{id}/models",    get(tts_models::provider_models))
         // Cron jobs
         .route("/cron/jobs",                    get(cron::list))
         .route("/cron/jobs/{id}",               delete(cron::delete_job))

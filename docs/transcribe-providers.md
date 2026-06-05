@@ -7,8 +7,15 @@ Cloud Speech-to-Text via any OpenAI-compatible audio transcription endpoint.
 ## Architecture
 
 ```text
+crates/core-api/src/transcribe.rs
+  — Transcribe trait (provider interface)
+  — TranscribeProvider trait (resolve active provider)
+  — TranscribeRegistry trait (plugin write-side: register/unregister)
+  — TranscribeModelRecord     (DB record type — moved here from main crate)
+  — RemoteTranscribeModelInfo (remote catalog type — moved here from main crate)
+
 src/transcribe/
-  mod.rs                — Transcribe trait, TranscribeModelRecord/Info, re-exports
+  mod.rs                — TranscribeModelInfo (API response type), re-exports from core-api
   db.rs                 — SQL layer for transcribe_models table
   manager.rs            — TranscribeManager (DB-aware, owns the table)
   openai_audio.rs       — OpenAiAudioTranscriber: impl Transcribe via HTTP multipart
@@ -41,10 +48,15 @@ transcribe_manager.get_model(id).await              // → Option<TranscribeMode
 transcribe_manager.list_models_info().await         // → Vec<TranscribeModelInfo> (DB-backed only)
 transcribe_manager.list_all_info().await            // → Vec<TranscribeModelInfo> (plugins first, then DB — used by API)
 
+// Remote model catalog (calls ApiProvider::list_transcribe_models)
+transcribe_manager.list_provider_models(provider_id).await  // → Result<Vec<RemoteTranscribeModelInfo>>
+
 // Plugin registration (ephemeral — called by WhisperLocalPlugin)
 transcribe_manager.register(Arc::new(transcriber)).await
 transcribe_manager.unregister("whisper_local").await
 ```
+
+`RemoteTranscribeModelInfo` fields: `id`, `name`, `description`, `languages` (BCP-47 codes).
 
 ### REST API
 
@@ -55,6 +67,7 @@ transcribe_manager.unregister("whisper_local").await
 | `GET` | `/api/transcribe/models/{id}` | Get a DB-backed model record |
 | `PUT` | `/api/transcribe/models/{id}` | Update a DB-backed model |
 | `DELETE` | `/api/transcribe/models/{id}` | Soft-delete a DB-backed model |
+| `GET` | `/api/transcribe/providers/{id}/models` | List remote transcription models from a configured provider (`RemoteTranscribeModelInfo[]`) |
 
 ---
 
@@ -95,7 +108,9 @@ Calls `POST https://api.elevenlabs.io/v1/speech-to-text` with auth header `xi-ap
 
 Returns `{ "text": "..." }`. Provider type: `elevenlabs`.
 
-Which providers support transcription is declared statically via `ProviderCaps::supported_types()` — see [llm-clients.md](llm-clients.md#provider-caps--model-types).
+`ElevenLabsProvider::list_transcribe_models()` calls `GET https://api.elevenlabs.io/v1/models` and filters entries whose `model_id` starts with `scribe` (or `can_do_voice_conversion: true` as a fallback). Returns `RemoteTranscribeModelInfo` with id, name, description, and supported languages.
+
+Which providers support transcription is declared statically via `ApiProvider::supported_types()` — see [llm-clients.md](llm-clients.md#apiprovider--service-types).
 
 ---
 
@@ -116,7 +131,13 @@ CREATE TABLE transcribe_models (
 ```
 
 `provider_id` references `llm_providers` — the same provider table used by LLM models.
-Only providers that declare `ModelType::Transcribe` in `supported_types()` should have rows here.
+Only providers that declare `ServiceType::Transcribe` in `supported_types()` should have rows here.
+
+---
+
+## DB insert — soft-delete revival
+
+`transcribe_models` has two `UNIQUE` constraints: `name` and `(provider_id, model_id)`. `db::insert()` attempts to revive a soft-deleted row before falling back to a plain `INSERT` — same pattern as `tts/db.rs`. See [tts-providers.md](tts-providers.md#db-insert--soft-delete-revival) for the full description.
 
 ---
 

@@ -178,6 +178,46 @@ See [tts-providers.md](tts-providers.md) for the full manager API and DB schema.
 
 ---
 
+## ApiProvider and ApiProviderRegistry
+
+Plugins that supply an `ApiProvider` (e.g. a cloud TTS + Transcribe integration without subprocess) register via `ctx.api_provider_registry`:
+
+```rust
+// crates/core-api/src/provider.rs
+#[async_trait]
+pub trait ApiProvider: Send + Sync {
+    fn type_id(&self)        -> &'static str;
+    fn display_name(&self)   -> &'static str;
+    fn supported_types(&self)-> &'static [ServiceType];
+    async fn list_tts_models(&self, record: &LlmProviderRecord) -> Result<Option<Vec<RemoteTtsModelInfo>>>;
+    async fn list_transcribe_models(&self, ..) -> ..;
+    async fn list_llm_models(&self, ..)        -> ..;
+    fn build_tts(&self, ..)             -> Option<Result<Arc<dyn TextToSpeech>>>;
+    fn build_transcriber(&self, ..)     -> Option<Result<Arc<dyn Transcribe>>>;
+    fn build_llm(&self, ..)             -> Option<Result<BuiltLlmClient>>;
+    fn build_image_generator(&self, ..) -> Option<Result<Arc<dyn ImageGenerate>>>;
+    fn ui_meta(&self) -> ProviderUiMeta;
+}
+
+pub trait ApiProviderRegistry: Send + Sync {
+    fn register_plugin(&self, provider: Arc<dyn ApiProvider>);
+    fn unregister_plugin(&self, type_id: &str);
+}
+```
+
+`ProviderRegistry` in `src/provider/mod.rs` implements `ApiProviderRegistry`. It is exposed as `ctx.api_provider_registry` in `PluginContext`.
+
+Plugin-registered providers shadow builtin ones: `ProviderRegistry::get(type_id)` checks the plugin list first.
+
+**When to use `ApiProvider` vs `TtsRegistry`/`TranscribeRegistry`:**
+
+- Use `TtsRegistry` / `TranscribeRegistry` for ephemeral local engines (subprocess, on-device model) that don't rely on the `llm_providers` credential DB.
+- Use `ApiProvider` for cloud services that the user configures via the LLM-providers UI (API key stored in `llm_providers`, models managed via `tts_models` / `transcribe_models` CRUD).
+
+All types used by `ApiProvider` (`LlmProviderRecord`, `LlmModelRecord`, `TtsModelRecord`, `TranscribeModelRecord`, `ImageGenerateModelRecord`, `RemoteLlmModelInfo`, `RemoteTtsModelInfo`, `RemoteTranscribeModelInfo`, `LlmStrength`) live in `core-api::provider` or their respective `core-api` modules. Plugin crates depend only on `core-api`.
+
+---
+
 ## Plugin catalogue
 
 | Plugin ID | Crate | Description |
@@ -189,3 +229,4 @@ See [tts-providers.md](tts-providers.md) for the full manager API and DB schema.
 | `comfyui` | `crates/plugin-comfyui` | ComfyUI image generation workflows |
 | `orpheus_tts_3b` | `crates/plugin-tts-orpheus-3b` | Local TTS via Orpheus 3B (Python subprocess) |
 | `kokoro_tts` | `crates/plugin-tts-kokoro` | Local TTS via Kokoro ONNX (lightweight, multilingual) |
+| `elevenlabs` | `crates/plugin-elevenlabs` | ElevenLabs cloud TTS and transcription (ApiProvider) |
