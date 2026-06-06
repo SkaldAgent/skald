@@ -5,6 +5,7 @@ pub mod server;
 use std::sync::Arc;
 
 use anyhow::Result;
+use sqlx::SqlitePool;
 use tracing::{error, info};
 
 use core_api::plugin::RouterFactory;
@@ -14,16 +15,18 @@ use crate::frontend::server::{WebServer, WebServerHandle};
 
 pub struct WebFrontend {
     skald:      Arc<Skald>,
+    pub db:     Arc<SqlitePool>,
     static_dir: String,
     port:       u16,
 }
 
 impl WebFrontend {
-    pub fn new(skald: Arc<Skald>, config: &FrontendConfig) -> Self {
+    pub fn new(skald: Arc<Skald>, db: Arc<SqlitePool>, config: &FrontendConfig) -> Self {
         Self {
             port:       config.server.port,
             static_dir: config.web.static_dir.clone(),
             skald,
+            db,
         }
     }
 

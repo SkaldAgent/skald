@@ -1,4 +1,5 @@
 pub mod config;
+pub mod config_store;
 pub mod skald;
 pub mod agents;
 pub mod approval;

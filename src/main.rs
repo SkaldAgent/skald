@@ -11,6 +11,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 use core_api::plugin::Plugin;
 use config::Config;
+use crate::core::db::init_pool;
 use crate::core::skald::Skald;
 use crate::frontend::WebFrontend;
 
@@ -60,15 +61,19 @@ async fn async_main() -> Result<()> {
     #[cfg(feature = "whisper-local")]
     plugins.push(Arc::new(plugin_transcribe_whisper_local::WhisperLocalPlugin::new()));
 
-    let skald = Skald::new(&core_cfg, plugins).await?;
+    let pool = std::sync::Arc::new(init_pool(&core_cfg.db.path).await?);
+    info!(path = %core_cfg.db.path, "database ready");
 
-    let handle = WebFrontend::new(skald.clone(), &frontend_cfg).start().await?;
+    let skald = Skald::new(std::sync::Arc::clone(&pool), &core_cfg, plugins).await?;
+
+    let handle = WebFrontend::new(skald.clone(), std::sync::Arc::clone(&pool), &frontend_cfg).start().await?;
 
     tokio::signal::ctrl_c().await?;
     warn!("SIGINT received — shutting down");
 
     handle.shutdown().await;
     skald.shutdown().await;
+    pool.close().await;
     info!("shutdown complete");
 
     Ok(())

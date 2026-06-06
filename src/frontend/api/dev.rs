@@ -5,7 +5,6 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::core::db;
 use std::sync::Arc;
 use crate::core::skald::Skald;
 use super::ApiError;
@@ -25,7 +24,7 @@ pub struct DebugModeBody {
 pub async fn get_debug_mode(
     State(skald): State<Arc<Skald>>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let value = db::config::get(&skald.db, KEY).await?;
+    let value = skald.config.get(KEY).await?;
     let enabled = value.as_deref() == Some("true");
     Ok(Json(DebugModeResponse { enabled }))
 }
@@ -35,7 +34,7 @@ pub async fn set_debug_mode(
     Json(body):   Json<DebugModeBody>,
 ) -> Result<impl IntoResponse, ApiError> {
     let value = if body.enabled { "true" } else { "false" };
-    db::config::set(&skald.db, KEY, value).await?;
+    skald.config.set(KEY, value).await?;
     Ok(Json(DebugModeResponse { enabled: body.enabled }))
 }
 

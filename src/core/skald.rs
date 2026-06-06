@@ -12,6 +12,7 @@ use core_api::system_bus::SystemEventBus;
 
 use super::approval::ApprovalManager;
 use super::chat_event_bus::ChatEventBus;
+use super::config_store::GlobalConfigManager;
 use super::chat_hub::ChatHub;
 use super::clarification::ClarificationManager;
 use super::compactor::ContextCompactor;
@@ -33,8 +34,9 @@ use super::config::CoreConfig;
 use core_api::plugin::Plugin;
 
 pub struct Skald {
-    pub db:                    Arc<SqlitePool>,
-    pub system_bus:              Arc<SystemEventBus>,
+    pub(crate) db:               Arc<SqlitePool>,
+    pub config:                  Arc<GlobalConfigManager>,
+    pub(crate) system_bus:       Arc<SystemEventBus>,
     pub provider_registry:       Arc<ProviderRegistry>,
     pub llm_manager:             Arc<LlmManager>,
     pub secrets:                 Arc<SecretsStore>,
@@ -44,7 +46,7 @@ pub struct Skald {
     pub tools:                   Arc<ToolRegistry>,
     pub approval:                Arc<ApprovalManager>,
     pub image_generator_manager: Arc<ImageGeneratorManager>,
-    pub event_bus:               Arc<ChatEventBus>,
+    pub(crate) event_bus:        Arc<ChatEventBus>,
     pub memory_manager:          Arc<MemoryManager>,
     pub clarification:           Arc<ClarificationManager>,
     pub manager:                 Arc<ChatSessionManager>,
@@ -59,9 +61,9 @@ pub struct Skald {
 }
 
 impl Skald {
-    pub async fn new(config: &CoreConfig, plugins: Vec<Arc<dyn Plugin>>) -> Result<Arc<Self>> {
-        let pool = Arc::new(super::db::init_pool(&config.db.path).await?);
-        info!(path = %config.db.path, "database ready");
+    pub async fn new(pool: Arc<SqlitePool>, config: &CoreConfig, plugins: Vec<Arc<dyn Plugin>>) -> Result<Arc<Self>> {
+
+        let config_store = Arc::new(GlobalConfigManager::new(Arc::clone(&pool)));
 
         let system_bus = Arc::new(SystemEventBus::new());
         info!("system event bus ready");
@@ -314,6 +316,7 @@ impl Skald {
 
         let skald = Arc::new(Skald {
             db: pool,
+            config: config_store,
             system_bus,
             provider_registry,
             llm_manager,
@@ -344,6 +347,14 @@ impl Skald {
         plugin_manager.set_skald(Arc::clone(&skald));
 
         Ok(skald)
+    }
+
+    pub fn subscribe_chat_events(&self) -> tokio::sync::broadcast::Receiver<core_api::bus::BusEvent> {
+        self.event_bus.subscribe()
+    }
+
+    pub fn subscribe_system_events(&self) -> tokio::sync::broadcast::Receiver<core_api::system_bus::SystemEvent> {
+        self.system_bus.subscribe()
     }
 
     pub async fn shutdown(self: Arc<Self>) {
