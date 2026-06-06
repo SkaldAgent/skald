@@ -49,6 +49,24 @@ Every tool declares a `ToolCategory`, used for access-control filtering and audi
 
 ---
 
+## Tool Name Constants
+
+All system tool names are centralised in `src/tools/tool_names.rs` as `pub const` strings. Import with `use crate::tools::tool_names as tn;`.
+
+| Constant | Value |
+| --- | --- |
+| `tn::CALL_AGENT` | `"call_agent"` |
+| `tn::RESTART` | `"restart"` |
+| `tn::UPDATE_SCRATCHPAD` | `"update_scratchpad"` |
+| `tn::ASK_USER_CLARIFICATION` | `"ask_user_clarification"` |
+| `tn::SHOW_MCP_TOOLS` | `"show_mcp_tools"` |
+| `tn::NOTIFY` | `"notify"` |
+| `tn::EXECUTE_CMD` | `"execute_cmd"` |
+
+**Rule:** never hardcode these strings in new code — always use the constants. This ensures that a rename is a single-file change and that typos produce a compile error rather than a silent dispatch miss.
+
+---
+
 ## Registration Pattern
 
 All tools are registered in `src/main.rs` before `ChatSessionManager` is built.

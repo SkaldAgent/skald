@@ -48,17 +48,19 @@ impl TicManager {
     }
 
     /// Spawn the background timer.
-    pub fn start(self: Arc<Self>) {
+    pub fn start(self: Arc<Self>, shutdown: tokio_util::sync::CancellationToken) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             info!("TicManager started (interval={}s, batch={})", self.config.interval_secs, self.config.batch_size);
             let mut interval = tokio::time::interval(Duration::from_secs(self.config.interval_secs));
             // Skip missed ticks instead of bursting to catch up after a long tick.
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
-                interval.tick().await;
-                self.tick().await;
+                tokio::select! {
+                    _ = shutdown.cancelled() => { info!("TicManager: stopping"); break; }
+                    _ = interval.tick() => { self.tick().await; }
+                }
             }
-        });
+        })
     }
 
     async fn tick(&self) {

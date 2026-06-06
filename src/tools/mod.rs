@@ -13,6 +13,7 @@ pub fn is_file_write_tool(name: &str) -> bool {
     FILE_WRITE_TOOLS.contains(&name)
 }
 
+pub mod tool_names;
 pub mod ast_outline;
 pub mod configure_plugin;
 pub mod cron_jobs;
@@ -38,6 +39,7 @@ use anyhow::Result;
 use serde_json::Value;
 
 pub use core_api::tool::{Tool, ToolCategory, ToolDescriptionLength, truncate_label};
+use crate::tools::tool_names as tn;
 
 pub const MAX_LABEL_SHORT: usize = 60;
 pub const MAX_LABEL_FULL: usize = 120;
@@ -89,7 +91,7 @@ impl ToolRegistry {
         }
         // Non-registry tools handled inline.
         match name {
-            "call_agent" => {
+            tn::CALL_AGENT => {
                 let agent = args["agent_id"].as_str().unwrap_or("?");
                 match length {
                     ToolDescriptionLength::Short => {

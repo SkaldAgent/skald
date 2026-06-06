@@ -5,7 +5,7 @@ use tracing::{error, info, warn};
 use crate::approval::GateResult;
 use crate::db::{chat_history, chat_llm_tools, chat_sessions_stack};
 use crate::events::ServerEvent;
-use crate::tools::ToolDescriptionLength;
+use crate::tools::{ToolDescriptionLength, tool_names as tn};
 
 use super::{ApprovalDecision, ChatSessionHandler, TurnOutcome};
 use super::interface_tools::{AgentRunConfig, InterfaceTool};
@@ -222,14 +222,14 @@ impl ChatSessionHandler {
             // `call_agent` with 'running' status means a sub-agent stack was active.
             // The cascade in resume_turn() handles it by running the child stack to
             // completion and propagating the result up — skip it here.
-            if tc.name == "call_agent" {
+            if tc.name == tn::CALL_AGENT {
                 info!(session_id = self.session_id, tool_call_id = tc.id, "resume: skipping call_agent (handled by stack cascade)");
                 continue;
             }
 
             // `ask_user_clarification` is a synthetic tool (not in the registry).
             // Re-dispatch it directly so the question is re-asked to the user.
-            if tc.name == "ask_user_clarification" {
+            if tc.name == tn::ASK_USER_CLARIFICATION {
                 info!(session_id = self.session_id, tool_call_id = tc.id, "resume: re-asking clarification question");
                 tx.send(ServerEvent::ToolStart {
                     tool_call_id: tc.id,
@@ -324,7 +324,7 @@ impl ChatSessionHandler {
             }
 
             // `restart` calls process::exit and never returns — mark done first.
-            if tc.name == "restart" {
+            if tc.name == tn::RESTART {
                 info!(session_id = self.session_id, tool_call_id = tc.id, "restart approved (resume) — marking done then exiting");
                 chat_llm_tools::complete(pool, tc.id, "Riavvio avviato.").await?;
                 tx.send(ServerEvent::ToolDone {

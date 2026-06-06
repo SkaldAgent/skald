@@ -35,7 +35,7 @@ pub struct ShowMcpTools {
 }
 
 impl Tool for ShowMcpTools {
-    fn name(&self) -> &str { "show_mcp_tools" }
+    fn name(&self) -> &str { crate::tools::tool_names::SHOW_MCP_TOOLS }
 
     fn category(&self) -> crate::tools::ToolCategory { crate::tools::ToolCategory::Config }
 

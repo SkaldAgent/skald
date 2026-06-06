@@ -3,6 +3,7 @@ use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
 
+use crate::tools::tool_names as tn;
 use super::{ChatSessionHandler, call_agent_tool_def, update_scratchpad_tool_def};
 use super::interface_tools::{AgentRunConfig, InterfaceTool, ToolFuture};
 
@@ -11,7 +12,7 @@ pub(super) fn show_mcp_tools_tool_def() -> Value {
     serde_json::json!({
         "type": "function",
         "function": {
-            "name": "show_mcp_tools",
+            "name": tn::SHOW_MCP_TOOLS,
             "description": "Activate one or more MCP servers so their tools become available. \
                             Pass an array of MCP server names (e.g. [\"gmail\", \"gcal\"]). \
                             Once activated, the server's tools are available from the next \

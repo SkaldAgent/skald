@@ -4,7 +4,7 @@ use tracing::debug;
 
 use super::ChatSessionHandler;
 use crate::events::ServerEvent;
-use crate::tools::is_file_write_tool;
+use crate::tools::{is_file_write_tool, tool_names as tn};
 
 impl ChatSessionHandler {
     /// Emits the appropriate frontend approval event for the given tool call.
@@ -46,7 +46,7 @@ impl ChatSessionHandler {
                     arguments: arguments.clone(),
                 }).await.ok();
             }
-        } else if tool_name == "execute_cmd" {
+        } else if tool_name == tn::EXECUTE_CMD {
             let cmd = arguments["command"].as_str().unwrap_or("");
             tx.send(ServerEvent::PendingWrite {
                 request_id, tool_call_id,
@@ -54,7 +54,7 @@ impl ChatSessionHandler {
                 old_content: None,
                 new_content: format!("$ {cmd}"),
             }).await.ok();
-        } else if tool_name == "restart" {
+        } else if tool_name == tn::RESTART {
             tx.send(ServerEvent::PendingWrite {
                 request_id, tool_call_id,
                 path:        "$ restart".to_string(),

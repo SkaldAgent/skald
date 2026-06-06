@@ -14,7 +14,7 @@ pub fn make_tool(hub: Arc<ChatHub>, label: impl Into<String>) -> InterfaceTool {
     let definition = json!({
         "type": "function",
         "function": {
-            "name": "notify",
+            "name": crate::tools::tool_names::NOTIFY,
             "description": "Send a notification briefing to the user's active home conversation. \
                              The briefing is injected as if the assistant spontaneously raised its hand. \
                              Call at most once per background tick. Keep the briefing concise (2–4 sentences), \

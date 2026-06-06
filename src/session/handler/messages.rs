@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use sqlx::SqlitePool;
 
 use crate::compactor::SUMMARY_PREFIX;
+use crate::tools::tool_names as tn;
 use crate::db::{chat_history, chat_llm_tools, chat_summaries};
 
 use super::ChatSessionHandler;
@@ -431,7 +432,7 @@ fn summarize_tool_result(tool_name: &str, arguments: Option<&str>, result: &str)
     }
 
     match tool_name {
-        "execute_cmd" => {
+        tn::EXECUTE_CMD => {
             let cmd = args["command"].as_str().unwrap_or("");
             let cmd_display = if cmd.len() > 80 {
                 format!("{}…", &cmd[..77])
@@ -473,12 +474,12 @@ fn summarize_tool_result(tool_name: &str, arguments: Option<&str>, result: &str)
             format!("[list_agents] listed agents ({char_count} chars)")
         }
 
-        "call_agent" => {
+        tn::CALL_AGENT => {
             let agent = arg_str(&args, "agent_id");
             format!("[call_agent] → {agent} ({char_count} chars result)")
         }
 
-        "show_mcp_tools" => {
+        tn::SHOW_MCP_TOOLS => {
             let servers = args["servers"]
                 .as_array()
                 .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))

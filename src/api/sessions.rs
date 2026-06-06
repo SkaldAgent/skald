@@ -14,7 +14,7 @@ use crate::db::{chat_history, chat_llm_tools, chat_sessions_stack, sources};
 use crate::db::chat_sessions_stack::SessionStack;
 use crate::server::AppState;
 use crate::session::handler::ApprovalDecision;
-use crate::tools::{ToolRegistry, ToolDescriptionLength};
+use crate::tools::{ToolRegistry, ToolDescriptionLength, tool_names as tn};
 
 use super::ApiError;
 
@@ -160,7 +160,7 @@ pub async fn web_resolve_tool(
     }
 
     // `restart` calls process::exit — mark done in DB first.
-    if tc_name == "restart" {
+    if tc_name == tn::RESTART {
         chat_llm_tools::complete(&state.db, tc_id, "Riavvio avviato.").await?;
         std::process::exit(-1);
     }

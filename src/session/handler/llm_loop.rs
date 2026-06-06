@@ -3,6 +3,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::approval::GateResult;
+use crate::tools::tool_names as tn;
 use crate::chat_event_bus::ToolCallEvent;
 use crate::chatbot::{ChatOptions, LlmTurn};
 use crate::db::{chat_history, chat_llm_tools};
@@ -236,18 +237,18 @@ impl ChatSessionHandler {
 
                         // `restart` calls process::exit — mark the call done in the DB first
                         // so it doesn't reappear as `pending` after the supervisor relaunches.
-                        if call.name == "restart" {
+                        if call.name == tn::RESTART {
                             info!(session_id = self.session_id, tool_call_id, "restart approved — marking done then exiting");
                             chat_llm_tools::complete(pool, tool_call_id, "Riavvio avviato.").await?;
                             tx.send(ServerEvent::ToolDone { tool_call_id, result: "Riavvio avviato.".to_string() }).await.ok();
                             std::process::exit(-1);
                         }
 
-                        let dispatch_result: anyhow::Result<String> = if call.name == "call_agent" {
+                        let dispatch_result: anyhow::Result<String> = if call.name == tn::CALL_AGENT {
                             self.dispatch_call_agent(stack_id, config, tool_call_id, &call.arguments, tx).await
-                        } else if call.name == "update_scratchpad" {
+                        } else if call.name == tn::UPDATE_SCRATCHPAD {
                             self.dispatch_update_scratchpad(&call.arguments).await
-                        } else if call.name == "ask_user_clarification" {
+                        } else if call.name == tn::ASK_USER_CLARIFICATION {
                             self.dispatch_ask_user_clarification(tool_call_id, &call.arguments, tx).await
                         } else if let Some(tool) = config.interface_tools.iter().find(|t| t.name() == call.name) {
                             (tool.handler)(call.arguments.clone()).await

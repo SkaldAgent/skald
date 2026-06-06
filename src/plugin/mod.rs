@@ -172,15 +172,19 @@ impl PluginManager {
     /// Spawns a Tokio task that polls the DB every 30 s and calls reload()
     /// on any plugin whose (enabled, config) has changed since last check.
     /// This is the fallback path; normal updates go through update_config().
-    pub fn start_config_watcher(self: &Arc<Self>) {
+    pub fn start_config_watcher(self: &Arc<Self>, shutdown: tokio_util::sync::CancellationToken) {
         let this = Arc::clone(self);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(30));
             interval.tick().await; // skip immediate first tick
             loop {
-                interval.tick().await;
-                if let Err(e) = this.check_and_reload().await {
-                    error!(error = %e, "plugin config watcher error");
+                tokio::select! {
+                    _ = shutdown.cancelled() => { break; }
+                    _ = interval.tick() => {
+                        if let Err(e) = this.check_and_reload().await {
+                            error!(error = %e, "plugin config watcher error");
+                        }
+                    }
                 }
             }
         });

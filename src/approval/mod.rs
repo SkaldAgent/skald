@@ -44,6 +44,7 @@ use tokio::sync::{Mutex, oneshot};
 use tracing::{debug, info, warn};
 
 use crate::session::handler::ApprovalDecision;
+use crate::tools::tool_names as tn;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -180,8 +181,8 @@ impl ApprovalManager {
         }
 
         let defaults: &[(&str, &str)] = &[
-            ("execute_cmd",    "require"),
-            ("restart",        "require"),
+            (tn::EXECUTE_CMD, "require"),
+            (tn::RESTART,     "require"),
             ("write_file",     "require"),
             ("edit_file",      "require"),
             ("insert_at_line", "require"),

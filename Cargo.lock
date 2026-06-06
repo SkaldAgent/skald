@@ -3430,6 +3430,7 @@ dependencies = [
  "sqlx",
  "syn",
  "tokio",
+ "tokio-util",
  "tower-http",
  "tracing",
  "tracing-appender",

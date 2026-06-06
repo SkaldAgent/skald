@@ -8,6 +8,7 @@ use tokio::sync::{Mutex, mpsc};
 use tracing::{error, info, trace, warn};
 
 use crate::approval::ApprovalManager;
+use crate::tools::tool_names as tn;
 use crate::chat_event_bus::{ChatEvent, ChatEventBus, ChatEventRole};
 use crate::clarification::ClarificationManager;
 use crate::compactor::ContextCompactor;
@@ -81,7 +82,7 @@ pub(super) fn update_scratchpad_tool_def() -> Value {
     json!({
         "type": "function",
         "function": {
-            "name": "update_scratchpad",
+            "name": tn::UPDATE_SCRATCHPAD,
             "description": "Write or update a key-value note in the session scratchpad. \
                             Notes are shared by all agents in this chat session and automatically \
                             injected into every agent's context. Not persisted across sessions. \
@@ -103,7 +104,7 @@ fn ask_user_clarification_tool_def() -> Value {
     json!({
         "type": "function",
         "function": {
-            "name": "ask_user_clarification",
+            "name": tn::ASK_USER_CLARIFICATION,
             "description": "Pause execution and ask the user a clarification question. \
                             Use when requirements are ambiguous, a dependency is missing, \
                             or a decision requires user input before continuing. \
@@ -129,7 +130,7 @@ pub(super) fn call_agent_tool_def() -> Value {
     json!({
         "type": "function",
         "function": {
-            "name": "call_agent",
+            "name": tn::CALL_AGENT,
             "description": "Delegate work to a specialized sub-agent. Call list_agents() first to discover available agents. Do NOT call yourself or the `main` agent.",
             "parameters": {
                 "type": "object",

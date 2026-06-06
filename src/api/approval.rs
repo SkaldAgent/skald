@@ -6,6 +6,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::approval::NewApprovalRule;
+use crate::tools::tool_names as tn;
 use crate::server::AppState;
 
 use super::ApiError;
@@ -118,9 +119,9 @@ pub async fn list_tools(
 
     // Synthesised tools visible at root level (call_agent, update_scratchpad, ask_user_clarification)
     let synthetic = [
-        ("call_agent",               "Delegate a task to a specialised sub-agent."),
-        ("update_scratchpad",        "Write a key-value note into the session scratchpad."),
-        ("ask_user_clarification",   "Pause and ask the user a clarification question."),
+        (tn::CALL_AGENT,             "Delegate a task to a specialised sub-agent."),
+        (tn::UPDATE_SCRATCHPAD,      "Write a key-value note into the session scratchpad."),
+        (tn::ASK_USER_CLARIFICATION, "Pause and ask the user a clarification question."),
     ];
     for (name, desc) in synthetic {
         built_in.push(json!({

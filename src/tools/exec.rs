@@ -12,7 +12,7 @@ const TIMEOUT_SECS: u64 = 120;
 pub struct ExecuteCmd;
 
 impl Tool for ExecuteCmd {
-    fn name(&self) -> &str { "execute_cmd" }
+    fn name(&self) -> &str { crate::tools::tool_names::EXECUTE_CMD }
     fn category(&self) -> crate::tools::ToolCategory { crate::tools::ToolCategory::Shell }
 
     fn description(&self) -> &str {

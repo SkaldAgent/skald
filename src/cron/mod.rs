@@ -65,34 +65,47 @@ impl CronTaskManager {
     }
 
     /// Start the background loops. Must be called after set_session().
-    pub fn start(self: Arc<Self>) {
+    /// Returns join handles so the caller can await them during shutdown.
+    pub fn start(self: Arc<Self>, shutdown: tokio_util::sync::CancellationToken) -> Vec<tokio::task::JoinHandle<()>> {
         // Main scheduler loop.
         let me = Arc::clone(&self);
-        tokio::spawn(async move {
+        let sd1 = shutdown.clone();
+        let h1 = tokio::spawn(async move {
             if let Err(e) = me.recover_interrupted().await {
                 error!("cron: startup recovery failed: {e}");
             }
             let mut interval = tokio::time::interval(Duration::from_secs(30));
             loop {
-                interval.tick().await;
-                if let Err(e) = me.tick().await {
-                    error!("cron tick error: {e}");
+                tokio::select! {
+                    _ = sd1.cancelled() => { info!("cron: scheduler loop stopping"); break; }
+                    _ = interval.tick() => {
+                        if let Err(e) = me.tick().await {
+                            error!("cron tick error: {e}");
+                        }
+                    }
                 }
             }
         });
 
         // Cleanup loop: removes single_run jobs completed more than 7 days ago.
         let pool = Arc::clone(&self.pool);
-        tokio::spawn(async move {
+        let sd2 = shutdown.clone();
+        let h2 = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(15)).await;
             let mut interval = tokio::time::interval(Duration::from_secs(3600));
             loop {
-                interval.tick().await;
-                if let Err(e) = cleanup_expired_single_runs(&pool).await {
-                    error!("cron: cleanup error: {e}");
+                tokio::select! {
+                    _ = sd2.cancelled() => { info!("cron: cleanup loop stopping"); break; }
+                    _ = interval.tick() => {
+                        if let Err(e) = cleanup_expired_single_runs(&pool).await {
+                            error!("cron: cleanup error: {e}");
+                        }
+                    }
                 }
             }
         });
+
+        vec![h1, h2]
     }
 
     async fn recover_interrupted(&self) -> Result<()> {

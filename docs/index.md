@@ -64,6 +64,7 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 | `src/session/manager.rs` | Session factory | [session.md](session.md) |
 | `src/agents.rs` | Agent discovery, prompt loading | [agents.md](agents.md) |
 | `src/tools/` | Built-in tool registry | [tools.md](tools.md) |
+| `src/tools/tool_names.rs` | Centralised tool name constants (`CALL_AGENT`, `RESTART`, …) | [tools.md](tools.md) |
 | `src/provider/` | `ProviderRegistry` (implements `ApiProviderRegistry`) — thin wrapper around `core-api::provider`. All types re-exported for internal use. | [llm-clients.md](llm-clients.md) |
 | `src/service_manager.rs` | `ServiceManager` trait — lightweight umbrella for all model managers | [llm-clients.md](llm-clients.md) |
 | `src/chatbot/` | LLM provider clients | [llm-clients.md](llm-clients.md) |

@@ -43,14 +43,16 @@
 13. `ClarificationManager::new()` — in-memory pending clarification store for background sessions
 14. `ChatSessionManager::new()` — session factory wired up; receives `ClarificationManager` and `ImageGeneratorManager`
 15. `cron.set_session()` — breaks CronTaskManager circular dep
-16. `cron.start()` — background scheduler loop begins (tick every 30 s); recovery of interrupted jobs runs once before the first tick; cleanup loop starts (15 s delay then hourly)
-17. `TranscribeManager::new()` — STT provider registry
-18. `ChatHub::new()` — central chat orchestrator; spawns notification consumer task
-19. `cron.set_hub(chat_hub)` — wires ChatHub into CronTaskManager for completion notifications
-20. `TicManager::new(pool, session_mgr, chat_hub, config.tic)` + `.start()` — background MCP event processor; `Arc<ChatHub>` passed directly (no OnceLock needed — TicManager is created after ChatHub)
-21. `AppState` assembled
-22. `PluginManager::set_state()` + `start_enabled()` — starts Telegram and other enabled plugins
-23. `WebServer::start()` — Axum HTTP+WS server starts listening
+16. `CancellationToken` created (`tokio_util::sync::CancellationToken`) — shared shutdown signal passed to all background tasks
+17. `cron.start(shutdown_token)` — background scheduler loop begins (tick every 30 s); recovery of interrupted jobs runs once before the first tick; cleanup loop starts (15 s delay then hourly). Returns `Vec<JoinHandle>` collected for graceful shutdown.
+18. `TranscribeManager::new()` — STT provider registry
+19. `ChatHub::new()` — central chat orchestrator; spawns notification consumer task
+20. `cron.set_hub(chat_hub)` — wires ChatHub into CronTaskManager for completion notifications
+21. `TicManager::new(pool, session_mgr, chat_hub, config.tic)` + `.start(shutdown_token)` — background MCP event processor; returns `JoinHandle` for graceful shutdown.
+22. `AppState` assembled
+23. `PluginManager::set_state()` + `start_enabled()` — starts Telegram and other enabled plugins
+24. `plugin_manager.start_config_watcher(shutdown_token)` — polls DB every 30 s for plugin config changes
+25. `WebServer::start()` — Axum HTTP+WS server starts listening
 
 ---
 
@@ -142,6 +144,26 @@ The binary depends on several independent library crates in `crates/`. Each crat
 **Current state of `ChatHubApi`:** `ChatHub` in the main crate implements `core_api::chat_hub::ChatHubApi`. Plugins that need to send messages, subscribe to events, or resolve approvals should program against `Arc<dyn ChatHubApi>` rather than `Arc<ChatHub>` directly.
 
 See [workspace-crates.md](workspace-crates.md) for the full extraction roadmap.
+
+---
+
+## Graceful Shutdown
+
+On SIGINT, `main.rs` executes this sequence:
+
+1. `shutdown_token.cancel()` — signals all background loops to exit their `select!`
+2. Await `cron_handles` + `tic_handle` with a 10 s timeout — lets any in-flight DB writes complete before the runtime tears down
+3. `plugin_manager.stop_all()` — stops Telegram bot and other plugins
+4. `handle.shutdown()` — drains and closes the Axum HTTP server
+
+Background tasks that respond to `shutdown_token.cancelled()`:
+
+- `CronTaskManager` scheduler loop and cleanup loop (`src/cron/mod.rs`)
+- `TicManager` timer loop (`src/tic/mod.rs`)
+- `PluginManager` config watcher (`src/plugin/mod.rs`)
+- LLM request log cleanup task (`src/main.rs`)
+
+The MCP notification consumer (`src/mcp/mod.rs`) is not directly cancelled; it stops naturally when `McpManager` is dropped (which closes the `mpsc::UnboundedSender`).
 
 ---
 

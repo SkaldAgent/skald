@@ -6,7 +6,7 @@ use crate::tools::Tool;
 pub struct Restart;
 
 impl Tool for Restart {
-    fn name(&self) -> &str { "restart" }
+    fn name(&self) -> &str { crate::tools::tool_names::RESTART }
     fn category(&self) -> crate::tools::ToolCategory { crate::tools::ToolCategory::Shell }
 
     fn description(&self) -> &str {

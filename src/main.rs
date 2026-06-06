@@ -122,11 +122,17 @@ async fn async_main() -> Result<()> {
     let default_client = llm_manager.default_name().await;
     info!(clients = client_count, default = %default_client, "LLM clients loaded");
 
+    let shutdown_token = tokio_util::sync::CancellationToken::new();
+
     // LLM request log cleanup — first run 1 min after startup, then every 12 hours.
     if let Some(cfg) = config.llm.requests_log.clone().filter(|r| r.enabled) {
         let cleanup_pool = Arc::clone(&pool);
+        let sd = shutdown_token.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+            tokio::select! {
+                _ = sd.cancelled() => { return; }
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(60)) => {}
+            }
             loop {
                 if let Some(days) = cfg.cleanup_request_payload_after {
                     match db::llm_requests::null_request_payload(&cleanup_pool, days).await {
@@ -162,7 +168,10 @@ async fn async_main() -> Result<()> {
                     Ok(_)  => info!("llm_requests: VACUUM complete"),
                     Err(e) => warn!(error = %e, "llm_requests: VACUUM failed"),
                 }
-                tokio::time::sleep(tokio::time::Duration::from_secs(12 * 3600)).await;
+                tokio::select! {
+                    _ = sd.cancelled() => { break; }
+                    _ = tokio::time::sleep(tokio::time::Duration::from_secs(12 * 3600)) => {}
+                }
             }
         });
     }
@@ -283,7 +292,7 @@ async fn async_main() -> Result<()> {
 
     // Wire the session manager into the cron scheduler now that both exist.
     cron.set_session(Arc::clone(&manager));
-    Arc::clone(&cron).start();
+    let cron_handles = Arc::clone(&cron).start(shutdown_token.clone());
     info!("cron scheduler started");
 
     let transcribe_manager = TranscribeManager::new(Arc::clone(&pool), Arc::clone(&provider_registry), Arc::clone(&system_bus)).await?;
@@ -313,7 +322,7 @@ async fn async_main() -> Result<()> {
         Arc::clone(&chat_hub),
         config.tic.clone(),
     );
-    Arc::clone(&tic_manager).start();
+    let tic_handle = Arc::clone(&tic_manager).start(shutdown_token.clone());
     info!("TicManager started");
 
     let web_static_dir: Arc<str> = Arc::from(config.web.static_dir.as_str());
@@ -348,7 +357,7 @@ async fn async_main() -> Result<()> {
     if let Err(e) = plugin_manager.start_enabled().await {
         error!(error = %e, "plugin startup error");
     }
-    plugin_manager.start_config_watcher();
+    plugin_manager.start_config_watcher(shutdown_token.clone());
 
     let addr = format!("{}:{}", config.server.host, config.server.port);
     let server = WebServer::new(config.server, config.web.static_dir, state);
@@ -357,6 +366,19 @@ async fn async_main() -> Result<()> {
 
     tokio::signal::ctrl_c().await?;
     warn!("SIGINT received — shutting down");
+
+    // Signal all background loops to exit.
+    shutdown_token.cancel();
+
+    // Wait up to 10 s for background tasks to finish any in-flight DB writes.
+    let bg_shutdown = async move {
+        for h in cron_handles { let _ = h.await; }
+        let _ = tic_handle.await;
+    };
+    if tokio::time::timeout(tokio::time::Duration::from_secs(10), bg_shutdown).await.is_err() {
+        warn!("background tasks did not finish within 10 s — continuing shutdown");
+    }
+
     plugin_manager.stop_all().await;
     handle.shutdown().await;
     info!("shutdown complete");
