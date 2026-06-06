@@ -7,29 +7,30 @@ Rust async web app (Tokio + Axum). Runs as a local chat server with LLM tool-cal
 
 | Path | Role |
 | ---- | ---- |
-| `src/main.rs` | Startup: config, DB, tool registry, session manager |
-| `src/server.rs` | Axum router, static file serving |
-| `src/api/` | HTTP + WebSocket handlers |
-| `src/session/handler/` | Core LLM loop — `mod.rs`, `llm_loop.rs` (`run_agent_turn`), `agent_dispatch.rs`, `dispatcher.rs`, `approval.rs`, `resume.rs`, `messages.rs`, `config.rs`, `interface_tools.rs` |
-| `src/session/manager.rs` | Creates/retrieves `ChatSessionHandler` per session |
-| `src/chat_hub/` | `ChatHub`: broadcast events to all connected WS clients |
-| `src/chat_event_bus.rs` | Global async bus for cross-session events |
-| `src/agents.rs` | Discovers agents from `agents/*/`, loads meta + system prompt |
-| `src/tools/` | Built-in tools: `exec`, `restart`, `list_agents`, `fs/*`, `notify`, `ast_outline`, `image_generate`, MCP tools, plugin tools, cron tools |
-| `src/events.rs` | `ServerEvent` enum streamed over WebSocket to the frontend |
-| `src/db/` | sqlx SQLite — see below |
+| `src/main.rs` | Thin entry point: tracing → `Skald::new` → `WebFrontend::start` → shutdown |
+| `src/core/skald.rs` | `Skald` — headless application core; owns all managers; `new()` / `shutdown()` |
+| `src/core/session/handler/` | Core LLM loop — `mod.rs`, `llm_loop.rs` (`run_agent_turn`), `agent_dispatch.rs`, `dispatcher.rs`, `approval.rs`, `resume.rs`, `messages.rs`, `config.rs`, `interface_tools.rs` |
+| `src/core/session/manager.rs` | Creates/retrieves `ChatSessionHandler` per session |
+| `src/core/chat_hub/` | `ChatHub`: broadcast events to all connected WS clients |
+| `src/core/chat_event_bus.rs` | Global async bus for cross-session events |
+| `src/core/agents.rs` | Discovers agents from `agents/*/`, loads meta + system prompt |
+| `src/core/tools/` | Built-in tools: `exec`, `restart`, `list_agents`, `fs/*`, `notify`, `ast_outline`, `image_generate`, MCP tools, plugin tools, cron tools |
+| `src/core/events.rs` | `ServerEvent` enum streamed over WebSocket to the frontend |
+| `src/core/db/` | sqlx SQLite — see below |
 | `src/config.rs` | Loads `config.yml`; LLM clients, strength/use_cases, data root |
-| `src/mcp/` | MCP client manager (connects to external MCP servers) |
-| `src/plugin/` | Plugin system: discovery, enable/disable, tool registration |
-| `src/cron/` | Scheduled job runner |
-| `src/compactor.rs` | Context compaction (summarises history when token budget exceeded) |
-| `src/approval/` | Approval rules engine |
-| `src/clarification/` | `ClarificationManager`: background-session question/answer |
-| `src/remote/` | Remote agent dispatch |
-| `src/llm/` | LLM client abstraction (OpenAI-compat, Anthropic, Ollama…) |
-| `src/transcribe/` | Transcription providers |
-| `src/image_generate/` | Image generation providers |
-| `src/memory/` | Agent memory tools |
+| `src/core/mcp/` | MCP client manager (connects to external MCP servers) |
+| `src/core/plugin/` | Plugin system: discovery, enable/disable, tool registration |
+| `src/core/cron/` | Scheduled job runner |
+| `src/core/compactor.rs` | Context compaction (summarises history when token budget exceeded) |
+| `src/core/approval/` | Approval rules engine |
+| `src/core/clarification/` | `ClarificationManager`: background-session question/answer |
+| `src/core/llm/` | LLM client abstraction (OpenAI-compat, Anthropic, Ollama…) |
+| `src/core/transcribe/` | Transcription providers |
+| `src/core/image_generate/` | Image generation providers |
+| `src/core/memory/` | Agent memory tools |
+| `src/frontend/mod.rs` | `WebFrontend`: wires router_factory, starts plugins, runs Axum |
+| `src/frontend/server.rs` | Axum router, static file serving |
+| `src/frontend/api/` | HTTP + WebSocket handlers — `State<Arc<Skald>>` |
 | `web/components/` | Lit web components (see below) |
 
 ## DB tables (sqlx SQLite)

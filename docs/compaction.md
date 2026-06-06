@@ -205,7 +205,7 @@ system:
 | `high` / `very_high` | Overkill for summarisation |
 
 The compaction LLM is **not** a registered agent — its prompt constants are
-hard-coded in `src/compactor.rs` and are not configurable from `agents/` or
+hard-coded in `src/core/compactor.rs` and are not configurable from `agents/` or
 AGENT.md files:
 
 | Constant | Role |

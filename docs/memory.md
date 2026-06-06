@@ -1,6 +1,6 @@
 # Memory System
 
-`src/memory/mod.rs`
+`src/core/memory/mod.rs`
 
 ---
 
@@ -40,7 +40,7 @@ pub trait Memory: Send + Sync {
 
 ## MemoryManager
 
-`AppState::memory_manager: Arc<MemoryManager>`
+`Skald::memory_manager: Arc<MemoryManager>`
 
 Holds **at most one** active backend.
 
@@ -106,7 +106,7 @@ No changes to `main.rs` or the session handler are needed.
 
 | Backend | Source | Plugin |
 | --- | --- | --- |
-| `honcho` | `src/plugin/honcho/mod.rs` | [honcho.md](honcho.md) |
+| `honcho` | `src/core/plugin/honcho/mod.rs` | [honcho.md](honcho.md) |
 
 ---
 

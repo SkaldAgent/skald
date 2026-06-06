@@ -87,7 +87,7 @@ Tool dispatch order (same as `run_agent_turn`):
 
 ## AgentFlowSignal
 
-`AgentFlowSignal` (`src/session/handler/mod.rs`) is a typed `pub(super)` enum used by internal dispatch methods to communicate control-flow outcomes through `anyhow::Error` without sentinel structs:
+`AgentFlowSignal` (`src/core/session/handler/mod.rs`) is a typed `pub(super)` enum used by internal dispatch methods to communicate control-flow outcomes through `anyhow::Error` without sentinel structs:
 
 | Variant | Emitted by | Handled in |
 | --- | --- | --- |
@@ -154,7 +154,7 @@ The gate is `ApprovalManager.check(agent_id, source, tool_name, args)` → `Gate
 
 ## MessageBuilder
 
-`build_openai_messages` is now a thin wrapper that delegates to `MessageBuilder` (`src/session/handler/message_builder.rs`). `MessageBuilder` is a self-contained struct with no reference to `ChatSessionHandler`:
+`build_openai_messages` is now a thin wrapper that delegates to `MessageBuilder` (`src/core/session/handler/message_builder.rs`). `MessageBuilder` is a self-contained struct with no reference to `ChatSessionHandler`:
 
 ```rust
 pub struct MessageBuilder {

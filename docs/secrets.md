@@ -44,7 +44,7 @@ pub async fn require(secrets: &Arc<dyn SecretsApi>, key: &str) -> Result<String>
 
 | Location | Field | Use |
 |---|---|---|
-| `AppState` | `secrets: Arc<SecretsStore>` | Agent tools, REST API handlers |
+| `Skald` | `secrets: Arc<SecretsStore>` | Agent tools, REST API handlers |
 | `PluginContext` | `secrets: Arc<dyn SecretsApi>` | Plugin start/reload (read or write) |
 
 Plugins read secrets at startup (e.g. to pass a token to a subprocess). The
@@ -81,12 +81,12 @@ The agent can check whether a key is set by calling `list_secrets("KEY_NAME")` â
 
 ## Usage from Rust code
 
-Agent tools receive `Arc<dyn SecretsApi>` from `AppState`:
+Agent tools receive `Arc<dyn SecretsApi>` from `Skald`:
 
 ```rust
-state.secrets.set("HUGGINGFACE_TOKEN", &value).await?;
-state.secrets.delete("OLD_KEY").await?;
-let keys = state.secrets.list_keys().await;  // safe to log
+skald.secrets.set("HUGGINGFACE_TOKEN", &value).await?;
+skald.secrets.delete("OLD_KEY").await?;
+let keys = skald.secrets.list_keys().await;  // safe to log
 ```
 
 ---

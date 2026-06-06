@@ -1,6 +1,6 @@
 # Plugin System
 
-Plugins are long-running subsystems compiled into the binary and managed by `PluginManager`. They receive the full `AppState` and run independently from the Axum web server.
+Plugins are long-running subsystems compiled into the binary and managed by `PluginManager`. They receive a `PluginContext` (a bundle of `Arc<dyn Trait>` deps) and run independently from the Axum web server.
 
 ---
 
@@ -12,24 +12,29 @@ pub trait Plugin: Send + Sync {
     fn id(&self)          -> &str;
     fn name(&self)        -> &str;
     fn description(&self) -> &str;
-    async fn start(&self, state: Arc<AppState>) -> Result<()>;
-    async fn stop(&self)  -> Result<()>;
     fn is_running(&self)  -> bool;
-    fn as_any(&self)      -> &dyn Any;   // for downcasting
+    async fn start(&self, ctx: PluginContext)  -> Result<()>;
+    async fn reload(&self, enabled: bool, config: Value, ctx: PluginContext) -> Result<()>;
+    async fn stop(&self)  -> Result<()>;
+    fn as_any(&self)      -> &dyn Any;
 }
 ```
 
-`start()` must **spawn internal tasks and return immediately**.
+`start()` and `reload()` must **spawn internal tasks and return immediately**.
 `stop()` must cancel all internal tasks and **await their completion**.
+
+`PluginContext` (`crates/core-api/src/plugin.rs`) carries typed `Arc<dyn Trait>` deps sourced from `Skald` — plugins use only what they need.
 
 ---
 
-## PluginManager — `src/plugin/mod.rs`
+## PluginManager — `src/core/plugin/mod.rs`
 
 | Method | Purpose |
 |---|---|
-| `register(plugin)` | Add a plugin before `Arc::new()` (build phase) |
-| `set_state(Arc<AppState>)` | Wire state after AppState is built |
+| `register(plugin)` | Add a plugin before startup (build phase) |
+| `set_skald(Arc<Skald>)` | Wire core after `Skald` is built |
+| `set_router_factory(factory)` | Provide Axum router factory (called by `WebFrontend`) |
+| `set_web_port(port)` | Provide HTTP port for plugins that need it (called by `WebFrontend`) |
 | `start_enabled()` | Start all DB-enabled plugins |
 | `stop_all()` | Graceful shutdown on SIGINT |
 | `toggle(id, enabled)` | Enable/disable and start/stop at runtime |
@@ -38,11 +43,19 @@ pub trait Plugin: Send + Sync {
 ### Startup sequence
 
 ```
-PluginManager::new(pool) → register plugins → Arc::new()
-→ build tool_registry (list_plugins / toggle_plugin reference Arc<PluginManager>)
-→ build AppState
-→ plugin_manager.set_state(Arc::new(state.clone()))
-→ plugin_manager.start_enabled().await
+main.rs:
+  plugins = vec![Arc::new(HonchoPlugin::new()), Arc::new(TelegramPlugin::new(...)), …]
+
+Skald::new(core_cfg, plugins):
+  PluginManager::new(pool) → register_arc(plugin) for each plugin → Arc::new(plugin_manager)
+  → build tool_registry (list_plugins / toggle_plugin reference Arc<PluginManager>)
+  → Arc::new(Skald { … })
+  → plugin_manager.set_skald(Arc::clone(&skald))
+
+WebFrontend::start():
+  → plugin_manager.set_router_factory(factory)
+  → plugin_manager.set_web_port(port)
+  → plugin_manager.start_enabled().await
 ```
 
 ### Enabled/disabled persistence
@@ -58,7 +71,7 @@ Plugins live in independent workspace crates (see [workspace-crates.md](workspac
 1. Create `crates/plugin-<name>/` with a `Cargo.toml` depending on `core-api` and any needed external crates.
 2. Implement `core_api::plugin::Plugin` in `crates/plugin-<name>/src/lib.rs`.
 3. Add the crate to the workspace `members` list and as a dependency in the main `Cargo.toml`.
-4. `plugin_manager.register(plugin_name::MyPlugin::new(...))` in `main.rs`.
+4. In `src/main.rs`, add `Arc::new(plugin_name::MyPlugin::new(...))` to the `plugins` vec before `Skald::new()`.
 5. Rebuild — no restart needed for toggle.
 
 ---
@@ -87,12 +100,12 @@ Plugins live in independent workspace crates (see [workspace-crates.md](workspac
 
 ## Transcribe Providers and TranscribeManager
 
-Speech-to-Text is decoupled from the plugin system via `TranscribeManager` (`src/transcribe/mod.rs`).
+Speech-to-Text is decoupled from the plugin system via `TranscribeManager` (`src/core/transcribe/mod.rs`).
 
-Plugins that provide transcription (e.g. `whisper_local`) register an `Arc<dyn Transcribe>` in `AppState::transcribe_manager` at `start()` and deregister at `stop()`. Non-plugin providers (e.g. a future OpenRouter client) can register directly at startup without needing a full plugin lifecycle.
+Plugins that provide transcription (e.g. `whisper_local`) register an `Arc<dyn Transcribe>` in `skald.transcribe_manager` at `start()` and deregister at `stop()`. Non-plugin providers (e.g. a future OpenRouter client) can register directly at startup without needing a full plugin lifecycle.
 
 ```rust
-// trait — src/transcribe/mod.rs
+// trait — src/core/transcribe/mod.rs
 pub trait Transcribe: Send + Sync {
     fn id(&self) -> &str;
     async fn transcribe(&self, audio: Vec<u8>, format: &str) -> Result<String>;
@@ -105,7 +118,7 @@ pub trait Transcribe: Send + Sync {
 | `unregister(id)` | Remove a provider |
 | `get()` | Returns the first available provider |
 
-Selection strategy is currently **first registered**. Callers (e.g. Telegram) ask `state.transcribe_manager.get().await` — they never reference a concrete type.
+Selection strategy is currently **first registered**. Callers (e.g. Telegram) ask `skald.transcribe_manager.get().await` — they never reference a concrete type.
 
 See [whisper-local.md](whisper-local.md) for the only current provider.
 
@@ -113,7 +126,7 @@ See [whisper-local.md](whisper-local.md) for the only current provider.
 
 ## Image Generators and ImageGeneratorManager
 
-Image generation is decoupled from the plugin system via `ImageGeneratorManager` (`src/image_generate/`) and two traits in `core-api::image_generate` — same split as `TranscribeProvider` / `TranscribeRegistry`.
+Image generation is decoupled from the plugin system via `ImageGeneratorManager` (`src/core/image_generate/`) and two traits in `core-api::image_generate` — same split as `TranscribeProvider` / `TranscribeRegistry`.
 
 Two kinds of providers coexist:
 
@@ -145,7 +158,7 @@ The LLM interacts with providers via two tools: `image_generate_providers_list` 
 
 ## TTS and TtsManager
 
-Text-to-speech follows the same split pattern as transcribe and image_generate. `TtsManager` (`src/tts/`) manages both DB-backed and plugin-registered providers. Traits live in `core-api::tts`.
+Text-to-speech follows the same split pattern as transcribe and image_generate. `TtsManager` (`src/core/tts/`) manages both DB-backed and plugin-registered providers. Traits live in `core-api::tts`.
 
 | Kind | Source | Example |
 | --- | --- | --- |
@@ -205,7 +218,7 @@ pub trait ApiProviderRegistry: Send + Sync {
 }
 ```
 
-`ProviderRegistry` in `src/provider/mod.rs` implements `ApiProviderRegistry`. It is exposed as `ctx.api_provider_registry` in `PluginContext`.
+`ProviderRegistry` in `src/core/provider/mod.rs` implements `ApiProviderRegistry`. It is exposed as `ctx.api_provider_registry` in `PluginContext`.
 
 Plugin-registered providers shadow builtin ones: `ProviderRegistry::get(type_id)` checks the plugin list first.
 

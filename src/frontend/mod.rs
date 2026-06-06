@@ -1,0 +1,59 @@
+pub mod api;
+pub mod config;
+pub mod server;
+
+use std::sync::Arc;
+
+use anyhow::Result;
+use tracing::{error, info};
+
+use core_api::plugin::RouterFactory;
+use crate::frontend::config::FrontendConfig;
+use crate::core::skald::Skald;
+use crate::frontend::server::{WebServer, WebServerHandle};
+
+pub struct WebFrontend {
+    skald:      Arc<Skald>,
+    static_dir: String,
+    port:       u16,
+}
+
+impl WebFrontend {
+    pub fn new(skald: Arc<Skald>, config: &FrontendConfig) -> Self {
+        Self {
+            port:       config.server.port,
+            static_dir: config.web.static_dir.clone(),
+            skald,
+        }
+    }
+
+    /// Builds the Axum router factory closure used by remote-connectivity plugins.
+    fn make_router_factory(&self) -> RouterFactory {
+        let skald      = Arc::clone(&self.skald);
+        let static_dir = self.static_dir.clone();
+        Arc::new(move || {
+            WebServer::build_router(&static_dir, Arc::clone(&skald))
+        })
+    }
+
+    pub async fn start(self) -> Result<WebServerHandle> {
+        // Provide the router factory and web port to plugins before start_enabled().
+        self.skald.plugin_manager.set_router_factory(self.make_router_factory());
+        self.skald.plugin_manager.set_web_port(self.port);
+
+        if let Err(e) = self.skald.plugin_manager.start_enabled().await {
+            error!(error = %e, "plugin startup error");
+        }
+        self.skald.plugin_manager
+            .start_config_watcher(self.skald.shutdown_token.clone());
+
+        let addr = format!("{}:{}", "0.0.0.0", self.port);
+        let server = WebServer::new(
+            self.static_dir.clone(),
+            Arc::clone(&self.skald),
+        );
+        let handle = server.start(&addr).await?;
+        info!(%addr, "server listening");
+        Ok(handle)
+    }
+}

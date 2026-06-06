@@ -29,7 +29,7 @@ agents/
 
 ### `allow_tools` filtering
 
-When `allow_tools` is set, only those system tool names are injected into the LLM's tool list. The filter runs in `src/session/handler/config.rs` before the LLM call. MCP tools are excluded from filtering — the Approval gate governs them.
+When `allow_tools` is set, only those system tool names are injected into the LLM's tool list. The filter runs in `src/core/session/handler/config.rs` before the LLM call. MCP tools are excluded from filtering — the Approval gate governs them.
 
 ```json
 {
@@ -126,7 +126,7 @@ For a `call_agent` call to agent `X`:
 
 ## Depth Limit
 
-**`MAX_AGENT_DEPTH = 5`** (hardcoded in `src/session/handler/mod.rs`).
+**`MAX_AGENT_DEPTH = 5`** (hardcoded in `src/core/session/handler/mod.rs`).
 
 Depth 0 = root `main` session. Each `call_agent` increments depth by 1. Attempting to exceed the limit returns an error to the LLM without calling the sub-agent.
 

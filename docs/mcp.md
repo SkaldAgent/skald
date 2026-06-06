@@ -7,7 +7,7 @@ The MCP protocol layer lives in the standalone crate `crates/mcp-client`:
 - `McpHttpServer` — streamable HTTP client
 - `McpServerClient` trait, `McpTool`, `McpServerConfig`, `McpTransport`
 
-`McpManager` (`src/mcp/mod.rs`) remains in the main crate because it owns the `SqlitePool` and calls `crate::db::mcp_events` / `crate::db::mcp_servers`.
+`McpManager` (`src/core/mcp/mod.rs`) remains in the main crate because it owns the `SqlitePool` and calls `crate::db::mcp_events` / `crate::db::mcp_servers`.
 
 ---
 
@@ -52,7 +52,7 @@ Examples:
 - Server `tavily`, tool `search` → `mcp__tavily__search`
 - Server `fetch`, tool `get` → `mcp__fetch__get`
 
-`parse_mcp_tool_name(name)` in `src/mcp/mod.rs` splits on `__` to extract server and tool names. This is how `run_agent_turn` routes MCP calls.
+`parse_mcp_tool_name(name)` in `src/core/mcp/mod.rs` splits on `__` to extract server and tool names. This is how `run_agent_turn` routes MCP calls.
 
 ---
 

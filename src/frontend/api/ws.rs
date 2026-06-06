@@ -1,0 +1,325 @@
+use std::sync::Arc;
+
+use axum::{
+    extract::{
+        Query, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
+    response::IntoResponse,
+};
+use serde::Deserialize;
+use serde_json::Value;
+use tokio::sync::broadcast;
+use tracing::{debug, info, warn};
+
+use crate::core::chat_hub::SendMessageOptions;
+use crate::core::events::{ClientMessage, GlobalEvent, ServerEvent};
+use crate::core::skald::Skald;
+
+#[derive(Deserialize)]
+pub struct WsParams {
+    source: Option<String>,
+}
+
+const WEB_FORMAT_CONTEXT: &str = "\
+You are responding in a web chat interface. Use standard Markdown formatting for all responses.\n\
+\n\
+IMAGES: If image generation is active, you can display images to the user using standard Markdown \
+image syntax with the URL. Always set a max-width style to avoid the image taking up the full screen width, \
+e.g. <img src=\"URL\" style=\"max-width:480px\">. \
+The URL returned by image_generate already points to the correct endpoint — use it as-is. \
+Do NOT append \".png\" or any extension to the URL.";
+
+// ── Upgrade ───────────────────────────────────────────────────────────────────
+
+pub async fn handler(
+    ws:            WebSocketUpgrade,
+    Query(params): Query<WsParams>,
+    State(skald):  State<Arc<Skald>>,
+) -> impl IntoResponse {
+    let source = params.source.unwrap_or_else(|| "web".to_string());
+    ws.on_upgrade(move |socket| handle_socket(socket, skald, source))
+}
+
+// ── Socket loop ───────────────────────────────────────────────────────────────
+
+async fn handle_socket(mut socket: WebSocket, skald: Arc<Skald>, source: String) {
+    let session_handler = match skald.chat_hub.session_handler(&source).await {
+        Ok(h)  => h,
+        Err(e) => {
+            let _ = socket.send(to_msg(&ServerEvent::Error { message: e.to_string() })).await;
+            return;
+        }
+    };
+
+    info!(source, "WebSocket connected");
+
+    let mut rx = skald.chat_hub.events(&source);
+
+    loop {
+        tokio::select! {
+            // ── Inbound: message from the browser ────────────────────────────
+            msg = socket.recv() => {
+                let text = match msg {
+                    Some(Ok(Message::Text(t)))  => t,
+                    Some(Ok(Message::Close(_))) | None => return,
+                    _ => continue,
+                };
+
+                // ── resume ────────────────────────────────────────────────────
+                if is_resume_msg(&text) {
+                    info!("web WS: resume requested");
+                    let hub = Arc::clone(&skald.chat_hub);
+                    let src = source.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = hub.resume(&src).await {
+                            tracing::error!(error = %e, source = %src, "resume failed");
+                        }
+                    });
+                    continue;
+                }
+
+                // ── cancel / approval / question (mid-turn controls) ──────────
+                if is_cancel_msg(&text) {
+                    info!("web WS: cancel requested");
+                    session_handler.cancel();
+                    session_handler.cancel_pending_approvals().await;
+                    session_handler.cancel_pending_questions().await;
+                    continue;
+                }
+                if handle_approval_msg(&text, &skald.chat_hub).await { continue; }
+                if handle_question_answer_msg(&text, &session_handler).await { continue; }
+                if handle_data_msg(&text, &skald) { continue; }
+
+                // ── /sethome ──────────────────────────────────────────────────
+                let client_msg: ClientMessage = match serde_json::from_str(&text) {
+                    Ok(m)  => m,
+                    Err(e) => {
+                        let _ = socket.send(to_msg(&ServerEvent::Error {
+                            message: format!("invalid message: {e}"),
+                        })).await;
+                        continue;
+                    }
+                };
+
+                let cmd = client_msg.content.trim();
+
+                if cmd == "/sethome" {
+                    let msg = match skald.chat_hub.set_home(&source).await {
+                        Ok(_)  => "🏠 Web impostato come **home**. Le notifiche degli agenti arriveranno qui.".to_string(),
+                        Err(e) => format!("⚠️ Errore: {e}"),
+                    };
+                    let _ = socket.send(to_msg(&ServerEvent::Done {
+                        message_id:    0,
+                        stack_id:      0,
+                        content:       msg,
+                        input_tokens:  None,
+                        output_tokens: None,
+                    })).await;
+                    continue;
+                }
+
+                if cmd == "/help" {
+                    let msg = "\
+**Comandi disponibili**\n\n\
+**/clear** — avvia una nuova conversazione\n\
+**/new** — alias per /clear\n\
+**/context** — mostra i token usati nell'ultimo messaggio\n\
+**/compact** — forza la compattazione del contesto\n\
+**/sethome** — imposta web come destinazione per le notifiche\n\
+**/help** — questo messaggio"
+                        .to_string();
+                    let _ = socket.send(to_msg(&ServerEvent::Done {
+                        message_id:    0,
+                        stack_id:      0,
+                        content:       msg,
+                        input_tokens:  None,
+                        output_tokens: None,
+                    })).await;
+                    continue;
+                }
+
+                if cmd == "/context" {
+                    match skald.chat_hub.context_info(&source).await {
+                        Ok((input, output)) => {
+                            let input_str = input.map_or("?".to_string(), |t| t.to_string());
+                            let output_str = output.map_or("?".to_string(), |t| t.to_string());
+                            let _ = socket.send(to_msg(&ServerEvent::Done {
+                                message_id:    0,
+                                stack_id:      0,
+                                content:       format!("↑{input_str} tok · ↓{output_str} tok"),
+                                input_tokens:  None,
+                                output_tokens: None,
+                            })).await;
+                        }
+                        Err(e) => {
+                            let _ = socket.send(to_msg(&ServerEvent::Error { message: e.to_string() })).await;
+                        }
+                    }
+                    continue;
+                }
+
+                if cmd == "/compact" {
+                    match skald.chat_hub.force_compact(&source).await {
+                        Ok(true) => {
+                            let _ = socket.send(to_msg(&ServerEvent::Done {
+                                message_id:    0,
+                                stack_id:      0,
+                                content:       "✅ Contesto compattato.".to_string(),
+                                input_tokens:  None,
+                                output_tokens: None,
+                            })).await;
+                        }
+                        Ok(false) => {
+                            let _ = socket.send(to_msg(&ServerEvent::Done {
+                                message_id:    0,
+                                stack_id:      0,
+                                content:       "⏩ Compattazione saltata (nessun messaggio da riassumere o compattazione disabilitata).".to_string(),
+                                input_tokens:  None,
+                                output_tokens: None,
+                            })).await;
+                        }
+                        Err(e) => {
+                            let _ = socket.send(to_msg(&ServerEvent::Error { message: e.to_string() })).await;
+                        }
+                    }
+                    continue;
+                }
+
+                // ── Regular LLM message ───────────────────────────────────────
+                let chat_hub = Arc::clone(&skald.chat_hub);
+                let content  = client_msg.content.clone();
+
+                // Broadcast to all clients on the same source so they see the
+                // user message in real-time (other tabs, mobile, etc.).
+                skald.chat_hub.emit(GlobalEvent {
+                    source:     Some(source.clone()),
+                    session_id: None,
+                    event:      ServerEvent::UserMessage { content: content.clone() },
+                });
+
+                let source_clone = source.clone();
+                let opts = SendMessageOptions {
+                    client_name:          client_msg.client.clone(),
+                    extra_system_context: Some(WEB_FORMAT_CONTEXT.to_string()),
+                    ..Default::default()
+                };
+                tokio::spawn(async move {
+                    if let Err(e) = chat_hub.send_message(&source_clone, &content, opts).await {
+                        tracing::error!(error = %e, source = %source_clone, "send_message failed");
+                    }
+                });
+            }
+
+            // ── Outbound: event from ChatHub → forward to browser ─────────────
+            event = rx.recv() => {
+                match event {
+                    Ok(ge) => {
+                        // Forward events for this connection's source.
+                        // ApprovalResolved is forwarded regardless of source so the
+                        // copilot can react to approvals resolved from other clients.
+                        let forward = ge.source.as_deref() == Some(source.as_str())
+                            || matches!(ge.event, ServerEvent::ApprovalResolved { .. });
+                        if !forward { continue; }
+                        debug!(event_type = ge.event.type_name(), "sending event to client");
+                        if socket.send(to_msg(&ge.event)).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(skipped = n, "web WS: event stream lagged");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        }
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+fn is_cancel_msg(text: &str) -> bool {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|v| v["type"].as_str().map(|s| s == "cancel"))
+        .unwrap_or(false)
+}
+
+fn is_resume_msg(text: &str) -> bool {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|v| v["type"].as_str().map(|s| s == "resume"))
+        .unwrap_or(false)
+}
+
+/// Returns true if the message was an approval/rejection (caller should `continue`).
+async fn handle_approval_msg(
+    text:      &str,
+    chat_hub:  &Arc<crate::core::chat_hub::ChatHub>,
+) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(text) else { return false };
+    let Some(request_id) = v["request_id"].as_i64() else { return false };
+    match v["type"].as_str() {
+        Some("approve_write") | Some("approve_tool") => {
+            chat_hub.approve(request_id).await;
+        }
+        Some("reject_write") | Some("reject_tool") => {
+            let note = v["note"].as_str().unwrap_or("").to_string();
+            chat_hub.reject(request_id, note).await;
+        }
+        _ => return false,
+    };
+    true
+}
+
+/// Returns true if the message was a question answer (caller should `continue`).
+async fn handle_question_answer_msg(
+    text:    &str,
+    handler: &Arc<crate::core::session::handler::ChatSessionHandler>,
+) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(text) else { return false };
+    if v["type"].as_str() != Some("answer_question") { return false }
+    let Some(request_id) = v["request_id"].as_i64() else { return false };
+    let answer = v["answer"].as_str().unwrap_or("").to_string();
+    handler.resolve_question(request_id, answer).await;
+    true
+}
+
+/// Returns true if the message was an inbound data push (caller should `continue`).
+/// Dispatches `{"type":"data","stream":"...","payload":{...}}` to the appropriate manager.
+fn handle_data_msg(text: &str, skald: &Arc<Skald>) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(text) else { return false };
+    if v["type"].as_str() != Some("data") { return false }
+
+    let Ok(msg) = serde_json::from_value::<crate::core::events::InboundDataMessage>(v) else {
+        return true;
+    };
+
+    match msg.stream.as_str() {
+        "location" => {
+            let lat = msg.payload["lat"].as_f64();
+            let lng = msg.payload["lng"].as_f64();
+            let acc = msg.payload["accuracy"].as_f64();
+            let live = msg.payload["is_live"].as_bool().unwrap_or(true);
+            if let (Some(lat), Some(lng)) = (lat, lng) {
+                skald.location_manager.update(
+                    "remote",
+                    crate::core::location::GpsCoord { latitude: lat, longitude: lng },
+                    acc,
+                    live,
+                );
+                tracing::debug!(lat, lng, "location updated from remote client");
+            } else {
+                tracing::warn!(stream = "location", "missing lat/lng in payload");
+            }
+        }
+        other => tracing::warn!(stream = other, "unknown data stream, ignoring"),
+    }
+
+    true
+}
+
+fn to_msg(event: &ServerEvent) -> Message {
+    Message::Text(event.to_json().into())
+}

@@ -177,7 +177,7 @@ Captions (text typed alongside a file or photo) are included in the info message
 
 When the user shares a live location, two things happen:
 
-1. **Initial message** (`message` event) — the LLM is notified via a `[TELEGRAM SYSTEM INFO]` message and the position is written to `AppState::location_manager` under the key `"telegram"`.
+1. **Initial message** (`message` event) — the LLM is notified via a `[TELEGRAM SYSTEM INFO]` message and the position is written to `skald.location_manager` under the key `"telegram"`.
 2. **Subsequent updates** (`edited_message` events) — the position in `location_manager` is updated silently, with no LLM notification. This keeps the store current for any background scripts or tools that read `user_location("telegram")`.
 
 `LocationManager` is in-memory only. On restart, the store starts empty and is repopulated as soon as Telegram delivers the next live location tick (typically within seconds if sharing is still active).
@@ -188,7 +188,7 @@ The `uploads/` directory is gitignored.
 
 To add a new type (e.g. sticker, contact):
 
-1. Add a variant to `TelegramAttachment` in `src/plugin/telegram/attachments.rs`.
+1. Add a variant to `TelegramAttachment` in `src/core/plugin/telegram/attachments.rs`.
 2. Implement `download_and_save` (return `Ok(None)` if no file) and `system_info_message`.
 3. Detect the message type in `classify_message` in `handlers.rs` and return `IncomingEvent::Attachment(...)`.
 
@@ -200,7 +200,7 @@ The Telegram plugin can inject custom LLM-callable tools into any session via th
 
 To add a Telegram-specific tool, construct an `InterfaceTool` with an OpenAI tool definition and an async handler closure that captures `Arc<Bot>` and `ChatId`, then pass it in the `interface_tools` vec inside `SendMessageOptions`.
 
-`InterfaceTool` and `ToolFuture` are defined in `crates/core-api/src/interface_tool.rs` (re-exported via `crate::chat_hub`). `AgentRunConfig` remains in `src/session/handler/interface_tools.rs` (main crate only).
+`InterfaceTool` and `ToolFuture` are defined in `crates/core-api/src/interface_tool.rs` (re-exported via `crate::chat_hub`). `AgentRunConfig` remains in `src/core/session/handler/interface_tools.rs` (main crate only).
 
 ---
 

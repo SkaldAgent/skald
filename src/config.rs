@@ -4,29 +4,29 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 pub use core_api::provider::LlmStrength;
+pub use crate::core::config::{
+    DbConfig, LlmConfig, TicConfig, CronConfig,
+    CompactionConfig, DatetimeConfig, LlmRequestsLogConfig,
+};
 
 const DEFAULT_CONFIG: &str = "default.config.yaml";
 const CONFIG: &str = "config.yml";
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    pub server: ServerConfig,
-    pub web:    WebConfig,
-    pub db:     DbConfig,
-    pub llm:    LlmConfig,
+    pub server:   ServerConfig,
+    pub web:      WebConfig,
+    pub db:       DbConfig,
+    pub llm:      LlmConfig,
     #[serde(default)]
-    pub tic:    TicConfig,
+    pub tic:      TicConfig,
     #[serde(default)]
-    pub cron:   CronConfig,
+    pub cron:     CronConfig,
     /// Global IANA timezone name (e.g. `"Europe/Rome"`).
     /// Applied to: cron expression evaluation, datetime injected into the LLM context.
     /// When omitted, the server's local system timezone is used everywhere.
     pub timezone: Option<String>,
 }
-
-/// Cron scheduler settings.
-#[derive(Debug, Default, Deserialize)]
-pub struct CronConfig {}
 
 #[derive(Debug, Deserialize)]
 pub struct ServerConfig {
@@ -39,139 +39,25 @@ pub struct WebConfig {
     pub static_dir: String,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct DbConfig {
-    pub path: String,
-}
-
-/// LLM runtime settings (clients are managed via LlmManager / DB, not here).
-#[derive(Debug, Deserialize)]
-pub struct LlmConfig {
-    pub max_history_messages: usize,
-    pub max_tool_rounds:      Option<usize>,
-    /// When set, tool results from previous turns that exceed this many characters are
-    /// replaced at context-build time with a short placeholder. The original result is
-    /// always preserved in the database (and shown in the frontend); only what the LLM
-    /// sees in subsequent turns is affected. Omit or set to `null` to disable.
-    pub max_tool_result_chars: Option<usize>,
-    /// Request/response logging configuration. Omit or set `enabled: false` to disable.
-    pub requests_log:         Option<LlmRequestsLogConfig>,
-    /// Context compaction settings. Omit to disable automatic compaction.
-    pub compaction:           Option<CompactionConfig>,
-    /// Controls how the current date/time is injected into each LLM request.
-    /// Omit to use the default (exact timestamp on every request).
-    #[serde(default)]
-    pub datetime:             DatetimeConfig,
-}
-
-/// Controls date/time injection in the dynamic tail of each LLM request.
-#[derive(Debug, Clone, Deserialize)]
-pub struct DatetimeConfig {
-    /// Inject the current date/time into the LLM context. Default: true.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// When set, round the injected time down to the nearest N-minute boundary.
-    /// For example, `round_minutes: 10` turns "10:56" into "10:50", keeping the
-    /// string identical for up to 10 minutes and improving KV cache hit rates.
-    /// Omit or set to null to use the exact time.
-    pub round_minutes: Option<u32>,
-    /// IANA timezone name to use when formatting the injected timestamp.
-    /// Populated at startup from the global `timezone` config field.
-    /// `None` means use the server's local system timezone.
-    #[serde(skip)]
-    pub timezone: Option<String>,
-}
-
-impl Default for DatetimeConfig {
-    fn default() -> Self {
-        Self { enabled: true, round_minutes: None, timezone: None }
+impl Config {
+    pub fn into_split(self) -> (crate::core::config::CoreConfig, crate::frontend::config::FrontendConfig) {
+        let tz = self.timezone.clone();
+        (
+            crate::core::config::CoreConfig {
+                db:       self.db,
+                llm:      self.llm,
+                tic:      self.tic,
+                cron:     self.cron,
+                timezone: self.timezone,
+            },
+            crate::frontend::config::FrontendConfig {
+                server:   self.server,
+                web:      self.web,
+                timezone: tz,
+            },
+        )
     }
 }
-
-fn default_true() -> bool { true }
-
-/// Context compaction: when enabled, the conversation history is summarised
-/// once the LLM context exceeds `threshold_tokens`.  The summary replaces
-/// the old messages in subsequent turns, keeping only `keep_recent` raw
-/// messages intact for immediate context.
-#[derive(Debug, Clone, Deserialize)]
-pub struct CompactionConfig {
-    /// Trigger compaction when the previous turn consumed more than this many
-    /// input tokens.  When the LLM provider does not report token usage (e.g.
-    /// LM Studio), a character-count estimate (chars / 4) is used as fallback.
-    pub threshold_tokens: u32,
-    /// Number of recent messages to keep outside the summary.  Defaults to 6.
-    #[serde(default = "default_keep_recent")]
-    pub keep_recent:      usize,
-    /// Minimum LLM strength to use for generating summaries via AUTO selection.
-    /// Omit to use whatever model AUTO picks (typically the default).
-    /// Summaries are simple writing tasks — `low` or `average` is usually fine.
-    pub strength:         Option<LlmStrength>,
-}
-
-fn default_keep_recent() -> usize { 6 }
-
-/// TIC background event processor settings.
-#[derive(Debug, Clone, Deserialize)]
-pub struct TicConfig {
-    /// Interval between ticks, in seconds. Default: 900 (15 minutes).
-    #[serde(default = "default_tic_interval_secs")]
-    pub interval_secs: u64,
-    /// Maximum number of events processed per tick. Default: 50.
-    #[serde(default = "default_tic_batch_size")]
-    pub batch_size: i64,
-}
-
-impl Default for TicConfig {
-    fn default() -> Self {
-        Self {
-            interval_secs: default_tic_interval_secs(),
-            batch_size:     default_tic_batch_size(),
-        }
-    }
-}
-
-fn default_tic_interval_secs() -> u64 { 900 }
-fn default_tic_batch_size()    -> i64  { 50  }
-
-/// Settings for the LLM request/response log (table `llm_requests`).
-///
-/// Note: when `enabled` is false no rows are written and the home-page
-/// LLM statistics will stop working.
-#[derive(Debug, Clone, Deserialize)]
-pub struct LlmRequestsLogConfig {
-    /// Enable logging. Default: false.
-    #[serde(default)]
-    pub enabled: bool,
-
-    // ── What to save ─────────────────────────────────────────────────────────
-    /// Persist the full request JSON payload (can be hundreds of KB). Default: true.
-    #[serde(default = "default_true")]
-    pub request_payload_save: bool,
-    /// Persist the full response JSON payload. Default: true.
-    #[serde(default = "default_true")]
-    pub response_payload_save: bool,
-    /// Persist request HTTP headers (api-key is always redacted). Default: true.
-    #[serde(default = "default_true")]
-    pub request_header_save: bool,
-    /// Persist response HTTP headers. Default: true.
-    #[serde(default = "default_true")]
-    pub response_header_save: bool,
-
-    // ── Cleanup policy ───────────────────────────────────────────────────────
-    /// Set `request_json` to NULL for rows older than this many days.
-    /// Null means never null-out the request payload.
-    pub cleanup_request_payload_after: Option<u32>,
-    /// Set `response_json` to NULL for rows older than this many days.
-    pub cleanup_response_payload_after: Option<u32>,
-    /// Set both header columns to NULL for rows older than this many days.
-    pub cleanup_headers_after: Option<u32>,
-    /// Physically delete rows older than this many days.
-    /// Null means keep rows forever (only payload/header nulling applies).
-    pub cleanup_rows_after: Option<u32>,
-}
-
-
 
 impl Config {
     pub fn load() -> Result<Self> {

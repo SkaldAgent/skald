@@ -2,7 +2,7 @@
 
 ## Overview
 
-`ApprovalManager` is a top-level service (in `AppState`) that intercepts every tool call before execution and decides whether to:
+`ApprovalManager` is a top-level service (in `Skald`) that intercepts every tool call before execution and decides whether to:
 
 - **Allow** — execute freely (no matching rule, or an explicit `allow` rule)
 - **Deny** — block immediately (`deny` rule)
@@ -26,7 +26,7 @@ llm_loop.rs
                     └─► await rx  ← resolved by WS/Telegram via resolve(request_id, decision)
 ```
 
-`ApprovalManager` lives in `src/approval/mod.rs` and is independent of `ChatSessionManager`.
+`ApprovalManager` lives in `src/core/approval/mod.rs` and is independent of `ChatSessionManager`.
 
 ---
 
@@ -231,15 +231,15 @@ This is the current behaviour. Future work may add persistence of pending approv
 
 | File | Role |
 | ---- | ---- |
-| `src/approval/mod.rs` | `ApprovalManager`, `GateResult`, `ApprovalRule`, `PendingApprovalInfo` |
-| `src/clarification/mod.rs` | `ClarificationManager`, `PendingClarificationInfo` |
-| `src/db/approval_rules.rs` | SQLite queries: list, insert, update, delete |
-| `src/db/mod.rs` | `approval_rules` table creation |
-| `src/session/handler/llm_loop.rs` | Calls `approval.check()` + `approval.register()` before every tool dispatch |
-| `src/session/handler/mod.rs` | `ChatSessionHandler` holds `Arc<ApprovalManager>`, `Arc<ClarificationManager>`, `context_label: RwLock<Option<String>>` |
-| `src/api/inbox.rs` | `/api/inbox` endpoint + resolve for approval and clarification |
-| `src/api/ws.rs` | Handles `approve_tool`/`reject_tool`/`approve_write`/`reject_write` from the client |
-| `src/events.rs` | `ServerEvent::ApprovalRequired` (generic tools) and `PendingWrite` (files with diff) |
+| `src/core/approval/mod.rs` | `ApprovalManager`, `GateResult`, `ApprovalRule`, `PendingApprovalInfo` |
+| `src/core/clarification/mod.rs` | `ClarificationManager`, `PendingClarificationInfo` |
+| `src/core/db/approval_rules.rs` | SQLite queries: list, insert, update, delete |
+| `src/core/db/mod.rs` | `approval_rules` table creation |
+| `src/core/session/handler/llm_loop.rs` | Calls `approval.check()` + `approval.register()` before every tool dispatch |
+| `src/core/session/handler/mod.rs` | `ChatSessionHandler` holds `Arc<ApprovalManager>`, `Arc<ClarificationManager>`, `context_label: RwLock<Option<String>>` |
+| `src/frontend/api/inbox.rs` | `/api/inbox` endpoint + resolve for approval and clarification |
+| `src/frontend/api/ws.rs` | Handles `approve_tool`/`reject_tool`/`approve_write`/`reject_write` from the client |
+| `src/core/events.rs` | `ServerEvent::ApprovalRequired` (generic tools) and `PendingWrite` (files with diff) |
 
 ---
 

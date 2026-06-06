@@ -59,25 +59,38 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 
 | Source path | Role | Doc |
 | --- | --- | --- |
-| `src/main.rs` | Startup, wiring | [architecture.md](architecture.md) |
-| `src/session/handler/` | Core LLM loop, tool dispatch, approval | [session.md](session.md) |
-| `src/session/handler/message_builder.rs` | `MessageBuilder` — pure service for building OpenAI message arrays, testable in isolation | [session.md](session.md) |
-| `src/session/manager.rs` | Session factory | [session.md](session.md) |
-| `src/agents.rs` | Agent discovery, prompt loading | [agents.md](agents.md) |
-| `src/tools/` | Built-in tool registry | [tools.md](tools.md) |
-| `src/tools/tool_names.rs` | Centralised tool name constants (`CALL_AGENT`, `RESTART`, …) | [tools.md](tools.md) |
-| `src/provider/` | `ProviderRegistry` (implements `ApiProviderRegistry`) — thin wrapper around `core-api::provider`. All types re-exported for internal use. | [llm-clients.md](llm-clients.md) |
-| `src/service_manager.rs` | `ServiceManager` trait — lightweight umbrella for all model managers | [llm-clients.md](llm-clients.md) |
-| `src/chatbot/` | LLM provider clients | [llm-clients.md](llm-clients.md) |
-| `src/llm/manager.rs` | LLM selection, health tracking | [llm-clients.md](llm-clients.md) |
-| `src/chat_event_bus.rs` | In-process broadcast bus for chat turns and compaction events | [chat-event-bus.md](chat-event-bus.md) |
-| `src/compactor.rs` | Context compaction — summarises old history to reduce token usage | [compaction.md](compaction.md) |
-| `src/memory/` | Pluggable long-term memory layer (trait + manager) | [memory.md](memory.md) |
-| `src/chat_hub/` | Central chat orchestrator, notification pipeline | [architecture.md](architecture.md) |
-| `src/tic/` | Background MCP event processor (TicManager) | [architecture.md](architecture.md) |
-| `src/mcp/` | MCP server management, push notification ingestion | [mcp.md](mcp.md) |
-| `src/cron/` | Scheduled job scheduler | [cron.md](cron.md) |
-| `src/plugin/` | Plugin system (PluginManager) | [plugins.md](plugins.md) |
+| `src/main.rs` | Thin entry point: tracing → `Config` → `into_split` → plugins → `Skald::new` → `WebFrontend::start` → shutdown | [architecture.md](architecture.md) |
+| `src/core/skald.rs` | `Skald` — headless application core; owns all managers; `new(cfg, plugins)` / `shutdown()` | [architecture.md](architecture.md) |
+| `src/core/config.rs` | `CoreConfig` + core config types (`DbConfig`, `LlmConfig`, `TicConfig`, `CompactionConfig`, …) | [architecture.md](architecture.md) |
+| `src/frontend/config.rs` | `FrontendConfig` (`ServerConfig`, `WebConfig`, `timezone`) | [architecture.md](architecture.md) |
+| `src/core/session/handler/` | Core LLM loop, tool dispatch, approval | [session.md](session.md) |
+| `src/core/session/handler/message_builder.rs` | `MessageBuilder` — pure service for building OpenAI message arrays, testable in isolation | [session.md](session.md) |
+| `src/core/session/manager.rs` | Session factory | [session.md](session.md) |
+| `src/core/agents.rs` | Agent discovery, prompt loading | [agents.md](agents.md) |
+| `src/core/tools/` | Built-in tool registry | [tools.md](tools.md) |
+| `src/core/tools/tool_names.rs` | Centralised tool name constants (`CALL_AGENT`, `RESTART`, …) | [tools.md](tools.md) |
+| `src/core/provider/` | `ProviderRegistry` (implements `ApiProviderRegistry`) — thin wrapper around `core-api::provider`. All types re-exported for internal use. | [llm-clients.md](llm-clients.md) |
+| `src/core/service_manager.rs` | `ServiceManager` trait — lightweight umbrella for all model managers | [llm-clients.md](llm-clients.md) |
+| `src/core/chatbot/` | LLM provider clients | [llm-clients.md](llm-clients.md) |
+| `src/core/llm/manager.rs` | LLM selection, health tracking | [llm-clients.md](llm-clients.md) |
+| `src/core/chat_event_bus.rs` | In-process broadcast bus for chat turns and compaction events | [chat-event-bus.md](chat-event-bus.md) |
+| `src/core/compactor.rs` | Context compaction — summarises old history to reduce token usage | [compaction.md](compaction.md) |
+| `src/core/memory/` | Pluggable long-term memory layer (trait + manager) | [memory.md](memory.md) |
+| `src/core/chat_hub/` | Central chat orchestrator, notification pipeline | [architecture.md](architecture.md) |
+| `src/core/tic/` | Background MCP event processor (TicManager) | [architecture.md](architecture.md) |
+| `src/core/mcp/` | MCP server management, push notification ingestion | [mcp.md](mcp.md) |
+| `src/core/cron/` | Scheduled job scheduler | [cron.md](cron.md) |
+| `src/core/plugin/` | Plugin system (PluginManager) | [plugins.md](plugins.md) |
+| `src/core/secrets.rs` | SecretsStore — centralised token/key store over SQLite | [secrets.md](secrets.md) |
+| `src/core/transcribe/` | TranscribeManager, OpenAiAudioTranscriber, ElevenLabsTranscriber. Traits and record types re-exported from `core-api`. | [transcribe-providers.md](transcribe-providers.md) |
+| `src/core/tts/` | TtsManager (DB-backed + plugin slots), OpenAiTtsSynthesiser, ElevenLabsTtsSynthesiser. Traits and record types re-exported from `core-api`. | [tts-providers.md](tts-providers.md) |
+| `src/core/image_generate/` | ImageGenerate trait, ImageGeneratorManager (DB-backed + plugin slots), OpenRouterImageGenerator | [image-generate.md](image-generate.md) |
+| `src/core/db/` | SQLite schema and queries | [database.md](database.md) |
+| `src/core/events.rs` | WS protocol types | [frontend.md](frontend.md) |
+| `src/frontend/mod.rs` | `WebFrontend` — wires `router_factory`, starts plugins, runs Axum | [architecture.md](architecture.md) |
+| `src/frontend/server.rs` | `WebServer` — Axum router, TcpListener, `WebServerHandle` | [architecture.md](architecture.md) |
+| `src/frontend/api/` | 18 HTTP + WebSocket handlers — `State<Arc<Skald>>` | [frontend.md](frontend.md) |
+| `src/config.rs` | `Config` (YAML aggregate: `ServerConfig`, `WebConfig` + re-exports from `core::config`) + `Config::into_split()` | [logging-config.md](logging-config.md) |
 | `crates/plugin-honcho/` | Honcho memory sink (standalone crate) | [honcho.md](honcho.md) |
 | `crates/plugin-tailscale-remote/` | Remote connectivity via Tailscale mesh (standalone crate) | [remote.md](remote.md) |
 | `crates/plugin-transcribe-whisper-local/` | Local STT via whisper.cpp (standalone crate) | [whisper-local.md](whisper-local.md) |
@@ -85,13 +98,6 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 | `crates/plugin-tts-orpheus-3b/` | Orpheus TTS 3B — local TTS via Python subprocess (standalone crate) | [tts-providers.md](tts-providers.md) |
 | `crates/plugin-tts-kokoro/` | Kokoro ONNX — lightweight local TTS, multilingual (standalone crate) | [tts-providers.md](tts-providers.md) |
 | `crates/honcho-client/` | Honcho v3 REST API client (standalone crate) | [honcho.md](honcho.md) |
-| `src/secrets.rs` | SecretsStore — centralised token/key store over SQLite | [secrets.md](secrets.md) |
-| `src/transcribe/` | TranscribeManager, OpenAiAudioTranscriber, ElevenLabsTranscriber. Traits and record types re-exported from `core-api`. | [transcribe-providers.md](transcribe-providers.md) |
-| `src/tts/` | TtsManager (DB-backed + plugin slots), OpenAiTtsSynthesiser, ElevenLabsTtsSynthesiser. Traits and record types re-exported from `core-api`. | [tts-providers.md](tts-providers.md) |
-| `src/image_generate/` | ImageGenerate trait, ImageGeneratorManager (DB-backed + plugin slots), OpenRouterImageGenerator | [image-generate.md](image-generate.md) |
-| `src/db/` | SQLite schema and queries | [database.md](database.md) |
-| `src/events.rs` | WS protocol types | [frontend.md](frontend.md) |
-| `src/config.rs` | Config file loading | [logging-config.md](logging-config.md) |
 | `web/components/` | Lit frontend components | [frontend.md](frontend.md) |
 | `run.sh` | Supervisor loop | [self-rewriting.md](self-rewriting.md) |
 
@@ -101,16 +107,16 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 
 | Constant | Value | Location |
 | --- | --- | --- |
-| `MAX_AGENT_DEPTH` | **5** | `src/session/handler/mod.rs` |
-| `DEFAULT_MAX_TOOL_ROUNDS` | **20** | `src/session/handler/mod.rs` |
-| `FAILURE_DEGRADED` | **3** consecutive failures | `src/llm/manager.rs` |
-| `FAILURE_DOWN` | **5** consecutive failures | `src/llm/manager.rs` |
-| Cron scheduler tick | **30 s** | `src/cron/mod.rs` |
-| Cron fire-check window | **90 s** | `src/cron/mod.rs` |
-| MCP startup timeout | **120 s** | `src/mcp/mod.rs` |
+| `MAX_AGENT_DEPTH` | **5** | `src/core/session/handler/mod.rs` |
+| `DEFAULT_MAX_TOOL_ROUNDS` | **20** | `src/core/session/handler/mod.rs` |
+| `FAILURE_DEGRADED` | **3** consecutive failures | `src/core/llm/manager.rs` |
+| `FAILURE_DOWN` | **5** consecutive failures | `src/core/llm/manager.rs` |
+| Cron scheduler tick | **30 s** | `src/core/cron/mod.rs` |
+| Cron fire-check window | **90 s** | `src/core/cron/mod.rs` |
+| MCP startup timeout | **120 s** | `src/core/mcp/mod.rs` |
 | TIC tick interval | **900 s** default | `config.yml` → `tic.interval_secs` |
 | TIC batch size | **50 events** default | `config.yml` → `tic.batch_size` |
-| Notification batch window | **200 ms** | `src/chat_hub/mod.rs` |
+| Notification batch window | **200 ms** | `src/core/chat_hub/mod.rs` |
 
 ---
 

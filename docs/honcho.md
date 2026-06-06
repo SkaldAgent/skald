@@ -95,7 +95,7 @@ An event is forwarded only when **all** of the following conditions hold:
 
 ## Lifecycle
 
-1. **`start()`** — subscribes to `AppState::event_bus`, calls `ensure_workspace_ready` (best-effort), then spawns the listener task.
+1. **`start()`** — subscribes to `skald.event_bus`, calls `ensure_workspace_ready` (best-effort), then spawns the listener task.
 2. **Listener task** — `tokio::select!` loop on the bus receiver and a `CancellationToken`. On `RecvError::Lagged`, logs a warning and continues (some turns are missed but the task stays alive).
 3. **`stop()`** — cancels the token and awaits the task.
 4. **`reload()`** — follows the standard plugin pattern: start/stop/restart-on-change.

@@ -62,10 +62,10 @@ Inference runs on Apple Silicon GPU via Metal. Falls back to CPU if Metal is una
 
 ## Integration with TranscribeManager
 
-`WhisperLocalPlugin` does **not** expose itself as `Arc<dyn Transcribe>` directly. At `start()` it registers a lightweight `WhisperLocalTranscriber` handle into `AppState::transcribe_manager`; at `stop()` it deregisters it. Callers never reference the plugin type — they ask the manager:
+`WhisperLocalPlugin` does **not** expose itself as `Arc<dyn Transcribe>` directly. At `start()` it registers a lightweight `WhisperLocalTranscriber` handle into `skald.transcribe_manager`; at `stop()` it deregisters it. Callers never reference the plugin type — they ask the manager:
 
 ```rust
-if let Some(t) = state.transcribe_manager.get().await {
+if let Some(t) = skald.transcribe_manager.get().await {
     let text = t.transcribe(audio, "ogg").await?;
 }
 ```

@@ -6,7 +6,7 @@
 
 `source` identifies the client type: `web` (default, desktop copilot) or `mobile` (mobile chat page). The same endpoint serves both; ChatHub maintains independent sessions per source.
 
-One connection per source. The connection is upgraded by Axum's WS handler in `src/api/ws.rs`. The client sends one `ClientMessage`, receives a stream of `ServerEvent`s, then can send additional messages (cancel, approval) while events are in flight.
+One connection per source. The connection is upgraded by Axum's WS handler in `src/frontend/api/ws.rs`. The client sends one `ClientMessage`, receives a stream of `ServerEvent`s, then can send additional messages (cancel, approval) while events are in flight.
 
 History for a source: `GET /api/<source>/messages` (or the legacy alias `/api/web/messages`).
 
@@ -51,7 +51,7 @@ All events are JSON objects with a `"type"` tag (snake_case).
 ## Slash Commands (Web Copilot)
 
 The web copilot supports the following slash commands, intercepted server-side in
-`src/api/ws.rs` before reaching the LLM:
+`src/frontend/api/ws.rs` before reaching the LLM:
 
 | Command | Effect |
 |---|---|
@@ -153,8 +153,8 @@ Approval cards have a yellow left border; clarification cards have a blue left b
 
 ## Adding a New ServerEvent
 
-1. Add the variant to `ServerEvent` enum in `src/events.rs`.
-2. Add the `type_name()` match arm in `src/events.rs`.
+1. Add the variant to `ServerEvent` enum in `src/core/events.rs`.
+2. Add the `type_name()` match arm in `src/core/events.rs`.
 3. Emit it at the appropriate point (session handler, ChatHub, or ws.rs).
 4. Handle it in `web/lib/chat-session.js` `_handleServerMsg()` — all clients inherit the handler automatically.
 5. Update the ServerEvent Types table above.
@@ -163,7 +163,7 @@ Approval cards have a yellow left border; clarification cards have a blue left b
 
 ## Debug Mode
 
-A persistent flag stored in the `config` DB table under key `DEBUG_MODE` (`"true"` / `"false"`). The API is in `src/api/dev.rs`.
+A persistent flag stored in the `config` DB table under key `DEBUG_MODE` (`"true"` / `"false"`). The API is in `src/frontend/api/dev.rs`.
 
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |

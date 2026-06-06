@@ -15,7 +15,7 @@ trait RemoteAccess            ←── RemotePlugin  (src/lib.rs)
                                   [feature: remote-tailscale]
 ```
 
-- **`RemoteAccess` trait** (`core_api::remote`): vendor-agnostic interface. The core (`AppState`, WS handler, etc.) only knows this trait.
+- **`RemoteAccess` trait** (`core_api::remote`): vendor-agnostic interface. The core (`Skald`, WS handler, etc.) only knows this trait.
 - **`TailscaleSystemProvider`** (`crates/plugin-tailscale-remote/src/tailscale_sys.rs`): **recommended provider**. Reads the mesh IP via `tailscale ip -4` (requires `tailscaled` running on the host). Binds a standard `tokio::net::TcpListener` — no experimental dependencies.
 - **`TailscaleEmbeddedProvider`** (`crates/plugin-tailscale-remote/src/tailscale.rs`): embedded alternative using `tailscale-rs`. Feature-gated: `remote-tailscale` (enabled by default). No system daemon required, but currently pre-1.0 with known DERP/reconnect issues. Use when a daemon cannot be installed (e.g. unrooted NAS).
 - **`RemotePlugin`** (`crates/plugin-tailscale-remote/src/lib.rs`): wires the provider into the plugin lifecycle. Spawns a second Axum server on the mesh interface using the same router as the local server.
@@ -31,7 +31,7 @@ pub trait RemoteAccess: Send + Sync {
 }
 ```
 
-Stored in `AppState::remote: Arc<RwLock<Option<Arc<dyn RemoteAccess>>>>`. `None` when the plugin is disabled.
+Stored in `Skald::remote: Arc<RwLock<Option<Arc<dyn RemoteAccess>>>>`. `None` when the plugin is disabled.
 
 ### Dual-bind strategy
 
@@ -39,9 +39,9 @@ The plugin (not the `WebServer`) is responsible for the mesh-facing server:
 
 1. `RemotePlugin::start(state)` calls `extract_deps(state)` once, storing three named fields:
    - `port: u16` — TCP port to bind on the mesh interface
-   - `remote_slot: Arc<RwLock<Option<Arc<dyn RemoteAccess>>>>` — slot in AppState to register the active provider
+   - `remote_slot: Arc<RwLock<Option<Arc<dyn RemoteAccess>>>>` — slot in `Skald` to register the active provider
    - `router_factory: Arc<dyn Fn() -> Router + Send + Sync>` — closure that rebuilds the Axum router
-2. The internal helpers (`start_tailscale_sys`, `start_tailscale`) use only those three fields — no `Arc<AppState>` reference after extraction.
+2. The internal helpers (`start_tailscale_sys`, `start_tailscale`) use only those three fields — no `Arc<Skald>` reference after extraction.
 3. `start_tailscale_sys` binds `tokio::net::TcpListener::bind((mesh_ip, port))`.
 4. `start_tailscale` calls `provider.axum_listener(port)` → `tailscale::axum::Listener`.
 5. Both call `router_factory()` to get a fresh router and spawn `axum::serve(listener, router)` guarded by a `CancellationToken`.
@@ -104,7 +104,7 @@ Remote clients can push typed data over the existing WebSocket connection:
 {"type": "data", "stream": "location", "payload": {"lat": 45.1, "lng": 9.2, "accuracy": 10.0}}
 ```
 
-Handled in `src/api/ws.rs` → `handle_data_msg()`. Dispatched to:
+Handled in `src/frontend/api/ws.rs` → `handle_data_msg()`. Dispatched to:
 
 | Stream | Handler | Notes |
 |---|---|---|

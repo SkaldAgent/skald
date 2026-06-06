@@ -2,7 +2,7 @@
 
 ## Workspace Location
 
-The `ChatbotClient` trait and all provider implementations live in the standalone crate `crates/llm-client` (no dependencies on the main crate). `src/chatbot/mod.rs` is a thin re-export layer. `LoggingChatbotClient` (`src/chatbot/logging.rs`) remains in the main crate because it depends on `sqlx`.
+The `ChatbotClient` trait and all provider implementations live in the standalone crate `crates/llm-client` (no dependencies on the main crate). `src/core/chatbot/mod.rs` is a thin re-export layer. `LoggingChatbotClient` (`src/core/chatbot/logging.rs`) remains in the main crate because it depends on `sqlx`.
 
 ---
 
@@ -27,7 +27,7 @@ Only `AnthropicClient` and `OpenAiClient` implement native tool support (`chat_w
 
 ## Transparent Request Logging
 
-`LoggingChatbotClient` (`src/chatbot/logging.rs`) is a `ChatbotClient` wrapper that intercepts every `chat_with_tools` call:
+`LoggingChatbotClient` (`src/core/chatbot/logging.rs`) is a `ChatbotClient` wrapper that intercepts every `chat_with_tools` call:
 
 1. Calls `inner.chat_with_tools_raw(...)` to capture the HTTP wire data.
 2. Spawns a **fire-and-forget** `tokio::spawn` to insert a row into `llm_requests`.
@@ -50,7 +50,7 @@ Both variants carry an optional `reasoning_content: Option<String>`. Populated o
 
 ## Provider Registry
 
-Providers are no longer identified by a hard-coded enum. Instead, each provider is a struct implementing the `ApiProvider` trait (`src/provider/mod.rs`), registered at startup in `main.rs` via `ProviderRegistry::register_builtin()`. The DB column `llm_providers.type` stores the provider's `type_id` string.
+Providers are no longer identified by a hard-coded enum. Instead, each provider is a struct implementing the `ApiProvider` trait (`src/core/provider/mod.rs`), registered at startup in `main.rs` via `ProviderRegistry::register_builtin()`. The DB column `llm_providers.type` stores the provider's `type_id` string.
 
 ```rust
 // src/provider/mod.rs
@@ -79,7 +79,7 @@ pub trait ApiProvider: Send + Sync {
 
 `BuiltLlmClient` bundles the constructed `Arc<dyn ChatbotClient>` with a `prompt_cache: bool` flag that controls whether Anthropic KV-cache headers are injected by the session loop.
 
-**`ProviderRegistry`** (`src/provider/mod.rs`) holds built-in and plugin providers separately. Plugin providers shadow built-in ones with the same `type_id`. Plugins can call `registry.register_plugin()` / `registry.unregister_plugin()` at any time after startup.
+**`ProviderRegistry`** (`src/core/provider/mod.rs`) holds built-in and plugin providers separately. Plugin providers shadow built-in ones with the same `type_id`. Plugins can call `registry.register_plugin()` / `registry.unregister_plugin()` at any time after startup.
 
 `LlmManager`, `TranscribeManager`, `TtsManager`, and `ImageGeneratorManager` all receive an `Arc<ProviderRegistry>` at construction and use it to build clients and look up `supported_types`.
 
@@ -313,7 +313,7 @@ Setting `is_default = true` on a model automatically clears the flag on all othe
 
 Each provider declares which service kinds it supports via `ApiProvider::supported_types() -> &'static [ServiceType]`. Hardcoded per implementation — not stored in the DB.
 
-`ServiceType` replaces the old `ModelType` enum (previously in `src/llm/providers/mod.rs`); it now lives in `src/provider/mod.rs` and is re-exported as `providers::ServiceType` for backwards compatibility.
+`ServiceType` replaces the old `ModelType` enum (previously in `src/core/llm/providers/mod.rs`); it now lives in `src/core/provider/mod.rs` and is re-exported as `providers::ServiceType` for backwards compatibility.
 
 | Provider (`type_id`) | `supported_types()`                              |
 | -------------------- | ------------------------------------------------ |

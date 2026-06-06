@@ -210,7 +210,7 @@ Only providers that declare `ServiceType::ImageGenerate` in `ApiProvider::suppor
 | `created_at` | TEXT | NOT NULL DEFAULT `datetime('now')` |
 | `updated_at` | TEXT | NOT NULL DEFAULT `datetime('now')` — updated on upsert |
 
-Managed via `SecretsStore` (`src/secrets.rs`). See [secrets.md](secrets.md).
+Managed via `SecretsStore` (`src/core/secrets.rs`). See [secrets.md](secrets.md).
 
 ---
 
@@ -275,7 +275,7 @@ Audit trail of every cron job execution. One row per run, written after each exe
 
 Index: `idx_job_runs_job_id ON job_runs(job_id)`
 
-DAO in `src/db/job_runs.rs`: `insert(pool, ...)`, `list_for_job(pool, job_id, limit)`.
+DAO in `src/core/db/job_runs.rs`: `insert(pool, ...)`, `list_for_job(pool, job_id, limit)`.
 
 ---
 
@@ -327,7 +327,7 @@ Persistent store for push notifications received from MCP servers via JSON-RPC n
 
 Index: `idx_mcp_events_pending ON mcp_events(id) WHERE processed = 0` — partial index for efficient pending-event queries.
 
-DAO in `src/db/mcp_events.rs`: `insert`, `pending_limited(limit)`, `pending`, `mark_processed(ids)`, `all_recent(limit)`.
+DAO in `src/core/db/mcp_events.rs`: `insert`, `pending_limited(limit)`, `pending`, `mark_processed(ids)`, `all_recent(limit)`.
 
 ---
 
@@ -344,7 +344,7 @@ DAO in `src/db/mcp_events.rs`: `insert`, `pending_limited(limit)`, `pending`, `m
 
 Unique constraint: `(session_id, mcp_name)` — granting the same server twice is a no-op (INSERT OR IGNORE).
 
-DAO in `src/db/session_mcp_grants.rs`: `grant(pool, session_id, mcp_name)`, `list_for_session(pool, session_id)`.
+DAO in `src/core/db/session_mcp_grants.rs`: `grant(pool, session_id, mcp_name)`, `list_for_session(pool, session_id)`.
 
 > **Sub-agents do not write here.** They use `stack_mcp_grants` instead.
 
@@ -367,7 +367,7 @@ DAO in `src/db/session_mcp_grants.rs`: `grant(pool, session_id, mcp_name)`, `lis
 
 Unique constraint: `(stack_id, mcp_name)` — granting the same server twice is a no-op (INSERT OR IGNORE).
 
-DAO in `src/db/stack_mcp_grants.rs`: `grant(pool, stack_id, mcp_name)`, `list_for_stack(pool, stack_id)`, `delete_for_stack(pool, stack_id)`.
+DAO in `src/core/db/stack_mcp_grants.rs`: `grant(pool, stack_id, mcp_name)`, `list_for_stack(pool, stack_id)`, `delete_for_stack(pool, stack_id)`.
 
 ---
 
@@ -395,7 +395,7 @@ Index: `idx_llm_requests_created ON llm_requests(created_at)` — used by the re
 
 Rows are purged automatically by a background task (runs at boot + every hour) via `db::llm_requests::cleanup(pool, retention_days)`. Default retention: 14 days.
 
-DAO in `src/db/llm_requests.rs`: `insert(pool, LlmRequestRow)`, `cleanup(pool, retention_days)`.
+DAO in `src/core/db/llm_requests.rs`: `insert(pool, LlmRequestRow)`, `cleanup(pool, retention_days)`.
 
 **Config** (`config.yml`):
 

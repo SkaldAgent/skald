@@ -13,7 +13,7 @@ See below for details on each.
 
 ## Chat Event Bus
 
-`src/chat_event_bus.rs` — thin re-export of `crates/core-api/src/bus.rs`.
+`src/core/chat_event_bus.rs` — thin re-export of `crates/core-api/src/bus.rs`.
 All types (`ChatEventBus`, `BusEvent`, `ChatEvent`, `CompactionEvent`, etc.) are defined in `core-api` and re-exported here for backward compatibility.
 
 ## Purpose
@@ -92,7 +92,7 @@ Published by `ContextCompactor` after a summary is persisted to `chat_summaries`
 ## ChatEventBus
 
 ```rust
-// Instantiated once in main.rs, stored in AppState and ChatSessionManager.
+// Instantiated once in main.rs, stored in `Skald` and ChatSessionManager.
 let bus = Arc::new(ChatEventBus::new()); // default capacity: 256
 
 // Publish (called internally):
@@ -147,7 +147,7 @@ call that processes the user's message (Opzione C trigger). See
 
 ## Adding a Consumer
 
-1. Call `state.event_bus.subscribe()` in `main.rs` after `AppState` is assembled.
+1. Call `skald.event_bus.subscribe()` in `main.rs` after `Skald::new()` completes.
 2. Spawn a background task with a receive loop.
 3. Match on `BusEvent` variants — ignore variants you don't care about.
 4. On `RecvError::Lagged`, log and continue — do not panic.
@@ -187,7 +187,7 @@ pub enum SystemEvent {
 
 ### Wiring
 
-- **Created** early in `main.rs` (no dependencies), stored in `AppState::system_bus` and `PluginContext::system_bus`.
+- **Created** early in `main.rs` (no dependencies), stored in `skald.system_bus` and `PluginContext::system_bus`.
 - **Producers**: `ProviderRegistry::register_plugin()` / `unregister_plugin()` emit automatically — plugins do not need to touch the bus directly.
 - **Consumers**: `TtsManager` and `TranscribeManager` subscribe at construction time and call `reload()` on `ApiProviderRegistered` / `ApiProviderUnregistered`. This ensures DB-backed models whose provider was not yet in the registry at startup are picked up as soon as the plugin starts.
 

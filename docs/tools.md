@@ -57,7 +57,7 @@ Every tool declares a `ToolCategory`, used for access-control filtering and audi
 
 ## Tool Name Constants
 
-All system tool names are centralised in `src/tools/tool_names.rs` as `pub const` strings. Import with `use crate::tools::tool_names as tn;`.
+All system tool names are centralised in `src/core/tools/tool_names.rs` as `pub const` strings. Import with `use crate::tools::tool_names as tn;`.
 
 | Constant | Value |
 | --- | --- |
@@ -99,7 +99,7 @@ An agent's `meta.json` can declare `allow_tools: ["tool_a", "tool_b"]`. When pre
 
 **MCP tools are never filtered** — they pass through regardless of `allow_tools`. The Approval gate governs MCP tool execution.
 
-Filtering happens in `src/session/handler/config.rs` after assembling `base_tool_defs` (registry + synthetic tools), before extending with MCP tools.
+Filtering happens in `src/core/session/handler/config.rs` after assembling `base_tool_defs` (registry + synthetic tools), before extending with MCP tools.
 
 ---
 
@@ -148,7 +148,7 @@ Every `Tool` implementation can override `describe(&self, args: &Value, length: 
 | `Short` | 60 | `execute_cmd \`git\`` |
 | `Full` | 120 | `execute_cmd \`git commit -m "feat: ..."\`` |
 
-Constants `MAX_LABEL_SHORT` and `MAX_LABEL_FULL` are defined in `src/tools/mod.rs`. `truncate_label(s, max)` truncates at char boundary appending `…`.
+Constants `MAX_LABEL_SHORT` and `MAX_LABEL_FULL` are defined in `src/core/tools/mod.rs`. `truncate_label(s, max)` truncates at char boundary appending `…`.
 
 The default implementation returns `self.name()`, so all tools work without implementing `describe`. Built-in tools (fs, exec) have explicit implementations; MCP and plugin tools fall back to the tool name.
 
@@ -171,11 +171,11 @@ Paths starting with `memory/` bypass the approval gate for write tools.
 
 ## Adding a Tool
 
-1. Create a struct in `src/tools/` (new file or existing module).
+1. Create a struct in `src/core/tools/` (new file or existing module).
 2. `impl Tool` for the struct — include `fn category()`.
 3. Register in `src/main.rs`: `tool_registry.register(MyTool::new(...))`.
 4. If the tool needs `ChatHub` or should only be visible to specific callers (background agents), do **not** add it to `ToolRegistry` — implement it as an `InterfaceTool` and inject it at the call site (see `tools::notify::make_tool`).
-5. If the tool needs user approval before executing, add it to `needs_approval()` in `src/session/handler/approval.rs`.
+5. If the tool needs user approval before executing, add it to `needs_approval()` in `src/core/session/handler/approval.rs`.
 6. Update this doc (catalogue table).
 
 ---

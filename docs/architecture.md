@@ -1,5 +1,30 @@
 # Architecture
 
+## Two-Layer Design
+
+```
+src/
+  core/         ← headless application core (no HTTP, no Axum)
+    skald.rs    ← Skald struct: owns all managers, lifecycle (new / shutdown)
+    …           ← all domain modules (db, llm, session, cron, plugin, …)
+  frontend/     ← web presentation layer
+    mod.rs      ← WebFrontend: wires router_factory, starts plugins, runs Axum
+    server.rs   ← WebServer (Axum router, TcpListener)
+    api/        ← 18 HTTP + WebSocket handlers — State<Arc<Skald>>
+  core/config.rs    ← CoreConfig + DbConfig, LlmConfig, TicConfig, … (core-owned types)
+  frontend/config.rs ← FrontendConfig + ServerConfig, WebConfig
+  config.rs         ← Config (YAML parse only) + into_split()
+  main.rs           ← thin: tracing → Config → into_split → plugins → Skald::new → WebFrontend::start → shutdown
+```
+
+`Skald` knows nothing about Axum or HTTP. It can be started headlessly. `WebFrontend` is the only component that imports Axum and constructs an HTTP server.
+
+`Config::into_split()` produces a `CoreConfig` (db, llm, tic, cron, timezone) for `Skald::new()` and a `FrontendConfig` (server, web, timezone) for `WebFrontend::new()`. The YAML file structure is unchanged. `timezone` is cloned into both since it is used by the cron scheduler (core) and optionally by the frontend.
+
+Plugin instances are constructed in `main.rs` as `Vec<Arc<dyn Plugin>>` and injected into `Skald::new()` — the core never depends on concrete plugin crates.
+
+---
+
 ## Component Map
 
 | Struct | Created by | Held as | Depends on |
@@ -8,15 +33,16 @@
 | `LlmManager` | `LlmManager::new()` | `Arc<LlmManager>` | `SqlitePool` |
 | `McpManager` | `McpManager::new()` | `Arc<McpManager>` | `SqlitePool` |
 | `CronTaskManager` | `CronTaskManager::new()` | `Arc<CronTaskManager>` | `SqlitePool`, `ChatSessionManager` (via OnceLock), `ChatHub` (via OnceLock) |
-| `ToolRegistry` | `main.rs` inline | `Arc<ToolRegistry>` | `McpManager`, `CronTaskManager`, `PluginManager` |
+| `ToolRegistry` | `Skald::new()` inline | `Arc<ToolRegistry>` | `McpManager`, `CronTaskManager`, `PluginManager` |
 | `ApprovalManager` | `ApprovalManager::new()` | `Arc<ApprovalManager>` | `SqlitePool` |
 | `ClarificationManager` | `ClarificationManager::new()` | `Arc<ClarificationManager>` | — |
 | `ChatEventBus` | `ChatEventBus::new()` | `Arc<ChatEventBus>` | — |
-| `ContextCompactor` | `main.rs` (when `llm.compaction` configured) | `Option<Arc<ContextCompactor>>` | `LlmManager`, `ChatEventBus` |
+| `ContextCompactor` | `Skald::new()` (when `llm.compaction` configured) | `Option<Arc<ContextCompactor>>` | `LlmManager`, `ChatEventBus` |
 | `ChatSessionManager` | `ChatSessionManager::new()` | `Arc<ChatSessionManager>` | `SqlitePool`, `LlmManager`, `ToolRegistry`, `McpManager`, `ApprovalManager`, `ClarificationManager`, `ChatEventBus`, `ContextCompactor` |
 | `ChatHub` | `ChatHub::new()` | `Arc<ChatHub>` | `SqlitePool`, `ChatSessionManager`, `ApprovalManager` |
 | `TicManager` | `TicManager::new()` | `Arc<TicManager>` | `SqlitePool`, `ChatHub`, `ChatSessionManager` |
-| `AppState` | `main.rs` inline | cloned into Axum router | all of the above |
+| `Skald` | `Skald::new(&core_cfg, plugins)` | `Arc<Skald>` | all of the above |
+| `WebFrontend` | `WebFrontend::new(skald, &frontend_cfg)` | owned by `main` | `Arc<Skald>`, `FrontendConfig` |
 
 ### Circular Dependencies
 
@@ -24,35 +50,54 @@
 
 **`CronTaskManager` ↔ `ChatHub`**: Same pattern — `ChatHub` is built after `cron.start()`. `set_hub()` is called immediately after `ChatHub::new()`. The cron tick loop starts 30 s after `start()`, so hub is always ready by the first real job dispatch.
 
+**`PluginManager` ↔ `Skald`**: `PluginManager` is constructed early (to register tools), then `set_skald(Arc<Skald>)` is called after `Arc::new(Skald { … })`. `set_router_factory(RouterFactory)` is called by `WebFrontend::start()` before `start_enabled()`.
+
 ---
 
 ## Startup Sequence
 
-1. Init logging (`tracing-appender` daily rolling to `logs/`)
-2. `Config::load()` — reads `config.yml` (copies from `default.config.yaml` if missing)
-3. `db::init_pool()` — opens SQLite, runs `create_tables()` (idempotent)
-4. `agents::discover()` — scans `agents/*/` for `meta.json` + `AGENT.md`
+### `main.rs`
+1. Init tracing (`tracing-appender` daily rolling to `logs/`)
+2. `Config::load()` → `config.into_split()` → `(CoreConfig, FrontendConfig)`
+3. Build `Vec<Arc<dyn Plugin>>` — all plugin instances constructed here
+4. `Skald::new(&core_cfg, plugins)` — see sequence below
+5. `WebFrontend::new(skald, &frontend_cfg)` + `.start()` — see sequence below
+6. Await `ctrl_c`
+7. `skald.shutdown()` + `handle.shutdown()`
+
+### Inside `Skald::new(&core_cfg)`
+1. `db::init_pool()` — opens SQLite, runs `create_tables()` (idempotent)
+2. `SystemEventBus::new()`
+3. `agents::discover()` — scans `agents/*/` for `meta.json` + `AGENT.md`
+4. `ProviderRegistry::new()` + register 6 built-in LLM providers
 5. `LlmManager::new()` — loads providers and models from DB
-6. `McpManager::new()` + background `initialize()` — connects MCP servers from DB; starts `notification_consumer` task persisting MCP push events to `mcp_events`
-7. `CronTaskManager::new()` — creates scheduler (not started yet)
-8. `PluginManager` built — plugins registered, not yet started
-9. `ToolRegistry` built — all built-in tools registered (`notify` is **not** in the registry — see tools.md)
-10. `ApprovalManager::new()` — loads approval rules from DB
-11. `ImageGeneratorManager::new(pool, "data")` — image generation provider registry; loads DB-backed models
-12. `ChatEventBus::new()` — in-process broadcast bus for chat events (no subscribers at startup)
-13. `ClarificationManager::new()` — in-memory pending clarification store for background sessions
-14. `ChatSessionManager::new()` — session factory wired up; receives `ClarificationManager` and `ImageGeneratorManager`
-15. `cron.set_session()` — breaks CronTaskManager circular dep
-16. `CancellationToken` created (`tokio_util::sync::CancellationToken`) — shared shutdown signal passed to all background tasks
-17. `cron.start(shutdown_token)` — background scheduler loop begins (tick every 30 s); recovery of interrupted jobs runs once before the first tick; cleanup loop starts (15 s delay then hourly). Returns `Vec<JoinHandle>` collected for graceful shutdown.
-18. `TranscribeManager::new()` — STT provider registry
-19. `ChatHub::new()` — central chat orchestrator; spawns notification consumer task
-20. `cron.set_hub(chat_hub)` — wires ChatHub into CronTaskManager for completion notifications
-21. `TicManager::new(pool, session_mgr, chat_hub, config.tic)` + `.start(shutdown_token)` — background MCP event processor; returns `JoinHandle` for graceful shutdown.
-22. `AppState` assembled
-23. `PluginManager::set_state()` + `start_enabled()` — starts Telegram and other enabled plugins
-24. `plugin_manager.start_config_watcher(shutdown_token)` — polls DB every 30 s for plugin config changes
-25. `WebServer::start()` — Axum HTTP+WS server starts listening
+6. Spawn LLM request log cleanup task (if configured)
+7. `SecretsStore::new()`
+8. `McpManager::new()` + background `initialize()` — connects MCP servers from DB
+9. `CronTaskManager::new()` — creates scheduler (not started yet)
+10. `PluginManager::new()` — plugins registered, not yet started
+11. `ToolRegistry` built — all built-in tools registered
+12. `ApprovalManager::new()` — loads approval rules from DB; seeds defaults
+13. `ImageGeneratorManager::new(pool, "data")` — image generation provider registry
+14. `ChatEventBus::new()`
+15. `MemoryManager::new()`
+16. `ContextCompactor::new()` (if `llm.compaction` configured)
+17. `ClarificationManager::new()`
+18. `ChatSessionManager::new()` — session factory wired up
+19. `cron.set_session()` — breaks CronTaskManager circular dep
+20. `TranscribeManager::new()`, `TtsManager::new()`
+21. `ChatHub::new()` — spawns notification consumer task
+22. `cron.set_hub(chat_hub)` — wires ChatHub into CronTaskManager
+23. `cron.start(shutdown_token)` + `tic_manager.start(shutdown_token)` — background loops begin; handles stored in `bg_handles`
+24. `Arc::new(Skald { … })` assembled
+25. `plugin_manager.set_skald(Arc::clone(&skald))` — post-construction wiring
+
+### Inside `WebFrontend::start()`
+26. `plugin_manager.set_router_factory(factory)` — provides Axum router factory to plugins
+27. `plugin_manager.set_web_port(port)` — provides HTTP port to plugins (e.g. Tailscale)
+28. `plugin_manager.start_enabled()` — starts Telegram and other enabled plugins
+29. `plugin_manager.start_config_watcher(shutdown_token)` — polls DB every 30 s
+30. `WebServer::start(addr)` — Axum HTTP+WS server begins listening
 
 ---
 
@@ -81,7 +126,7 @@
 
 ```text
 MCP server stdout (JSON-RPC notification, no id field)
-  → McpServer reader loop (src/mcp/server.rs)
+  → McpServer reader loop (src/core/mcp/server.rs)
   → notification_tx (mpsc::UnboundedSender)
   → McpManager::notification_consumer
   → db::mcp_events::insert(source, method, payload)
@@ -102,27 +147,60 @@ MCP server stdout (JSON-RPC notification, no id field)
 
 ---
 
-## AppState Fields
+## Skald Fields
+
+`Skald` replaces the old `Skald` god class. All fields are `pub Arc<_>` accessible to `WebFrontend` handlers via `State<Arc<Skald>>`.
 
 | Field | Type | Purpose |
 | --- | --- | --- |
-| `manager` | `Arc<ChatSessionManager>` | Creates/retrieves session handlers |
-| `chat_hub` | `Arc<ChatHub>` | Central chat orchestrator; routes messages, notifications, approvals |
-| `db` | `Arc<SqlitePool>` | Direct DB access for API routes |
-| `mcp` | `Arc<McpManager>` | MCP server management API |
-| `cron` | `Arc<CronTaskManager>` | Cron job management API |
-| `plugin_manager` | `Arc<PluginManager>` | Plugin lifecycle management |
-| `location_manager` | `Arc<LocationManager>` | Named GPS position store |
-| `approval` | `Arc<ApprovalManager>` | Human-in-the-loop approval rules |
-| `clarification` | `Arc<ClarificationManager>` | Pending clarification requests from background sessions (Agent Inbox) |
+| `db` | `Arc<SqlitePool>` | Direct DB access |
+| `system_bus` | `Arc<SystemEventBus>` | Cross-service event bus |
+| `provider_registry` | `Arc<ProviderRegistry>` | LLM/AI provider registry |
+| `llm_manager` | `Arc<LlmManager>` | LLM selection, health tracking |
+| `secrets` | `Arc<SecretsStore>` | Centralised token/key store |
+| `mcp` | `Arc<McpManager>` | MCP server management |
+| `cron` | `Arc<CronTaskManager>` | Scheduled job management |
+| `plugin_manager` | `Arc<PluginManager>` | Plugin lifecycle |
 | `tools` | `Arc<ToolRegistry>` | Built-in tool dispatch |
-| `transcribe_manager` | `Arc<TranscribeManager>` | Speech-to-Text provider registry |
-| `image_generator_manager` | `Arc<ImageGeneratorManager>` | Text-to-image provider registry (DB-backed + plugin) |
+| `approval` | `Arc<ApprovalManager>` | Human-in-the-loop approval rules |
+| `image_generator_manager` | `Arc<ImageGeneratorManager>` | Text-to-image provider registry |
+| `event_bus` | `Arc<ChatEventBus>` | In-process broadcast bus for chat turns |
 | `memory_manager` | `Arc<MemoryManager>` | Long-term memory provider registry |
+| `clarification` | `Arc<ClarificationManager>` | Pending clarification requests |
+| `manager` | `Arc<ChatSessionManager>` | Session factory |
+| `chat_hub` | `Arc<ChatHub>` | Central chat orchestrator |
+| `transcribe_manager` | `Arc<TranscribeManager>` | Speech-to-Text provider registry |
+| `tts_manager` | `Arc<TtsManager>` | Text-to-Speech provider registry |
 | `tic_manager` | `Arc<TicManager>` | Background MCP event processor |
-| `event_bus` | `Arc<ChatEventBus>` | In-process broadcast bus for completed chat turns |
+| `location_manager` | `Arc<LocationManager>` | Named GPS position store |
+| `remote` | `Arc<RwLock<Option<Arc<dyn RemoteAccess>>>>` | Active remote-connectivity provider (e.g. Tailscale) |
+| `shutdown_token` | `CancellationToken` | Shared cancellation signal for all background tasks |
 
 ---
+
+## Graceful Shutdown
+
+On SIGINT, `main.rs` executes:
+
+1. `skald.shutdown()`:
+   - `shutdown_token.cancel()` — signals all background loops to exit their `select!`
+   - Await `bg_handles` (cron + tic) with 10 s timeout
+   - `plugin_manager.stop_all()`
+2. `handle.shutdown()` — drains and closes the Axum HTTP server
+
+Background tasks that respond to `shutdown_token.cancelled()`:
+
+| Task | Source |
+| --- | --- |
+| `CronTaskManager` scheduler loop | `src/core/cron/mod.rs` |
+| `CronTaskManager` cleanup loop | `src/core/cron/mod.rs` |
+| `TicManager` timer loop | `src/core/tic/mod.rs` |
+| `PluginManager` config watcher | `src/core/plugin/mod.rs` |
+| LLM request log cleanup | `src/core/skald.rs` |
+| `McpManager` notification consumer | `src/core/mcp/mod.rs` |
+| `ChatHub` notification consumer | `src/core/chat_hub/mod.rs` |
+| `TtsManager` API provider reload watcher | `src/core/tts/manager.rs` |
+| `TranscribeManager` API provider reload watcher | `src/core/transcribe/manager.rs` |
 
 ---
 
@@ -141,41 +219,21 @@ The binary depends on several independent library crates in `crates/`. Each crat
 
 `core-api` is the designated contract crate for plugin independence. A plugin that depends only on `core-api` (instead of the full main crate) can be extracted into its own workspace member without circular dependencies.
 
-**Current state of `ChatHubApi`:** `ChatHub` in the main crate implements `core_api::chat_hub::ChatHubApi`. Plugins that need to send messages, subscribe to events, or resolve approvals should program against `Arc<dyn ChatHubApi>` rather than `Arc<ChatHub>` directly.
-
 See [workspace-crates.md](workspace-crates.md) for the full extraction roadmap.
 
----
+### Future: `skald-core` crate
 
-## Graceful Shutdown
-
-On SIGINT, `main.rs` executes this sequence:
-
-1. `shutdown_token.cancel()` — signals all background loops to exit their `select!`
-2. Await `cron_handles` + `tic_handle` with a 10 s timeout — lets any in-flight DB writes complete before the runtime tears down
-3. `plugin_manager.stop_all()` — stops Telegram bot and other plugins
-4. `handle.shutdown()` — drains and closes the Axum HTTP server
-
-Background tasks that respond to `shutdown_token.cancelled()`:
-
-| Task | Source |
-| --- | --- |
-| `CronTaskManager` scheduler loop | `src/cron/mod.rs` |
-| `CronTaskManager` cleanup loop | `src/cron/mod.rs` |
-| `TicManager` timer loop | `src/tic/mod.rs` |
-| `PluginManager` config watcher | `src/plugin/mod.rs` |
-| LLM request log cleanup | `src/main.rs` |
-| `McpManager` notification consumer | `src/mcp/mod.rs` |
-| `ChatHub` notification consumer | `src/chat_hub/mod.rs` |
-| `TtsManager` API provider reload watcher | `src/tts/manager.rs` |
-| `TranscribeManager` API provider reload watcher | `src/transcribe/manager.rs` |
+`src/core/` is designed as a stepping stone toward extracting the headless core into a standalone `crates/skald-core/` crate. When that happens:
+- `src/core/` moves to `crates/skald-core/src/`
+- `Skald` becomes the crate's public API
+- `src/frontend/` depends on `skald-core` as a path dependency
 
 ---
 
 ## When to Update This File
 
-- A new top-level struct is added to `AppState`
-- The startup sequence in `main.rs` changes order or gains a new step
+- A new field is added to `Skald`
+- The startup sequence in `Skald::new()` or `WebFrontend::start()` changes
 - The request lifecycle changes (new event type, new loop behavior)
 - A new circular dependency and its resolution is introduced
 - A new workspace crate is added

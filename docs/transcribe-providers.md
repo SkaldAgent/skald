@@ -32,7 +32,7 @@ src/transcribe/
 `get()` returns the first plugin provider (if any is running), then falls back to the first DB-backed provider ordered by `priority ASC`. Callers never reference a concrete type:
 
 ```rust
-if let Some(t) = state.transcribe_manager.get().await {
+if let Some(t) = skald.transcribe_manager.get().await {
     let text = t.transcribe(audio, "ogg").await?;
 }
 ```
@@ -73,7 +73,7 @@ transcribe_manager.unregister("whisper_local").await
 
 ## OpenAiAudioTranscriber
 
-Implemented in `src/transcribe/openai_audio.rs`.
+Implemented in `src/core/transcribe/openai_audio.rs`.
 
 Calls `POST {base_url}/audio/transcriptions` with a `multipart/form-data` body:
 
@@ -97,7 +97,7 @@ No local conversion needed — the provider handles decoding server-side.
 
 ## ElevenLabsTranscriber
 
-Implemented in `src/transcribe/elevenlabs_audio.rs`.
+Implemented in `src/core/transcribe/elevenlabs_audio.rs`.
 
 Calls `POST https://api.elevenlabs.io/v1/speech-to-text` with auth header `xi-api-key` (not Bearer) and a `multipart/form-data` body:
 

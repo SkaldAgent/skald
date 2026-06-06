@@ -14,7 +14,7 @@ crates/core-api/src/tts.rs
   — TtsModelRecord     (DB record type — moved here from main crate)
   — RemoteTtsModelInfo (remote catalog type — moved here from main crate)
 
-src/tts/
+src/core/tts/
   mod.rs              — TtsModelInfo (API response type), re-exports from core-api
   db.rs               — SQL layer for tts_models table
   manager.rs          — TtsManager (DB-aware, owns the table, impls TtsProvider + TtsRegistry)
@@ -109,7 +109,7 @@ tts_manager.list_provider_models(provider_id).await  // → Result<Vec<RemoteTts
 
 ## OpenAiTtsSynthesiser
 
-Implemented in `src/tts/openai_tts.rs`.
+Implemented in `src/core/tts/openai_tts.rs`.
 
 Calls `POST {base_url}/audio/speech` with a JSON body:
 
@@ -170,7 +170,7 @@ Returns raw MP3 bytes. Provider type: `elevenlabs` — requires an `xi-api-key` 
 
 The provider models endpoint calls `TtsManager::list_provider_models()` → `ApiProvider::list_tts_models()`. Returns an error if the provider does not support model listing.
 
-Handled by `src/api/tts_models.rs`.
+Handled by `src/frontend/api/tts_models.rs`.
 
 ---
 

@@ -48,7 +48,7 @@ pub trait ChatHubApi: Send + Sync {
 }
 ```
 
-`ChatHub` in `src/chat_hub/mod.rs` implements this trait. To call trait methods on `Arc<ChatHub>`, import the trait: `use crate::chat_hub::ChatHubApi as _;`.
+`ChatHub` in `src/core/chat_hub/mod.rs` implements this trait. To call trait methods on `Arc<ChatHub>`, import the trait: `use crate::chat_hub::ChatHubApi as _;`.
 
 ### `InterfaceTool`
 
@@ -106,11 +106,11 @@ All plugins have been extracted to independent workspace crates. ElevenLabs (TTS
 
 ## Decoupling Pattern — OnceLock extraction
 
-When a plugin cannot receive its typed deps at construction time (because `AppState` is built after plugin registration), use `std::sync::OnceLock` to extract and name the deps on first `start()`:
+When a plugin cannot receive its typed deps at construction time (because `Skald` is built after plugin registration), use `std::sync::OnceLock` to extract and name the deps on first `start()`:
 
 ```rust
 pub struct MyPlugin {
-    // named, typed deps — no Arc<AppState>
+    // named, typed deps — no Arc<Skald>
     chat_hub:    OnceLock<Arc<dyn ChatHubApi>>,
     some_config: OnceLock<u16>,
 }
@@ -122,7 +122,7 @@ fn extract_deps(&self, ctx: &PluginContext) {
 
 async fn start(&self, ctx: PluginContext) -> Result<()> {
     self.extract_deps(&ctx);
-    self.do_start().await  // no AppState needed here
+    self.do_start().await  // no Skald needed here
 }
 ```
 
