@@ -151,7 +151,7 @@ Headless sessions (cron) have no active interface: approval requests are registe
 
 ## Pending Approvals
 
-All pending requests are accessible via `ApprovalManager.list_pending()`, exposed by the `GET /api/inbox` endpoint, and displayed on the **Agent Inbox** frontend page.
+All pending requests are accessible via `Inbox.list_pending()` (which internally calls `ApprovalManager.list_pending()` and `ClarificationManager.list_pending()`), exposed by the `GET /api/inbox` endpoint, and displayed on the **Agent Inbox** frontend page.
 
 Each entry contains:
 
@@ -233,11 +233,12 @@ This is the current behaviour. Future work may add persistence of pending approv
 | ---- | ---- |
 | `src/core/approval/mod.rs` | `ApprovalManager`, `GateResult`, `ApprovalRule`, `PendingApprovalInfo` |
 | `src/core/clarification/mod.rs` | `ClarificationManager`, `PendingClarificationInfo` |
+| `src/core/inbox.rs` | `Inbox`: unified façade for pending approvals + clarifications (wraps ApprovalManager, ClarificationManager, ChatHub) |
 | `src/core/db/approval_rules.rs` | SQLite queries: list, insert, update, delete |
 | `src/core/db/mod.rs` | `approval_rules` table creation |
 | `src/core/session/handler/llm_loop.rs` | Calls `approval.check()` + `approval.register()` before every tool dispatch |
 | `src/core/session/handler/mod.rs` | `ChatSessionHandler` holds `Arc<ApprovalManager>`, `Arc<ClarificationManager>`, `context_label: RwLock<Option<String>>` |
-| `src/frontend/api/inbox.rs` | `/api/inbox` endpoint + resolve for approval and clarification |
+| `src/frontend/api/inbox.rs` | `/api/inbox` endpoint + resolve for approval and clarification (uses `skald.inbox`) |
 | `src/frontend/api/ws.rs` | Handles `approve_tool`/`reject_tool`/`approve_write`/`reject_write` from the client |
 | `src/core/events.rs` | `ServerEvent::ApprovalRequired` (generic tools) and `PendingWrite` (files with diff) |
 

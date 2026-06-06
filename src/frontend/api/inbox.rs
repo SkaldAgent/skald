@@ -15,13 +15,11 @@ use super::ApiError;
 // response, so the frontend can show a unified Agent Inbox page with one fetch.
 
 pub async fn list(State(skald): State<Arc<Skald>>) -> Json<Value> {
-    let approvals      = skald.approval.list_pending().await;
-    let clarifications = skald.clarification.list_pending().await;
-    let total          = approvals.len() + clarifications.len();
+    let items = skald.inbox.list_pending().await;
     Json(json!({
-        "total":          total,
-        "approvals":      approvals,
-        "clarifications": clarifications,
+        "total":          items.total,
+        "approvals":      items.approvals,
+        "clarifications": items.clarifications,
     }))
 }
 
@@ -47,9 +45,9 @@ pub async fn resolve_approval(
 ) -> Result<Json<Value>, ApiError> {
     if body.action == "reject" {
         let note = if body.note.is_empty() { "Rejected via Agent Inbox.".into() } else { body.note.clone() };
-        skald.chat_hub.reject(p.request_id, note).await;
+        skald.inbox.reject(p.request_id, note).await;
     } else {
-        skald.chat_hub.approve(p.request_id).await;
+        skald.inbox.approve(p.request_id).await;
     }
     Ok(Json(json!({ "ok": true, "request_id": p.request_id, "action": body.action })))
 }
@@ -72,7 +70,7 @@ pub async fn resolve_clarification(
     if body.answer.trim().is_empty() {
         return Err(ApiError::bad_request("answer must not be empty"));
     }
-    let resolved = skald.clarification.resolve(p.request_id, body.answer).await;
+    let resolved = skald.inbox.answer(p.request_id, body.answer).await;
     if resolved {
         Ok(Json(json!({ "ok": true, "request_id": p.request_id })))
     } else {

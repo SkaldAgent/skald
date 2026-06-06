@@ -24,6 +24,7 @@ Rust async web app (Tokio + Axum). Runs as a local chat server with LLM tool-cal
 | `src/core/compactor.rs` | Context compaction (summarises history when token budget exceeded) |
 | `src/core/approval/` | Approval rules engine |
 | `src/core/clarification/` | `ClarificationManager`: background-session question/answer |
+| `src/core/inbox.rs` | `Inbox`: unified façade for pending approvals + clarifications (wraps ApprovalManager, ClarificationManager, ChatHub) |
 | `src/core/llm/` | LLM client abstraction (OpenAI-compat, Anthropic, Ollama…) |
 | `src/core/transcribe/` | Transcription providers |
 | `src/core/image_generate/` | Image generation providers |

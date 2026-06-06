@@ -82,9 +82,9 @@ pub async fn resolve_pending(
 ) -> Result<Json<Value>, ApiError> {
     if body.action == "reject" {
         let note = if body.note.is_empty() { "Rejected via API.".to_string() } else { body.note.clone() };
-        skald.chat_hub.reject(p.request_id, note).await;
+        skald.inbox.reject(p.request_id, note).await;
     } else {
-        skald.chat_hub.approve(p.request_id).await;
+        skald.inbox.approve(p.request_id).await;
     }
     Ok(Json(json!({ "ok": true, "request_id": p.request_id, "action": body.action })))
 }
@@ -96,7 +96,7 @@ pub async fn resolve_pending(
 pub async fn list_pending(
     State(skald): State<Arc<Skald>>,
 ) -> Json<Value> {
-    let pending = skald.approval.list_pending().await;
+    let pending = skald.inbox.list_pending().await.approvals;
     Json(json!(pending))
 }
 

@@ -15,6 +15,7 @@ use super::chat_event_bus::ChatEventBus;
 use super::config_store::GlobalConfigManager;
 use super::chat_hub::ChatHub;
 use super::clarification::ClarificationManager;
+use super::inbox::Inbox;
 use super::compactor::ContextCompactor;
 use super::cron::CronTaskManager;
 use super::image_generate::ImageGeneratorManager;
@@ -46,6 +47,7 @@ pub struct Skald {
     pub tools:                   Arc<ToolRegistry>,
     pub approval:                Arc<ApprovalManager>,
     pub image_generator_manager: Arc<ImageGeneratorManager>,
+    pub inbox:                   Inbox,
     pub(crate) event_bus:        Arc<ChatEventBus>,
     pub memory_manager:          Arc<MemoryManager>,
     pub clarification:           Arc<ClarificationManager>,
@@ -300,6 +302,12 @@ impl Skald {
         cron.set_hub(Arc::clone(&chat_hub));
         info!("ChatHub initialised");
 
+        let inbox = Inbox::new(
+            Arc::clone(&approval),
+            Arc::clone(&clarification),
+            Arc::clone(&chat_hub),
+        );
+
         let tic_manager = TicManager::new(
             Arc::clone(&pool),
             Arc::clone(&manager),
@@ -327,6 +335,7 @@ impl Skald {
             tools,
             approval,
             image_generator_manager,
+            inbox,
             event_bus,
             memory_manager,
             clarification,

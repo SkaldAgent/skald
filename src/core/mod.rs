@@ -12,6 +12,7 @@ pub mod cron;
 pub mod db;
 pub mod events;
 pub mod image_generate;
+pub mod inbox;
 pub mod llm;
 pub mod location;
 pub mod memory;
