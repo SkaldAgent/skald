@@ -23,6 +23,7 @@ pub mod secrets;
 pub mod service_manager;
 pub mod session;
 pub mod tic;
+pub mod tool_catalog;
 pub mod tools;
 pub mod transcribe;
 pub mod tts;

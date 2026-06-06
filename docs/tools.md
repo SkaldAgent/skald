@@ -55,6 +55,19 @@ Every tool declares a `ToolCategory`, used for access-control filtering and audi
 
 ---
 
+## ToolCatalog
+
+`ToolCatalog` (`src/core/tool_catalog.rs`) is a unified façade wrapping `ToolRegistry` + `McpManager`:
+
+| Method | Purpose |
+| --- | --- |
+| `list_all() -> AllTools` | Returns all built-in tools (registry), synthetic tools (`call_agent`, `update_scratchpad`, `ask_user_clarification`), and MCP tools as a single `AllTools { built_in, mcp }` struct. Used by `GET /api/approval/tools`. |
+| `describe_call(name, args, length) -> String` | Pass-through to `ToolRegistry::describe_call()`. |
+
+`AllTools` and `ToolInfo` are `#[derive(Serialize)]` — the frontend handler can return `Json<AllTools>` directly.
+
+---
+
 ## Tool Name Constants
 
 All system tool names are centralised in `src/core/tools/tool_names.rs` as `pub const` strings. Import with `use crate::tools::tool_names as tn;`.

@@ -239,6 +239,7 @@ This is the current behaviour. Future work may add persistence of pending approv
 | `src/core/session/handler/llm_loop.rs` | Calls `approval.check()` + `approval.register()` before every tool dispatch |
 | `src/core/session/handler/mod.rs` | `ChatSessionHandler` holds `Arc<ApprovalManager>`, `Arc<ClarificationManager>`, `context_label: RwLock<Option<String>>` |
 | `src/frontend/api/inbox.rs` | `/api/inbox` endpoint + resolve for approval and clarification (uses `skald.inbox`) |
+| `src/frontend/api/approval.rs` | Approval rules CRUD + `/api/approval/pending` + `/api/approval/tools` (uses `skald.catalog` for tool listing) |
 | `src/frontend/api/ws.rs` | Handles `approve_tool`/`reject_tool`/`approve_write`/`reject_write` from the client |
 | `src/core/events.rs` | `ServerEvent::ApprovalRequired` (generic tools) and `PendingWrite` (files with diff) |
 

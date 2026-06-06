@@ -15,6 +15,7 @@ Rust async web app (Tokio + Axum). Runs as a local chat server with LLM tool-cal
 | `src/core/chat_event_bus.rs` | Global async bus for cross-session events |
 | `src/core/agents.rs` | Discovers agents from `agents/*/`, loads meta + system prompt |
 | `src/core/tools/` | Built-in tools: `exec`, `restart`, `list_agents`, `fs/*`, `notify`, `ast_outline`, `image_generate`, MCP tools, plugin tools, cron tools |
+| `src/core/tool_catalog.rs` | `ToolCatalog`: unified tool listing façade (wraps ToolRegistry + McpManager) |
 | `src/core/events.rs` | `ServerEvent` enum streamed over WebSocket to the frontend |
 | `src/core/db/` | sqlx SQLite — see below |
 | `src/config.rs` | Loads `config.yml`; LLM clients, strength/use_cases, data root |

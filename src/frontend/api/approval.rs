@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::core::approval::NewApprovalRule;
-use crate::core::tools::tool_names as tn;
+use crate::core::tool_catalog::AllTools;
 use std::sync::Arc;
 use crate::core::skald::Skald;
 
@@ -107,49 +107,6 @@ pub async fn list_pending(
 
 pub async fn list_tools(
     State(skald): State<Arc<Skald>>,
-) -> Json<Value> {
-    // Built-in tools
-    let mut built_in: Vec<Value> = skald.tools.list_all().iter().map(|(name, desc)| {
-        json!({
-            "name":        name,
-            "description": desc,
-            "source":      "built-in",
-            "server":      null,
-        })
-    }).collect();
-
-    // Synthesised tools visible at root level (call_agent, update_scratchpad, ask_user_clarification)
-    let synthetic = [
-        (tn::CALL_AGENT,             "Delegate a task to a specialised sub-agent."),
-        (tn::UPDATE_SCRATCHPAD,      "Write a key-value note into the session scratchpad."),
-        (tn::ASK_USER_CLARIFICATION, "Pause and ask the user a clarification question."),
-    ];
-    for (name, desc) in synthetic {
-        built_in.push(json!({
-            "name":        name,
-            "description": desc,
-            "source":      "built-in",
-            "server":      null,
-        }));
-    }
-    built_in.sort_by(|a, b| {
-        a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
-    });
-
-    // MCP tools — group by server so the UI can show the server name.
-    // t.name is the raw tool name ("send_message"); the full id used by the
-    // approval gate is t.tool_id() → "mcp__gmail__send_message".
-    let mcp_tools: Vec<Value> = skald.mcp.tools().iter().map(|t| {
-        json!({
-            "name":        t.tool_id(),
-            "description": t.description,
-            "source":      "mcp",
-            "server":      t.server_name,
-        })
-    }).collect();
-
-    Json(json!({
-        "built_in": built_in,
-        "mcp":      mcp_tools,
-    }))
+) -> Json<AllTools> {
+    Json(skald.catalog.list_all())
 }

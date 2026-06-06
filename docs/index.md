@@ -69,6 +69,7 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 | `src/core/agents.rs` | Agent discovery, prompt loading | [agents.md](agents.md) |
 | `src/core/tools/` | Built-in tool registry | [tools.md](tools.md) |
 | `src/core/tools/tool_names.rs` | Centralised tool name constants (`CALL_AGENT`, `RESTART`, …) | [tools.md](tools.md) |
+| `src/core/tool_catalog.rs` | `ToolCatalog`: unified listing façade for built-in + MCP tools (wraps ToolRegistry + McpManager) | [tools.md](tools.md) |
 | `src/core/provider/` | `ProviderRegistry` (implements `ApiProviderRegistry`) — thin wrapper around `core-api::provider`. All types re-exported for internal use. | [llm-clients.md](llm-clients.md) |
 | `src/core/service_manager.rs` | `ServiceManager` trait — lightweight umbrella for all model managers | [llm-clients.md](llm-clients.md) |
 | `src/core/chatbot/` | LLM provider clients | [llm-clients.md](llm-clients.md) |

@@ -28,6 +28,7 @@ use super::provider::ProviderRegistry;
 use super::secrets::SecretsStore;
 use super::session::manager::ChatSessionManager;
 use super::tic::TicManager;
+use super::tool_catalog::ToolCatalog;
 use super::tools::ToolRegistry;
 use super::transcribe::TranscribeManager;
 use super::tts::TtsManager;
@@ -52,6 +53,7 @@ pub struct Skald {
     pub memory_manager:          Arc<MemoryManager>,
     pub clarification:           Arc<ClarificationManager>,
     pub manager:                 Arc<ChatSessionManager>,
+    pub catalog:                 ToolCatalog,
     pub chat_hub:                Arc<ChatHub>,
     pub transcribe_manager:      Arc<TranscribeManager>,
     pub tts_manager:             Arc<TtsManager>,
@@ -308,6 +310,11 @@ impl Skald {
             Arc::clone(&chat_hub),
         );
 
+        let catalog = ToolCatalog::new(
+            Arc::clone(&tools),
+            Arc::clone(&mcp),
+        );
+
         let tic_manager = TicManager::new(
             Arc::clone(&pool),
             Arc::clone(&manager),
@@ -336,6 +343,7 @@ impl Skald {
             approval,
             image_generator_manager,
             inbox,
+            catalog,
             event_bus,
             memory_manager,
             clarification,

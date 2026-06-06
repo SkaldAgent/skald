@@ -37,6 +37,7 @@ Plugin instances are constructed in `main.rs` as `Vec<Arc<dyn Plugin>>` and inje
 | `ApprovalManager` | `ApprovalManager::new()` | `Arc<ApprovalManager>` | `SqlitePool` |
 | `ClarificationManager` | `ClarificationManager::new()` | `Arc<ClarificationManager>` | — |
 | `Inbox` | `Inbox::new()` | (owned by Skald) | `ApprovalManager`, `ClarificationManager`, `ChatHub` |
+| `ToolCatalog` | `ToolCatalog::new()` | (owned by Skald) | `ToolRegistry`, `McpManager` |
 | `ChatEventBus` | `ChatEventBus::new()` | `Arc<ChatEventBus>` | — |
 | `ContextCompactor` | `Skald::new()` (when `llm.compaction` configured) | `Option<Arc<ContextCompactor>>` | `LlmManager`, `ChatEventBus` |
 | `ChatSessionManager` | `ChatSessionManager::new()` | `Arc<ChatSessionManager>` | `SqlitePool`, `LlmManager`, `ToolRegistry`, `McpManager`, `ApprovalManager`, `ClarificationManager`, `ChatEventBus`, `ContextCompactor` |
@@ -90,16 +91,17 @@ Plugin instances are constructed in `main.rs` as `Vec<Arc<dyn Plugin>>` and inje
 21. `ChatHub::new()` — spawns notification consumer task
 22. `cron.set_hub(chat_hub)` — wires ChatHub into CronTaskManager
 23. `Inbox::new(approval, clarification, chat_hub)` — unified pending-requests façade
-24. `cron.start(shutdown_token)` + `tic_manager.start(shutdown_token)` — background loops begin; handles stored in `bg_handles`
-25. `Arc::new(Skald { … })` assembled
-26. `plugin_manager.set_skald(Arc::clone(&skald))` — post-construction wiring
+24. `ToolCatalog::new(tools, mcp)` — unified tool listing façade
+25. `cron.start(shutdown_token)` + `tic_manager.start(shutdown_token)` — background loops begin; handles stored in `bg_handles`
+26. `Arc::new(Skald { … })` assembled
+27. `plugin_manager.set_skald(Arc::clone(&skald))` — post-construction wiring
 
 ### Inside `WebFrontend::start()`
-27. `plugin_manager.set_router_factory(factory)` — provides Axum router factory to plugins
-28. `plugin_manager.set_web_port(port)` — provides HTTP port to plugins (e.g. Tailscale)
-29. `plugin_manager.start_enabled()` — starts Telegram and other enabled plugins
-30. `plugin_manager.start_config_watcher(shutdown_token)` — polls DB every 30 s
-31. `WebServer::start(addr)` — Axum HTTP+WS server begins listening
+28. `plugin_manager.set_router_factory(factory)` — provides Axum router factory to plugins
+29. `plugin_manager.set_web_port(port)` — provides HTTP port to plugins (e.g. Tailscale)
+30. `plugin_manager.start_enabled()` — starts Telegram and other enabled plugins
+31. `plugin_manager.start_config_watcher(shutdown_token)` — polls DB every 30 s
+32. `WebServer::start(addr)` — Axum HTTP+WS server begins listening
 
 ---
 
@@ -167,6 +169,7 @@ MCP server stdout (JSON-RPC notification, no id field)
 | `approval` | `Arc<ApprovalManager>` | Human-in-the-loop approval rules |
 | `image_generator_manager` | `Arc<ImageGeneratorManager>` | Text-to-image provider registry |
 | `inbox` | `Inbox` | Unified façade for pending approvals + clarifications |
+| `catalog` | `ToolCatalog` | Unified tool listing façade (built-in + MCP) |
 | `event_bus` | `Arc<ChatEventBus>` | In-process broadcast bus for chat turns |
 | `memory_manager` | `Arc<MemoryManager>` | Long-term memory provider registry |
 | `clarification` | `Arc<ClarificationManager>` | Pending clarification requests |
