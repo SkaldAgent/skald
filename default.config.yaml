@@ -91,12 +91,35 @@ llm:
   # ───────────────────────────────────────────────────────────────────────────
 
   # ── LLM request/response log ────────────────────────────────────────────────
-  # Logs every chat_with_tools call to the `llm_requests` table for debugging.
+  # Logs every chat_with_tools call to the `llm_requests` table.
   # Captures the full HTTP request body, response body, headers (api-key redacted),
   # token counts, and round-trip duration.
-  # Rows are automatically purged after `retention_days` days (default 14).
-  # request_log:
-  #   enabled: true
-  #   retention_days: 14
+  #
+  # WARNING: disabling `enabled` also disables the home-page LLM statistics.
+  #
+  # What to save (all default to true):
+  #   request_payload_save  — full request JSON (can be hundreds of KB per call)
+  #   response_payload_save — full response JSON
+  #   request_header_save   — HTTP request headers (api-key always redacted)
+  #   response_header_save  — HTTP response headers
+  #
+  # Cleanup policy (all optional — omit to keep data forever):
+  #   cleanup_request_payload_after  — set request_json = '' after N days
+  #   cleanup_response_payload_after — set response_json = NULL after N days
+  #   cleanup_headers_after          — null out both header columns after N days
+  #   cleanup_rows_after             — physically delete rows after N days
+  #
+  # The cleaner runs 1 minute after startup, then every 12 hours.
+  #
+  requests_log:
+    enabled: true
+    request_payload_save: false
+    response_payload_save: true
+    request_header_save: true
+    response_header_save: true
+    cleanup_request_payload_after: 7
+    cleanup_response_payload_after: 14
+    cleanup_headers_after: 30
+    cleanup_rows_after: 90
   # ───────────────────────────────────────────────────────────────────────────
 

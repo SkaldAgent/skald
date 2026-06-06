@@ -107,25 +107,62 @@ async fn async_main() -> Result<()> {
     let provider_registry = Arc::new(provider_registry);
     info!("provider registry ready ({} built-in providers)", provider_registry.all().len());
 
-    let request_log_cfg     = config.llm.request_log.as_ref();
-    let request_log_enabled = request_log_cfg.map_or(false, |r| r.enabled);
-    let llm_manager = LlmManager::new(Arc::clone(&pool), Arc::clone(&provider_registry), request_log_enabled).await?;
+    let requests_log_cfg = config.llm.requests_log.as_ref();
+    let log_flags = requests_log_cfg.filter(|r| r.enabled).map(|r| {
+        use crate::chatbot::logging::LogSaveFlags;
+        LogSaveFlags {
+            request_payload:  r.request_payload_save,
+            response_payload: r.response_payload_save,
+            request_headers:  r.request_header_save,
+            response_headers: r.response_header_save,
+        }
+    });
+    let llm_manager = LlmManager::new(Arc::clone(&pool), Arc::clone(&provider_registry), log_flags).await?;
     let client_count = llm_manager.client_names().await.len().saturating_sub(1);
     let default_client = llm_manager.default_name().await;
     info!(clients = client_count, default = %default_client, "LLM clients loaded");
 
-    // LLM request log cleanup — run once at boot, then every hour.
-    if request_log_enabled {
-        let retention_days = request_log_cfg.map_or(14, |r| r.retention_days);
-        let cleanup_pool   = Arc::clone(&pool);
+    // LLM request log cleanup — first run 1 min after startup, then every 12 hours.
+    if let Some(cfg) = config.llm.requests_log.clone().filter(|r| r.enabled) {
+        let cleanup_pool = Arc::clone(&pool);
         tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
             loop {
-                match db::llm_requests::cleanup(&cleanup_pool, retention_days).await {
-                    Ok(n) if n > 0 => info!(deleted = n, retention_days, "llm_requests: cleanup done"),
-                    Ok(_)          => {}
-                    Err(e)         => warn!(error = %e, "llm_requests: cleanup failed"),
+                if let Some(days) = cfg.cleanup_request_payload_after {
+                    match db::llm_requests::null_request_payload(&cleanup_pool, days).await {
+                        Ok(n) if n > 0 => info!(rows = n, days, "llm_requests: nulled request payload"),
+                        Ok(_)          => {}
+                        Err(e)         => warn!(error = %e, "llm_requests: null request payload failed"),
+                    }
                 }
-                tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
+                if let Some(days) = cfg.cleanup_response_payload_after {
+                    match db::llm_requests::null_response_payload(&cleanup_pool, days).await {
+                        Ok(n) if n > 0 => info!(rows = n, days, "llm_requests: nulled response payload"),
+                        Ok(_)          => {}
+                        Err(e)         => warn!(error = %e, "llm_requests: null response payload failed"),
+                    }
+                }
+                if let Some(days) = cfg.cleanup_headers_after {
+                    match db::llm_requests::null_headers(&cleanup_pool, days).await {
+                        Ok(n) if n > 0 => info!(rows = n, days, "llm_requests: nulled headers"),
+                        Ok(_)          => {}
+                        Err(e)         => warn!(error = %e, "llm_requests: null headers failed"),
+                    }
+                }
+                if let Some(days) = cfg.cleanup_rows_after {
+                    match db::llm_requests::delete_old_rows(&cleanup_pool, days).await {
+                        Ok(n) if n > 0 => info!(deleted = n, days, "llm_requests: deleted old rows"),
+                        Ok(_)          => {}
+                        Err(e)         => warn!(error = %e, "llm_requests: delete old rows failed"),
+                    }
+                }
+                // VACUUM reclaims pages freed by DELETE/UPDATE NULL — without it the
+                // file size does not shrink even after removing hundreds of MB of payloads.
+                match sqlx::query("VACUUM").execute(&*cleanup_pool).await {
+                    Ok(_)  => info!("llm_requests: VACUUM complete"),
+                    Err(e) => warn!(error = %e, "llm_requests: VACUUM failed"),
+                }
+                tokio::time::sleep(tokio::time::Duration::from_secs(12 * 3600)).await;
             }
         });
     }

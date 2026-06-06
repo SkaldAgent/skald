@@ -55,7 +55,7 @@ pub struct LlmConfig {
     /// sees in subsequent turns is affected. Omit or set to `null` to disable.
     pub max_tool_result_chars: Option<usize>,
     /// Request/response logging configuration. Omit or set `enabled: false` to disable.
-    pub request_log:          Option<LlmRequestLogConfig>,
+    pub requests_log:         Option<LlmRequestsLogConfig>,
     /// Context compaction settings. Omit to disable automatic compaction.
     pub compaction:           Option<CompactionConfig>,
     /// Controls how the current date/time is injected into each LLM request.
@@ -135,17 +135,41 @@ fn default_tic_interval_secs() -> u64 { 900 }
 fn default_tic_batch_size()    -> i64  { 50  }
 
 /// Settings for the LLM request/response log (table `llm_requests`).
-#[derive(Debug, Deserialize)]
-pub struct LlmRequestLogConfig {
+///
+/// Note: when `enabled` is false no rows are written and the home-page
+/// LLM statistics will stop working.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LlmRequestsLogConfig {
     /// Enable logging. Default: false.
     #[serde(default)]
-    pub enabled:        bool,
-    /// How many days to keep rows before cleanup. Default: 14.
-    #[serde(default = "default_retention_days")]
-    pub retention_days: u32,
-}
+    pub enabled: bool,
 
-fn default_retention_days() -> u32 { 14 }
+    // ── What to save ─────────────────────────────────────────────────────────
+    /// Persist the full request JSON payload (can be hundreds of KB). Default: true.
+    #[serde(default = "default_true")]
+    pub request_payload_save: bool,
+    /// Persist the full response JSON payload. Default: true.
+    #[serde(default = "default_true")]
+    pub response_payload_save: bool,
+    /// Persist request HTTP headers (api-key is always redacted). Default: true.
+    #[serde(default = "default_true")]
+    pub request_header_save: bool,
+    /// Persist response HTTP headers. Default: true.
+    #[serde(default = "default_true")]
+    pub response_header_save: bool,
+
+    // ── Cleanup policy ───────────────────────────────────────────────────────
+    /// Set `request_json` to NULL for rows older than this many days.
+    /// Null means never null-out the request payload.
+    pub cleanup_request_payload_after: Option<u32>,
+    /// Set `response_json` to NULL for rows older than this many days.
+    pub cleanup_response_payload_after: Option<u32>,
+    /// Set both header columns to NULL for rows older than this many days.
+    pub cleanup_headers_after: Option<u32>,
+    /// Physically delete rows older than this many days.
+    /// Null means keep rows forever (only payload/header nulling applies).
+    pub cleanup_rows_after: Option<u32>,
+}
 
 
 

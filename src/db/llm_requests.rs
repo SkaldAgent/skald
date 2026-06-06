@@ -67,16 +67,57 @@ pub async fn insert(pool: &SqlitePool, row: LlmRequestRow) -> Result<i64> {
 
 // ── Maintenance ───────────────────────────────────────────────────────────────
 
-/// Deletes rows older than `retention_days` days. Returns the number of deleted rows.
-pub async fn cleanup(pool: &SqlitePool, retention_days: u32) -> Result<u64> {
-    let cutoff  = format!("-{retention_days} days");
-    let deleted = sqlx::query(
-        "DELETE FROM llm_requests WHERE created_at < datetime('now', ?)",
+/// Physically deletes rows older than `days` days. Returns rows affected.
+pub async fn delete_old_rows(pool: &SqlitePool, days: u32) -> Result<u64> {
+    let cutoff = format!("-{days} days");
+    let n = sqlx::query("DELETE FROM llm_requests WHERE created_at < datetime('now', ?)")
+        .bind(&cutoff)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(n)
+}
+
+/// Nulls out `request_json` for rows older than `days` days. Returns rows affected.
+pub async fn null_request_payload(pool: &SqlitePool, days: u32) -> Result<u64> {
+    let cutoff = format!("-{days} days");
+    let n = sqlx::query(
+        "UPDATE llm_requests SET request_json = '' \
+         WHERE request_json != '' AND created_at < datetime('now', ?)",
     )
     .bind(&cutoff)
     .execute(pool)
     .await?
     .rows_affected();
+    Ok(n)
+}
 
-    Ok(deleted)
+/// Nulls out `response_json` for rows older than `days` days. Returns rows affected.
+pub async fn null_response_payload(pool: &SqlitePool, days: u32) -> Result<u64> {
+    let cutoff = format!("-{days} days");
+    let n = sqlx::query(
+        "UPDATE llm_requests SET response_json = NULL \
+         WHERE response_json IS NOT NULL AND created_at < datetime('now', ?)",
+    )
+    .bind(&cutoff)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(n)
+}
+
+/// Nulls out both header columns for rows older than `days` days. Returns rows affected.
+pub async fn null_headers(pool: &SqlitePool, days: u32) -> Result<u64> {
+    let cutoff = format!("-{days} days");
+    let n = sqlx::query(
+        "UPDATE llm_requests \
+         SET request_headers = NULL, response_headers = NULL \
+         WHERE (request_headers IS NOT NULL OR response_headers IS NOT NULL) \
+           AND created_at < datetime('now', ?)",
+    )
+    .bind(&cutoff)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(n)
 }

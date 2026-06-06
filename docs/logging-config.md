@@ -52,6 +52,15 @@ Loaded by `Config::load()` at startup. Copied from `default.config.yaml` if `con
 | `db` | `path` | string | `./database.db` | SQLite file path |
 | `llm` | `max_history_messages` | usize | `30` | Max messages kept per context window. Ignored when `compaction` is configured — the compactor manages the token budget instead. |
 | `llm` | `max_tool_rounds` | usize? | `20` | Max tool-call rounds per message; falls back to `DEFAULT_MAX_TOOL_ROUNDS` |
+| `llm.requests_log` | `enabled` | bool | `false` | Log every LLM call to the `llm_requests` table. **Disabling this also disables home-page LLM statistics.** |
+| `llm.requests_log` | `request_payload_save` | bool | `true` | Persist request JSON (can be hundreds of KB per call) |
+| `llm.requests_log` | `response_payload_save` | bool | `true` | Persist response JSON |
+| `llm.requests_log` | `request_header_save` | bool | `true` | Persist request HTTP headers (api-key always redacted) |
+| `llm.requests_log` | `response_header_save` | bool | `true` | Persist response HTTP headers |
+| `llm.requests_log` | `cleanup_request_payload_after` | u32? | `null` | Set `request_json = ''` for rows older than N days |
+| `llm.requests_log` | `cleanup_response_payload_after` | u32? | `null` | Set `response_json = NULL` for rows older than N days |
+| `llm.requests_log` | `cleanup_headers_after` | u32? | `null` | Null out both header columns for rows older than N days |
+| `llm.requests_log` | `cleanup_rows_after` | u32? | `null` | Physically delete rows older than N days (`null` = keep forever) |
 
 The `llm.clients` block in `config.yml` is for reference only — actual runtime LLM providers and models are stored in the DB and managed via the UI or API.
 

@@ -23,6 +23,13 @@ function cacheHitPct(item) {
   return (item.cache_read_tokens / item.input_tokens * 100).toFixed(0) + '%';
 }
 
+function cacheTooltip(item) {
+  const parts = [];
+  if (item.cache_read_tokens != null) parts.push(`read: ${item.cache_read_tokens.toLocaleString()} tk`);
+  if (item.cache_creation_tokens != null) parts.push(`write: ${item.cache_creation_tokens.toLocaleString()} tk`);
+  return parts.length ? parts.join(' | ') : '';
+}
+
 export class LlmRequestsPage extends LightElement {
   static properties = {
     _open:    { state: true },
@@ -188,7 +195,8 @@ export class LlmRequestsPage extends LightElement {
                 <td class="llmr-date">${formatDate(r.created_at)}</td>
                 <td class="text-end llmr-num">${fmtTokens(r.input_tokens)}</td>
                 <td class="text-end llmr-num">${fmtTokens(r.output_tokens)}</td>
-                <td class="text-end llmr-num ${r.cache_read_tokens > 0 ? 'llmr-cache-hit' : ''}">
+                <td class="text-end llmr-num ${r.cache_read_tokens > 0 ? 'llmr-cache-hit' : ''}"
+                    title=${cacheTooltip(r)}>
                   ${cacheHitPct(r)}
                 </td>
                 <td class="text-end llmr-num">${r.duration_ms}</td>

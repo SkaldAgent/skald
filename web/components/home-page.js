@@ -343,17 +343,31 @@ export class HomePage extends InboxMixin(LightElement) {
         datasets: isHour ? [
           lineDs(inp,   '#3b82f6', 'rgba(59,130,246,0)',  { fill: false, label: 'Input'  }),
           lineDs(out,   '#10b981', 'rgba(16,185,129,0)',  { fill: false, label: 'Output' }),
-          lineDs(cache, '#f59e0b', 'rgba(245,158,11,0)',  { fill: false, label: 'Cache'  }),
-        ] : [
-          { label: 'Input',  data: inp,   backgroundColor: '#3b82f6', stack: 'tok', borderSkipped: false },
-          { label: 'Output', data: out,   backgroundColor: '#10b981', stack: 'tok', borderSkipped: false },
-          { label: 'Cache',  data: cache, backgroundColor: '#f59e0b', stack: 'tok', borderRadius: 4, borderSkipped: false },
-        ],
+          lineDs(cache, '#f59e0b', 'rgba(245,158,11,0)',  { fill: false, label: 'Cached' }),
+        ] : (() => {
+          const nonCached = inp.map((v, i) => Math.max(0, v - (cache[i] ?? 0)));
+          return [
+            { label: 'Cached',     data: cache,     backgroundColor: '#f59e0b', stack: 'tok', borderSkipped: false },
+            { label: 'Non-cached', data: nonCached, backgroundColor: '#3b82f6', stack: 'tok', borderSkipped: false },
+            { label: 'Output',     data: out,        backgroundColor: '#10b981', stack: 'tok', borderRadius: 4, borderSkipped: false },
+          ];
+        })(),
       },
       options: baseOpts({
         legend: {
           display: true,
           labels:  { color: textColor, boxWidth: 10, font: { size: 11 } },
+        },
+        tooltip: {
+          callbacks: {
+            footer(items) {
+              const idx   = items[0]?.dataIndex;
+              const total = inp[idx] ?? 0;
+              if (!total) return '';
+              const pct = Math.round((cache[idx] ?? 0) / total * 100);
+              return `Cache hit: ${pct}%`;
+            },
+          },
         },
       }),
     });

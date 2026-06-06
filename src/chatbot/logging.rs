@@ -21,10 +21,26 @@ use super::{ChatOptions, ChatResponse, ChatbotClient, LlmRawMeta, LlmTurn, Messa
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Controls which parts of the HTTP exchange are persisted per row.
+#[derive(Debug, Clone, Copy)]
+pub struct LogSaveFlags {
+    pub request_payload:  bool,
+    pub response_payload: bool,
+    pub request_headers:  bool,
+    pub response_headers: bool,
+}
+
+impl Default for LogSaveFlags {
+    fn default() -> Self {
+        Self { request_payload: true, response_payload: true, request_headers: true, response_headers: true }
+    }
+}
+
 pub struct LoggingChatbotClient {
     inner:      Arc<dyn ChatbotClient>,
     pool:       Arc<SqlitePool>,
     model_name: String,
+    flags:      LogSaveFlags,
 }
 
 impl LoggingChatbotClient {
@@ -32,8 +48,9 @@ impl LoggingChatbotClient {
         inner:      Arc<dyn ChatbotClient>,
         pool:       Arc<SqlitePool>,
         model_name: impl Into<String>,
+        flags:      LogSaveFlags,
     ) -> Self {
-        Self { inner, pool, model_name: model_name.into() }
+        Self { inner, pool, model_name: model_name.into(), flags }
     }
 }
 
@@ -74,10 +91,13 @@ impl ChatbotClient for LoggingChatbotClient {
                 };
 
                 let meta = meta.unwrap_or_default();
-                let request_json     = meta.request_body.map(|v| v.to_string()).unwrap_or_default();
-                let request_headers  = meta.request_headers.map(|v| v.to_string());
-                let response_json    = meta.response_body.map(|v| v.to_string());
-                let response_headers = meta.response_headers.map(|v| v.to_string());
+                let flags = self.flags;
+                let request_json = if flags.request_payload {
+                    meta.request_body.map(|v| v.to_string()).unwrap_or_default()
+                } else { String::new() };
+                let request_headers  = if flags.request_headers  { meta.request_headers.map(|v| v.to_string())  } else { None };
+                let response_json    = if flags.response_payload  { meta.response_body.map(|v| v.to_string())   } else { None };
+                let response_headers = if flags.response_headers  { meta.response_headers.map(|v| v.to_string()) } else { None };
 
                 tokio::spawn(async move {
                     if let Err(e) = llm_requests::insert(&pool, llm_requests::LlmRequestRow {
