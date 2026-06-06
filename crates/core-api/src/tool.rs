@@ -44,8 +44,17 @@ pub trait Tool: Send + Sync {
     /// JSON Schema for the `parameters` field in the OpenAI function definition.
     fn parameters_schema(&self) -> Value;
 
-    /// Execute the tool and return a plain-text result (or error string).
-    fn execute(&self, args: Value) -> Result<String>;
+    /// Execute the tool synchronously and return a plain-text result (or error string).
+    /// Tools that require async I/O should override `execute_async` instead.
+    fn execute(&self, _args: Value) -> Result<String> {
+        Err(anyhow::anyhow!("tool '{}': sync execute not implemented — use execute_async", self.name()))
+    }
+
+    /// Execute the tool asynchronously. The default wraps `execute`; async tools
+    /// (e.g. image generation) override this directly to avoid `block_in_place`.
+    fn execute_async<'a>(&'a self, args: Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + 'a>> {
+        Box::pin(async move { self.execute(args) })
+    }
 
     /// Logical category of this tool.
     fn category(&self) -> ToolCategory;

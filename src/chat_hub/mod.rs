@@ -84,23 +84,10 @@ impl ChatHub {
         opts:      SendMessageOptions,
     ) -> anyhow::Result<()> {
         let session_id = self.get_or_create_session(source_id).await?;
-        let global_tx  = self.global_tx.clone();
         let source_tag = source_id.to_string();
 
         // Bridge mpsc from handle_message → global broadcast, tagging with source/session.
-        let (tx, mut rx) = mpsc::channel::<ServerEvent>(EVENTS_CAPACITY);
-        tokio::spawn(async move {
-            tracing::debug!(source = %source_tag, session_id, "ChatHub: bridge task started");
-            while let Some(event) = rx.recv().await {
-                tracing::debug!(source = %source_tag, session_id, event_type = event.type_name(), "ChatHub: bridge forwarding event");
-                let _ = global_tx.send(GlobalEvent {
-                    source:     Some(source_tag.clone()),
-                    session_id: Some(session_id),
-                    event,
-                });
-            }
-            tracing::debug!(source = %source_tag, session_id, "ChatHub: bridge task ended");
-        });
+        let tx = Self::bridge_to_global(self.global_tx.clone(), source_tag, session_id);
 
         let handler = self.session_mgr.get_or_create_handler(session_id).await?;
         handler.handle_message(
@@ -190,18 +177,8 @@ impl ChatHub {
             Some(sid) => sid,
             None      => return Ok(()), // no prior session, nothing to resume
         };
-        let global_tx  = self.global_tx.clone();
         let source_tag = source_id.to_string();
-        let (tx, mut rx) = mpsc::channel::<ServerEvent>(EVENTS_CAPACITY);
-        tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                let _ = global_tx.send(GlobalEvent {
-                    source:     Some(source_tag.clone()),
-                    session_id: Some(session_id),
-                    event,
-                });
-            }
-        });
+        let tx = Self::bridge_to_global(self.global_tx.clone(), source_tag, session_id);
         let handler = self.session_mgr.get_or_create_handler(session_id).await?;
         handler.resume_turn(None, None, vec![], tx).await
     }
@@ -262,6 +239,29 @@ impl ChatHub {
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
+
+    /// Spawn a bridge task that forwards events from an mpsc channel to the
+    /// global broadcast bus, tagging each event with `source` and `session_id`.
+    fn bridge_to_global(
+        global_tx:  broadcast::Sender<GlobalEvent>,
+        source:     String,
+        session_id: i64,
+    ) -> mpsc::Sender<ServerEvent> {
+        let (tx, mut rx) = mpsc::channel::<ServerEvent>(EVENTS_CAPACITY);
+        tokio::spawn(async move {
+            tracing::debug!(%source, session_id, "ChatHub: bridge task started");
+            while let Some(event) = rx.recv().await {
+                tracing::debug!(%source, session_id, event_type = event.type_name(), "ChatHub: bridge forwarding event");
+                let _ = global_tx.send(GlobalEvent {
+                    source:     Some(source.clone()),
+                    session_id: Some(session_id),
+                    event,
+                });
+            }
+            tracing::debug!(%source, session_id, "ChatHub: bridge task ended");
+        });
+        tx
+    }
 
     async fn get_or_create_session(&self, source_id: &str) -> anyhow::Result<i64> {
         if let Some(sid) = sources::active_session_id(&self.db, source_id).await? {

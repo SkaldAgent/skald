@@ -27,6 +27,7 @@ mod config;
 mod dispatcher;
 mod interface_tools;
 mod llm_loop;
+pub mod message_builder;
 mod messages;
 mod resume;
 
@@ -36,30 +37,30 @@ pub const DEFAULT_MAX_TOOL_ROUNDS: usize = 20;
 
 const MAX_AGENT_DEPTH: i64 = 5;
 
-/// Sentinel error returned when an interactive question channel is dropped
-/// because the WebSocket disconnected while waiting for the user's answer.
-/// Callers should return `TurnOutcome::Cancelled` so the tool stays `'pending'`
-/// in the DB and `resume_pending_tools()` can cleanly re-dispatch on reconnect.
+/// Control-flow signals returned as `anyhow::Error` by internal dispatch methods.
+/// Using a typed enum instead of two separate sentinel structs allows a single
+/// `downcast_ref` in `llm_loop` instead of two separate type checks.
 #[derive(Debug)]
-pub(super) struct QuestionChannelClosed;
-impl std::fmt::Display for QuestionChannelClosed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Question channel closed (WS disconnected)")
-    }
+pub(super) enum AgentFlowSignal {
+    /// A sub-agent task was spawned asynchronously. The parent loop should exit
+    /// immediately (returning `TurnOutcome::WaitingChild`) so the child can acquire
+    /// the processing mutex. The `i64` is the child stack id for logging.
+    WaitingChild(i64),
+    /// The WS disconnected while `dispatch_ask_user_clarification` was blocking.
+    /// The tool stays `'pending'` in DB so `resume_pending_tools` can re-ask on reconnect.
+    QuestionChannelClosed,
 }
-impl std::error::Error for QuestionChannelClosed {}
 
-/// Sentinel returned by `dispatch_call_agent` to signal that a sub-agent task
-/// was spawned asynchronously. The child stack id is carried for logging.
-/// The parent's `call_agent` tool call stays `'running'` in DB until the child completes.
-#[derive(Debug)]
-pub(super) struct WaitingChildSentinel(pub i64);
-impl std::fmt::Display for WaitingChildSentinel {
+impl std::fmt::Display for AgentFlowSignal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "sub-agent dispatched asynchronously (child_stack_id={})", self.0)
+        match self {
+            Self::WaitingChild(id) => write!(f, "sub-agent dispatched asynchronously (child_stack_id={id})"),
+            Self::QuestionChannelClosed => write!(f, "question channel closed (WS disconnected)"),
+        }
     }
 }
-impl std::error::Error for WaitingChildSentinel {}
+
+impl std::error::Error for AgentFlowSignal {}
 
 pub(super) enum TurnOutcome {
     Final {

@@ -174,9 +174,9 @@ impl ChatSessionHandler {
             ).await;
         });
 
-        // Return the sentinel — the parent loop will convert it to TurnOutcome::WaitingChild
-        // and exit, releasing the processing mutex so the child task can proceed.
-        Err(anyhow::Error::new(super::WaitingChildSentinel(child_stack_id)))
+        // Signal to the parent loop: convert to TurnOutcome::WaitingChild and exit,
+        // releasing the processing mutex so the child task can proceed.
+        Err(anyhow::Error::new(super::AgentFlowSignal::WaitingChild(child_stack_id)))
     }
 
     /// Handles the `update_scratchpad` built-in.
@@ -254,6 +254,6 @@ impl ChatSessionHandler {
 
         // Wait for the answer (from WS via resolve_question → clarification.resolve,
         // or directly from the Inbox REST endpoint).
-        rx.await.map_err(|_| anyhow::Error::new(super::QuestionChannelClosed))
+        rx.await.map_err(|_| anyhow::Error::new(super::AgentFlowSignal::QuestionChannelClosed))
     }
 }

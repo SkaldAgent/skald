@@ -61,6 +61,7 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 | --- | --- | --- |
 | `src/main.rs` | Startup, wiring | [architecture.md](architecture.md) |
 | `src/session/handler/` | Core LLM loop, tool dispatch, approval | [session.md](session.md) |
+| `src/session/handler/message_builder.rs` | `MessageBuilder` — pure service for building OpenAI message arrays, testable in isolation | [session.md](session.md) |
 | `src/session/manager.rs` | Session factory | [session.md](session.md) |
 | `src/agents.rs` | Agent discovery, prompt loading | [agents.md](agents.md) |
 | `src/tools/` | Built-in tool registry | [tools.md](tools.md) |

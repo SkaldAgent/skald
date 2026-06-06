@@ -245,7 +245,7 @@ impl ChatSessionHandler {
                         chat_llm_tools::complete(pool, tc.id, &answer).await?;
                         tx.send(ServerEvent::ToolDone { tool_call_id: tc.id, result: answer }).await.ok();
                     }
-                    Err(e) if e.is::<super::QuestionChannelClosed>() => {
+                    Err(e) if matches!(e.downcast_ref::<super::AgentFlowSignal>(), Some(super::AgentFlowSignal::QuestionChannelClosed)) => {
                         // WS disconnected again mid-resume. Tool stays 'pending' — next resume re-asks.
                         warn!(session_id = self.session_id, tool_call_id = tc.id, "clarification channel closed during resume — aborting");
                         return Ok(true);
@@ -336,7 +336,7 @@ impl ChatSessionHandler {
 
             // Execute the tool — check memory tools first, then registry.
             let tool_result = if let Some(tool) = config.memory_tools.iter().find(|t| t.name() == tc.name) {
-                tool.execute(args.clone())
+                tool.execute_async(args.clone()).await
             } else {
                 self.execute_tool(&tc.name, args).await
             };

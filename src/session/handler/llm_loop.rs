@@ -253,9 +253,9 @@ impl ChatSessionHandler {
                         } else if let Some(tool) = config.interface_tools.iter().find(|t| t.name() == call.name) {
                             (tool.handler)(call.arguments.clone()).await
                         } else if let Some(tool) = config.memory_tools.iter().find(|t| t.name() == call.name) {
-                            tool.execute(call.arguments.clone())
+                            tool.execute_async(call.arguments.clone()).await
                         } else if let Some(tool) = config.image_tools.iter().find(|t| t.name() == call.name) {
-                            tool.execute(call.arguments.clone())
+                            tool.execute_async(call.arguments.clone()).await
                         } else {
                             self.execute_tool(&call.name, call.arguments.clone()).await
                         };
@@ -279,16 +279,20 @@ impl ChatSessionHandler {
                                 });
                             }
                             Err(err) => {
-                                // Sub-agent dispatched asynchronously — parent exits now,
-                                // child task will complete the tool call and resume the parent.
-                                if let Some(s) = err.downcast_ref::<super::WaitingChildSentinel>() {
-                                    return Ok(TurnOutcome::WaitingChild { child_stack_id: s.0 });
-                                }
-                                // WS disconnected while waiting for clarification answer.
-                                // Tool stays 'pending' in DB — resume_pending_tools re-dispatches on reconnect.
-                                if err.is::<super::QuestionChannelClosed>() {
-                                    warn!(session_id = self.session_id, tool_call_id, "clarification channel closed — aborting turn (tool stays pending)");
-                                    return Ok(TurnOutcome::Cancelled);
+                                if let Some(signal) = err.downcast_ref::<super::AgentFlowSignal>() {
+                                    match signal {
+                                        // Sub-agent dispatched asynchronously — parent exits now,
+                                        // child task will complete the tool call and resume the parent.
+                                        super::AgentFlowSignal::WaitingChild(child_stack_id) => {
+                                            return Ok(TurnOutcome::WaitingChild { child_stack_id: *child_stack_id });
+                                        }
+                                        // WS disconnected while waiting for clarification answer.
+                                        // Tool stays 'pending' in DB — resume_pending_tools re-dispatches on reconnect.
+                                        super::AgentFlowSignal::QuestionChannelClosed => {
+                                            warn!(session_id = self.session_id, tool_call_id, "clarification channel closed — aborting turn (tool stays pending)");
+                                            return Ok(TurnOutcome::Cancelled);
+                                        }
+                                    }
                                 }
                                 let msg = err.to_string();
                                 warn!(session_id = self.session_id, tool = %call.name, tool_call_id, error = %msg, "tool failed");

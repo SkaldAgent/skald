@@ -26,11 +26,12 @@ impl Tool for ImageGenerateProvidersList {
         json!({ "type": "object", "properties": {} })
     }
 
-    fn execute(&self, _args: Value) -> Result<String> {
-        let providers = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(self.mgr.list())
-        });
-        Ok(serde_json::to_string_pretty(&providers)?)
+    fn execute_async<'a>(&'a self, _args: Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + 'a>> {
+        let mgr = Arc::clone(&self.mgr);
+        Box::pin(async move {
+            let providers = mgr.list().await;
+            Ok(serde_json::to_string_pretty(&providers)?)
+        })
     }
 }
 
@@ -71,24 +72,21 @@ impl Tool for ImageGenerateTool {
         })
     }
 
-    fn execute(&self, args: Value) -> Result<String> {
-        let provider_id = args["provider_id"].as_str()
-            .ok_or_else(|| anyhow::anyhow!("missing provider_id"))?
-            .to_string();
-        let prompt = args["prompt"].as_str()
-            .ok_or_else(|| anyhow::anyhow!("missing prompt"))?
-            .to_string();
-        let extra_params = match &args["extra_params"] {
-            Value::Object(_) => Some(args["extra_params"].clone()),
-            _                => None,
-        };
-
+    fn execute_async<'a>(&'a self, args: Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + 'a>> {
         let mgr = Arc::clone(&self.mgr);
-        let (path, url) = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(mgr.generate(&provider_id, &prompt, extra_params.as_ref()))
-        })?;
-
-        Ok(json!({ "path": path, "url": url }).to_string())
+        Box::pin(async move {
+            let provider_id = args["provider_id"].as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing provider_id"))?
+                .to_string();
+            let prompt = args["prompt"].as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing prompt"))?
+                .to_string();
+            let extra_params = match &args["extra_params"] {
+                Value::Object(_) => Some(args["extra_params"].clone()),
+                _                => None,
+            };
+            let (path, url) = mgr.generate(&provider_id, &prompt, extra_params.as_ref()).await?;
+            Ok(json!({ "path": path, "url": url }).to_string())
+        })
     }
 }

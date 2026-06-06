@@ -7,14 +7,20 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters_schema(&self) -> Value;            // JSON Schema object
-    fn execute(&self, args: Value) -> Result<String>;
+    fn execute(&self, _args: Value) -> Result<String> { /* default: Err */ }
+    fn execute_async<'a>(&'a self, args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
     fn category(&self) -> ToolCategory;              // access-control grouping
     fn sub_agents_only(&self) -> bool { false }      // default impl
     fn openai_definition(&self) -> Value { ... }     // default impl, rarely overridden
 }
 ```
 
-**`execute` is synchronous.** For async I/O inside a tool (e.g. DB queries), use `tokio::task::block_in_place(|| Handle::current().block_on(...))`. See `src/tools/cron_jobs.rs` for the pattern.
+**Two execution paths:**
+
+- **Sync tools** implement `execute(&self, args)` only. The default `execute_async` wraps it in a ready future — no changes needed.
+- **Async tools** (e.g. `image_generate`, `image_generate_providers_list`) implement `execute_async` directly and omit `execute`. Do NOT use `block_in_place` — override `execute_async` instead.
+
+The dispatcher in `llm_loop.rs` always calls `tool.execute_async(args).await`, so sync and async tools are dispatched uniformly.
 
 **`sub_agents_only`**: if a tool returns `true`, it is excluded from the root agent's tool list and only added to sub-agent configs (depth ≥ 1) in `dispatch_call_agent`. Default is `false` — all existing tools are visible to all agents.
 

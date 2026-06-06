@@ -85,6 +85,19 @@ Tool dispatch order (same as `run_agent_turn`):
 
 ---
 
+## AgentFlowSignal
+
+`AgentFlowSignal` (`src/session/handler/mod.rs`) is a typed `pub(super)` enum used by internal dispatch methods to communicate control-flow outcomes through `anyhow::Error` without sentinel structs:
+
+| Variant | Emitted by | Handled in |
+| --- | --- | --- |
+| `WaitingChild(i64)` | `dispatch_call_agent` (sub-agent spawned async) | `llm_loop.rs` → returns `TurnOutcome::WaitingChild` |
+| `QuestionChannelClosed` | `dispatch_ask_user_clarification` (WS dropped) | `llm_loop.rs` → returns `TurnOutcome::Cancelled`; `resume.rs` → aborts resume |
+
+The dispatcher uses a single `downcast_ref::<AgentFlowSignal>()` + `match` instead of two separate type checks, which is exhaustive and prevents missing a new variant.
+
+---
+
 ## run_agent_turn Inner Loop
 
 Called recursively via `Box::pin` to support async recursion without stack overflow.
@@ -139,9 +152,29 @@ The gate is `ApprovalManager.check(agent_id, source, tool_name, args)` → `Gate
 
 ---
 
+## MessageBuilder
+
+`build_openai_messages` is now a thin wrapper that delegates to `MessageBuilder` (`src/session/handler/message_builder.rs`). `MessageBuilder` is a self-contained struct with no reference to `ChatSessionHandler`:
+
+```rust
+pub struct MessageBuilder {
+    pub pool:                  Arc<SqlitePool>,
+    pub session_id:            i64,
+    pub mcp:                   Arc<McpManager>,
+    pub datetime_config:       DatetimeConfig,
+    pub max_history_messages:  usize,
+    pub max_tool_result_chars: Option<usize>,
+    pub compactor:             Option<Arc<ContextCompactor>>,
+}
+```
+
+This allows the message-building logic to be tested in isolation with an in-memory SQLite database (no full `ChatSessionHandler` required). `ChatSessionHandler::build_openai_messages` constructs a `MessageBuilder` from its own fields and delegates.
+
+---
+
 ## Context Building
 
-`build_openai_messages(pool, stack_id, agent_id, extra_system_static, extra_system_dynamic, tail_reminder, active_mcp_grants, cache_hints)` assembles the message array in the following order, optimised for prefix KV caching:
+`build_openai_messages` (backed by `MessageBuilder::build`) assembles the message array in the following order, optimised for prefix KV caching:
 
 ### 1. Static system message
 
