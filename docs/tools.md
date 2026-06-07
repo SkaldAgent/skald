@@ -10,7 +10,8 @@ pub trait Tool: Send + Sync {
     fn execute(&self, _args: Value) -> Result<String> { /* default: Err */ }
     fn execute_async<'a>(&'a self, args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
     fn category(&self) -> ToolCategory;              // access-control grouping
-    fn sub_agents_only(&self) -> bool { false }      // default impl
+    fn sub_agents_only(&self) -> bool { false }      // default impl — visible only to sub-agents (depth > 0)
+    fn root_agent_only(&self) -> bool { false }      // default impl — visible only to root agent (depth == 0)
     fn openai_definition(&self) -> Value { ... }     // default impl, rarely overridden
 }
 ```
@@ -22,7 +23,11 @@ pub trait Tool: Send + Sync {
 
 The dispatcher in `llm_loop.rs` always calls `tool.execute_async(args).await`, so sync and async tools are dispatched uniformly.
 
-**`sub_agents_only`**: if a tool returns `true`, it is excluded from the root agent's tool list and only added to sub-agent configs (depth ≥ 1) in `dispatch_call_agent`. Default is `false` — all existing tools are visible to all agents.
+**`sub_agents_only`**: if a tool returns `true`, it is excluded from the root agent's tool list and only added to sub-agent configs (depth ≥ 1) in `dispatch_call_agent`. Default is `false`.
+
+**`root_agent_only`**: if a tool returns `true`, it is included in the root agent's tool list but filtered out from sub-agent configs in `AgentRunConfig::for_sub_agent()`. Default is `false`.
+
+Both flags are mutually exclusive — a tool should never return `true` for both. If it does, it will be invisible to all agents.
 
 ---
 
@@ -49,6 +54,7 @@ Every tool declares a `ToolCategory`, used for access-control filtering and audi
 | `register(tool)` | Insert tool keyed by `tool.name()` |
 | `openai_definitions()` | Returns definitions for root-agent tools (excludes `sub_agents_only`) |
 | `openai_definitions_sub_agents_only()` | Returns definitions for tools where `sub_agents_only() == true` |
+| `root_agent_only_names()` | Returns names of all tools where `root_agent_only() == true` — used by `for_sub_agent()` to filter |
 | `list_all()` | Returns `(name, description)` for all registered tools (sorted) |
 | `dispatch(name, args)` | Executes tool by name; errors on unknown name |
 | `describe_call(name, args, length)` | Returns a human-readable label for any tool call (including non-registry tools). Falls back to `name` for unknown tools. |
@@ -80,6 +86,7 @@ All system tool names are centralised in `src/core/tools/tool_names.rs` as `pub 
 | `tn::ASK_USER_CLARIFICATION` | `"ask_user_clarification"` |
 | `tn::SHOW_MCP_TOOLS` | `"show_mcp_tools"` |
 | `tn::NOTIFY` | `"notify"` |
+| `tn::READ_NOTIFICATION` | `"read_notification"` |
 | `tn::EXECUTE_CMD` | `"execute_cmd"` |
 
 **Rule:** never hardcode these strings in new code — always use the constants. This ensures that a rename is a single-file change and that typos produce a compile error rather than a silent dispatch miss.
@@ -144,6 +151,7 @@ Filtering happens in `src/core/session/handler/config.rs` after assembling `base
 | `configure_plugin` | `tools::configure_plugin` | Config | No | No |
 | `set_secret` | `tools::set_secret` | Config | No | No |
 | `list_secrets` | `tools::list_secrets` | Config | No | No |
+| `read_notification` | `tools::read_notification` | Introspection | No | Root only (depth == 0) |
 | `image_generate_providers_list` | `tools::image_generate` | Introspection | No | No |
 | `image_generate` | `tools::image_generate` | Config | No | No |
 | `update_scratchpad` | synthetic | — | No | No |
@@ -187,6 +195,7 @@ Paths starting with `memory/` bypass the approval gate for write tools.
 1. Create a struct in `src/core/tools/` (new file or existing module).
 2. `impl Tool` for the struct — include `fn category()`.
 3. Register in `src/main.rs`: `tool_registry.register(MyTool::new(...))`.
+4. If the tool should only be visible to certain agent depths, implement `sub_agents_only()` or `root_agent_only()` instead of using `InterfaceTool` injection.
 4. If the tool needs `ChatHub` or should only be visible to specific callers (background agents), do **not** add it to `ToolRegistry` — implement it as an `InterfaceTool` and inject it at the call site (see `tools::notify::make_tool`).
 5. If the tool needs user approval before executing, add it to `needs_approval()` in `src/core/session/handler/approval.rs`.
 6. Update this doc (catalogue table).

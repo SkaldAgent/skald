@@ -188,6 +188,7 @@ impl Skald {
         super::tools::fs::register_all(&mut tool_registry);
         tool_registry.register(super::tools::ast_outline::AstOutline::new());
         tool_registry.register(super::tools::exec::ExecuteCmd);
+        tool_registry.register(super::tools::read_notification::ReadNotification);
         tool_registry.register(super::tools::restart::Restart);
         tool_registry.register(super::tools::list_agents::ListAgents);
         tool_registry.register(super::tools::list_mcp::ListMcp::new(Arc::clone(&mcp)));

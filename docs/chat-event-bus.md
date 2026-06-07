@@ -126,7 +126,7 @@ tokio::spawn(async move {
 | User via WebSocket / Telegram | `false` | ✅ on `TurnOutcome::Final` |
 | Cron job | `false` | ✅ on `TurnOutcome::Final` |
 | TicManager tick | `true` | ✅ on `TurnOutcome::Final` |
-| ChatHub notification briefing | `true` | ✅ on `TurnOutcome::Final` |
+| ChatHub notification briefing | `true` (injected via `resume_turn`) | ❌ never (uses `resume_turn`, not `handle_message`) |
 | `TurnOutcome::Cancelled` | — | ❌ never |
 | `TurnOutcome::Exhausted` | — | ❌ never |
 | Sub-agent turns (`dispatch_call_agent`) | — | ❌ never (only root turns publish) |

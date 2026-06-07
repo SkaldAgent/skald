@@ -415,6 +415,13 @@ fn summarize_tool_result(tool_name: &str, arguments: Option<&str>, result: &str)
             format!("[list_agents] listed agents ({char_count} chars)")
         }
 
+        tn::READ_NOTIFICATION => {
+            let count = serde_json::from_str::<Vec<String>>(result)
+                .map(|v| v.len())
+                .unwrap_or(0);
+            format!("[read_notification] {count} notification(s)")
+        }
+
         tn::CALL_AGENT => {
             let agent = arg_str(&args, "agent_id");
             format!("[call_agent] → {agent} ({char_count} chars result)")

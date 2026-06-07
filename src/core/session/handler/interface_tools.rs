@@ -54,6 +54,9 @@ pub struct AgentRunConfig {
     /// `all_tool_defs()` re-reads this set on every call, so tools activated via
     /// `show_mcp_tools` in round N are available in round N+1 within the same turn.
     pub active_mcp_grants: Arc<RwLock<HashSet<String>>>,
+    /// Tool names that are restricted to the root agent (depth == 0).
+    /// Filtered out when deriving a sub-agent config via `for_sub_agent()`.
+    pub root_only_tool_names: Vec<String>,
 }
 
 impl AgentRunConfig {
@@ -90,11 +93,17 @@ impl AgentRunConfig {
     /// - Drops all interface tools (caller re-injects `show_mcp_tools` explicitly).
     /// - Increments depth.
     pub fn for_sub_agent(&self, agent_id: String, client_name: String) -> Self {
+        let mut defs = self.base_tool_defs.clone();
+        defs.retain(|def| {
+            let name = def["function"]["name"].as_str().unwrap_or("");
+            !self.root_only_tool_names.iter().any(|n| n == name)
+        });
+
         Self {
             agent_id,
             client_name,
             depth:                self.depth + 1,
-            base_tool_defs:       self.base_tool_defs.clone(),
+            base_tool_defs:       defs,
             extra_system:         None,
             extra_system_dynamic: None,
             tail_reminder:        None,
@@ -103,6 +112,7 @@ impl AgentRunConfig {
             image_tools:          self.image_tools.clone(),
             mcp:                  Arc::clone(&self.mcp),
             active_mcp_grants:    Arc::new(RwLock::new(HashSet::new())),
+            root_only_tool_names: self.root_only_tool_names.clone(),
         }
     }
 }

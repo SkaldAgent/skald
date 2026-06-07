@@ -5,6 +5,7 @@
 /secrets/
 !/secrets/.gitkeep
 
+/.understand-anything
 # ── Database & runtime data ───────────────────────────────────────────────────
 /database.db
 /data/

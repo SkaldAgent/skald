@@ -50,7 +50,7 @@ Private helper called by both `handle_message` and `resume_turn` to avoid duplic
 11. On `Cancelled`: send `Error` event ("interrupted by user"). No event bus publication.
 12. On `Exhausted`: send `Error` event (tool round limit exceeded). No event bus publication.
 
-`is_synthetic` is a parameter of `handle_message`. It is `true` for TicManager ticks and ChatHub notification briefings (system-generated messages injected as user turns), `false` for all real user input. The flag is **persisted** to `chat_history.is_synthetic` so that the UI history API (`GET /api/sessions/:id`) can filter those rows out on page reload — synthetic messages never appear in the conversation visible to the user. They are still included in the LLM context (via `build_openai_messages`) so the assistant can see what it previously said in response to a notification.
+`is_synthetic` is a parameter of `handle_message`. It is `true` for TicManager ticks (system-generated messages injected as user turns), `false` for all real user input. Additionally, `ChatHub::notification_consumer` injects synthetic **Assistant** messages with `is_synthetic = true` containing the `read_notification` tool call and reasoning trace — these are not user turns, but share the same flag for UI filtering. The flag is **persisted** to `chat_history.is_synthetic` so that the UI history API (`GET /api/sessions/:id`) can filter those rows out on page reload — synthetic messages never appear in the conversation visible to the user. They are still included in the LLM context (via `build_openai_messages`) so the assistant can see what it previously said in response to a notification.
 
 ---
 

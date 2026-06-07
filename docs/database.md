@@ -65,7 +65,7 @@ Represents one agent call frame. Root frames have `depth=0`; sub-agent frames in
 - `role = 'agent'` is a sub-agent prompt message; sent as `user` to the LLM but hidden in the UI
 - `status = 'failed'` rows are excluded from `for_stack()` (not sent to LLM)
 - `model_db_id` is set only on `role = 'assistant'` rows; `null` for user/agent messages and for rows created before this column was added
-- `is_synthetic = 1` marks messages injected as user turns by the system (TIC notifications, ChatHub briefings); they are included in the LLM context but excluded from the UI history (not shown on page reload)
+- `is_synthetic = 1` marks messages injected by the system (ChatHub notification assistant messages with tool-call injection, or legacy synthetic user turns). They are included in the LLM context but excluded from the UI history (not shown on page reload). Currently used for `role = 'assistant'` rows that carry the synthetic `read_notification` tool call and reasoning trace.
 - `reasoning_content` is populated only for `role = 'assistant'` rows from providers that return chain-of-thought (currently DeepSeek thinking mode); echoed back in the assistant message on subsequent turns
 
 Index: `idx_history_stack ON chat_history(session_stack_id)`

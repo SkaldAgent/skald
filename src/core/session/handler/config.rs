@@ -109,6 +109,8 @@ impl ChatSessionHandler {
         }
         // ── End MCP grant initialisation ────────────────────────────────────────
 
+        let root_only_tool_names: Vec<String> = self.tools.root_agent_only_names();
+
         let memory_tools = self.memory_manager.tools().await;
         let image_tools  = Arc::clone(&self.image_generator_manager).tools().await;
 
@@ -125,6 +127,7 @@ impl ChatSessionHandler {
             image_tools,
             mcp:                  Arc::clone(&self.mcp),
             active_mcp_grants,
+            root_only_tool_names,
         })
     }
 }

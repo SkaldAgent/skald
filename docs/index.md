@@ -152,7 +152,7 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 - [tts-providers.md](tts-providers.md) — Text-to-Speech: trait, manager, OpenAiTtsSynthesiser, tts_models DB table
 - [image-generate.md](image-generate.md) — Image generation: trait, manager, async task system, LLM tools, REST endpoint
 - [skills.md](skills.md) — Skills system: reusable Python capability packages
-- [notifications.md](notifications.md) — Notification preferences: `data/notifications.md` format, how TIC uses it, how the main agent updates it
+- [notifications.md](notifications.md) — Notification system: `read_notification` tool, synthetic injection flow, `data/notifications.md` format, how TIC uses it, how the main agent updates preferences
 - [workspace-crates.md](workspace-crates.md) — Workspace crate catalogue, `core-api` module reference, plugin extraction roadmap
 
 ## When to Update This File

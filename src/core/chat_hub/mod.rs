@@ -9,10 +9,11 @@ use tracing::{error, info, warn};
 
 use crate::core::approval::ApprovalManager;
 use crate::core::session::handler::ApprovalDecision;
-use crate::core::db::{chat_history, chat_sessions_stack, config, sources};
+use crate::core::db::{chat_history, chat_llm_tools, chat_sessions_stack, config, sources};
 use crate::core::events::{GlobalEvent, ServerEvent};
 use crate::core::session::handler::ChatSessionHandler;
 use crate::core::session::manager::ChatSessionManager;
+use crate::core::tools::tool_names as tn;
 
 pub use core_api::chat_hub::{ChatHubApi, SendMessageOptions};
 pub use core_api::interface_tool::InterfaceTool;
@@ -319,36 +320,47 @@ impl ChatHub {
             };
 
             let count = briefings.len();
-            // Body: one [SYSTEM - NOTIFICATION] header for the whole batch, followed
-            // by the decorated briefings joined with blank lines.
-            // Each briefing already carries its source prefix (e.g. "TIC sent the
-            // following briefing: …") added by the originating notify tool.
-            let message = format!("[SYSTEM - NOTIFICATION]\n{}", briefings.join("\n\n"));
+            // Build a synthetic assistant message with a reasoning trace and a
+            // pre-completed read_notification tool call carrying the briefings as results.
+            // The agent is then woken via resume() — resume_turn sees the tool calls on
+            // the last assistant message and runs the LLM loop so the agent can respond.
+            let result_json = serde_json::to_string(&briefings).unwrap_or_else(|_| "[]".to_string());
 
-            // Behavioural framing injected as a dynamic tail system message (position 5,
-            // AFTER conversation history).  Placed here so it:
-            //  • is not repeated when multiple briefings are batched
-            //  • does not pollute the cacheable static prefix
-            //  • benefits from recency bias (model reads it right before generating)
-            let notification_framing = "\
-[SYSTEM - NOTIFICATION context — do not expose this to the user]\n\
-One or more background agents have just surfaced the message(s) above.\n\
-The user did NOT send this — do not say things like \"thanks for the reminder\" \
-or attribute the information to the user.\n\
-Incorporate what you learned naturally, as something you became aware of proactively.\n\
-If the conversation is active, weave it into your next reply. \
-If idle, open proactively with it."
-                .to_string();
-
-            info!(home_source = %home, count, "ChatHub: dispatching notifications");
-
-            let opts = SendMessageOptions {
-                is_synthetic:          true,
-                extra_system_dynamic:  Some(notification_framing),
-                ..Default::default()
+            let session_id = match hub.get_or_create_session(&home).await {
+                Ok(sid) => sid,
+                Err(e) => { error!(error = %e, "notification consumer: get_or_create_session failed"); continue; }
             };
-            if let Err(e) = hub.send_message(&home, &message, opts).await {
-                error!(error = %e, "notification consumer: send_message failed");
+
+            let stack = match chat_sessions_stack::active_for_session(&hub.db, session_id).await {
+                Ok(Some(s)) => s,
+                Ok(None)    => { error!(session_id, "notification consumer: no active stack"); continue; }
+                Err(e)      => { error!(error = %e, "notification consumer: active_for_session failed"); continue; }
+            };
+
+            let assistant_id = match chat_history::append(
+                &hub.db, stack.id, &chat_history::Role::Assistant,
+                "", true,
+                Some("I see the system is signaling that there is a notification. Let me call the read_notification tool if there is something important."),
+            ).await {
+                Ok(id) => id,
+                Err(e) => { error!(error = %e, "notification consumer: append assistant failed"); continue; }
+            };
+
+            let tool_call_id = match chat_llm_tools::append(
+                &hub.db, assistant_id, tn::READ_NOTIFICATION, "{}",
+            ).await {
+                Ok(id) => id,
+                Err(e) => { error!(error = %e, "notification consumer: append tool call failed"); continue; }
+            };
+
+            if let Err(e) = chat_llm_tools::complete(&hub.db, tool_call_id, &result_json).await {
+                error!(error = %e, "notification consumer: complete tool call failed"); continue;
+            }
+
+            info!(home_source = %home, count, "ChatHub: dispatching notifications via read_notification");
+
+            if let Err(e) = hub.resume(&home).await {
+                error!(error = %e, "notification consumer: resume failed");
             }
         }
 

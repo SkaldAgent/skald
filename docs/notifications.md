@@ -1,10 +1,30 @@
-# Notification preferences
+# Notifications
 
 ## Overview
 
 TIC is a background agent that runs every 15 minutes, reads incoming events (email, WhatsApp, Google Calendar) and decides what is worth surfacing to the user. Its filtering behaviour is controlled by the file `data/notifications.md`.
 
 When TIC runs, that file is **automatically injected into its system prompt** (via `inject_memory` in `agents/tic/meta.json`). TIC reads the rules before evaluating each event batch.
+
+---
+
+## How notifications reach the main agent
+
+TIC (and other background agents like cron workers) calls the `notify` interface tool, which queues a briefing string via `ChatHub::notify()`. The notification delivery chain:
+
+1. `ChatHub::notification_consumer` batches briefings (200 ms window), then:
+2. Appends a **synthetic Assistant message** to `chat_history` (`is_synthetic=true`) with a reasoning trace in `reasoning_content`:
+   > "I see the system is signaling that there is a notification. Let me call the read_notification tool if there is something important."
+3. Inserts a **pre-completed tool call** in `chat_llm_tools`: `read_notification()` with `status='done'` and `result` containing the JSON array of briefings.
+4. Calls `ChatHub::resume()` → `resume_turn` detects the synthetic tool call on the last assistant message and runs the LLM loop.
+5. The conversational agent (depth=0) sees the tool result as if it had just called `read_notification` and responds naturally, incorporating the notifications into its reply.
+
+The `read_notification` tool is a real `Tool` registered in `ToolRegistry` (category `Introspection`, `root_agent_only=true`). When the LLM calls it normally, it returns an empty array `[]` — notifications are only ever injected synthetically by `ChatHub`. The tool is visible only to depth=0 agents (filtered out of sub-agent configs via `root_only_tool_names`).
+
+This replaces the previous mechanism (synthetic User message with `[SYSTEM - NOTIFICATION]` prefix and `extra_system_dynamic` framing instructions). The new approach:
+- Uses the **natural tool-call pattern** (tool → result → response)
+- Applies to the **assistant itself** (synthetic reasoning + tool call)
+- Avoids injecting fake user turns and behavioural framing in system messages
 
 ---
 
@@ -90,3 +110,12 @@ data/notifications.md
 ```
 
 This file lives in `data/` (not `data/memory/`) because it is system configuration, not personal memory. It is user-editable and version-control friendly.
+
+---
+
+## When to Update This File
+
+- The notification delivery mechanism changes (e.g. `read_notification` tool, synthetic injection flow)
+- TIC's behaviour or decision process is modified
+- A new background agent that calls `notify` is introduced
+- The `data/notifications.md` format or location changes

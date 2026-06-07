@@ -26,6 +26,7 @@ pub mod list_plugins;
 pub mod list_secrets;
 pub mod notify;
 pub mod set_secret;
+pub mod read_notification;
 pub mod register_mcp;
 pub mod restart;
 pub mod show_mcp_tools;
@@ -72,6 +73,14 @@ impl ToolRegistry {
         self.tools.values()
             .filter(|t| t.sub_agents_only())
             .map(|t| t.openai_definition())
+            .collect()
+    }
+
+    /// Returns the names of all tools marked `root_agent_only`.
+    pub fn root_agent_only_names(&self) -> Vec<String> {
+        self.tools.values()
+            .filter(|t| t.root_agent_only())
+            .map(|t| t.name().to_string())
             .collect()
     }
 

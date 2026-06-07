@@ -145,7 +145,10 @@ MCP server stdout (JSON-RPC notification, no id field)
 
 [ChatHub::notification_consumer]
   → batching window (200 ms)
-  → send_message(home_source, "[SYSTEM - NOTIFICATION]\n...")
+  → appends synthetic Assistant message to chat_history (reasoning_content + is_synthetic=true)
+  → inserts chat_llm_tools row for read_notification (status='done', result=[briefings])
+  → calls hub.resume(home_source)
+  → resume_turn picks up the synthetic tool call, runs the LLM loop
   → user sees assistant briefing in home conversation
 ```
 
