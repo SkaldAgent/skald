@@ -135,6 +135,10 @@ agent-inbox-page {
     flex-direction: column;
   }
 
+  .approval-footer {
+    grid-template-columns: 1fr;
+  }
+
   .inbox-card-footer .btn {
     width: 100%;
   }

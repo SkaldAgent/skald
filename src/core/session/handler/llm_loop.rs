@@ -204,7 +204,7 @@ impl ChatSessionHandler {
                                 let (request_id, approve_rx) = self.approval.register(
                                     self.session_id, tool_call_id, &call.name,
                                     call.arguments.clone(), &config.agent_id, &self.source,
-                                    ctx_label.as_deref(),
+                                    ctx_label.as_deref(), category,
                                 ).await;
                                 info!(session_id = self.session_id, tool = %call.name, tool_call_id, request_id, "approval: waiting for human");
                                 self.emit_approval_event(tx, request_id, tool_call_id, &call.name, &call.arguments).await;

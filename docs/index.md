@@ -137,7 +137,7 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 - [gmail-mcp.md](gmail-mcp.md) — Gmail read+modify MCP server (custom Python)
 - [gmaps-mcp.md](gmaps-mcp.md) — Google Maps transit/directions MCP server (custom Python)
 - [whatsapp-mcp.md](whatsapp-mcp.md) — WhatsApp read+send MCP server (custom Node.js)
-- [approval.md](approval.md) — ApprovalManager: human-in-the-loop, regole, pending approvals
+- [approval.md](approval.md) — ApprovalManager: human-in-the-loop, regole, pending approvals, session bypass (timed/scoped per category o MCP server)
 - [cron.md](cron.md) — TaskManager, cron jobs & immediate tasks, 7-field cron syntax, job lifecycle
 - [database.md](database.md) — SQLite schema, migration pattern
 - [frontend.md](frontend.md) — WebSocket protocol, ServerEvent types, Lit components

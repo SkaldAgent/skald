@@ -141,35 +141,43 @@ VALUES ('researcher', 'write_file', 'data/research/*', 'allow', 'researcher writ
 
 ## Session Bypass (Temporary Allow-All)
 
-The LLM can temporarily suppress approval prompts for a session without modifying DB rules. The bypass is **in-memory only** — it disappears on app restart and when the session ends.
+The human can temporarily suppress approval prompts for a session without modifying DB rules. The bypass is **in-memory only** — it disappears on app restart or when the session ends.
 
 ### Activation
 
-The bypass is activated by the **human** (not the LLM) via the REST API (see below). The LLM does not have tools to activate it — giving the LLM the ability to disable its own oversight would defeat the purpose of the gate.
+The bypass is activated by the **human** (not the LLM) from the **Agent Inbox** UI or via the REST endpoint. The LLM has no tools to activate it — giving the LLM the ability to disable its own oversight would defeat the purpose of the gate.
+
+### Scope
+
+Each bypass entry targets a specific `BypassScope`:
+
+| Scope | What it covers |
+| ----- | -------------- |
+| `All` | Every tool regardless of category |
+| `Category(ToolCategory)` | Only tools with the given registered category (e.g. `Filesystem`, `Shell`) |
+| `McpServer(String)` | Only tools from the named MCP server (matched by the `mcp__<server>__` prefix in the tool name) |
+
+A bypass entry also has an optional expiry (`expires_at: Option<Instant>`). `None` means indefinite (session-scoped).
 
 ### How It Works
 
-`ApprovalManager` holds a `session_bypasses: Mutex<HashMap<i64, Vec<CategoryBypass>>>` field. Each `CategoryBypass` entry has:
-
-- `category: Option<ToolCategory>` — `None` = all categories; `Some(c)` = only tools of that category
-- `expires_at: Option<Instant>` — `None` = no expiry; `Some(t)` = expires at instant `t`
-
-`check()` receives `session_id` and `category` (resolved by `ToolRegistry::category_of(tool_name)` in the caller). After rule evaluation, if the result is `Require` and a matching active bypass exists, the result is converted to `Allow`. Expired entries are pruned lazily on each `check()` call.
+`ApprovalManager` holds `session_bypasses: Mutex<HashMap<i64, Vec<ApprovalBypass>>>`. `check()` receives `session_id`, `category`, and `tool_name`. After rule evaluation, if the result is `Require` and a matching active bypass exists, the result is converted to `Allow`. Expired entries are pruned lazily on each `check()` call.
 
 ### Invariants
 
 - `Deny` rules are **never** bypassable.
 - The bypass state is cleared when `cancel_for_session()` is called (WS disconnect).
 - Multiple bypasses can coexist for the same session (e.g. "all categories: 30 min" + "filesystem: indefinite").
-- MCP and interface tools have `category = None` (not in `ToolRegistry`) — they are only bypassed by an all-category bypass, not by a category-specific one.
+- MCP tools match `McpServer` scope; they are also covered by `All` scope.
 
-### API
+### Rust API
 
 ```rust
-approval.bypass_session(session_id).await;                                  // indefinite, all categories
-approval.bypass_session_for(session_id, Duration::from_secs(600)).await;    // 10 min, all categories
-approval.bypass_session_for_category(session_id, ToolCategory::Shell, Duration::from_secs(600)).await;
-approval.clear_session_bypass(session_id).await;                            // remove all
+approval.bypass_session(session_id).await;                                         // indefinite, all
+approval.bypass_session_for(session_id, Duration::from_secs(600)).await;           // 10 min, all
+approval.bypass_session_for_category(session_id, ToolCategory::Shell, Some(Duration::from_secs(600))).await;
+approval.bypass_session_for_mcp(session_id, "gmail".into(), Some(Duration::from_secs(1800))).await;
+approval.clear_session_bypass(session_id).await;
 ```
 
 ---
@@ -193,7 +201,7 @@ All pending requests are accessible via `Inbox.list_pending()` (which internally
 Each entry contains:
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ----- | ---- | ----------- |
 | `request_id` | i64 | Unique ID for resolution |
 | `session_id` | i64 | Session that generated the request |
 | `tool_call_id` | i64 | Tool call in the DB |
@@ -201,8 +209,10 @@ Each entry contains:
 | `arguments` | JSON | Full arguments |
 | `agent_id` | String | Agent that called the tool |
 | `source` | String | Session source |
-| `context_label` | Option\<String\> | Human-readable origin label (e.g. `"CronJob: Daily Digest"`); used in Agent Inbox to identify context |
+| `context_label` | Option\<String\> | Human-readable origin label (e.g. `"CronJob: Daily Digest"`) |
 | `created_at` | String | ISO-8601 timestamp |
+| `tool_category` | Option\<String\> | Registered tool category (`filesystem`, `shell`, …); `null` for MCP/unknown tools |
+| `mcp_server` | Option\<String\> | MCP server name extracted from the tool name (e.g. `"gmail"`); `null` for non-MCP tools |
 
 `context_label` is set by `ChatSessionHandler::set_context_label()` before the run (e.g. `TaskManager` sets `"CronJob: <title>"`). It is read in `llm_loop.rs` and `resume.rs` and passed to `approval.register()`.
 
@@ -218,10 +228,27 @@ The **Agent Inbox** is the unified web page for managing all pending requests fr
 ### REST API
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+| ------ | -------- | ----------- |
 | `GET` | `/api/inbox` | Returns `{ total, approvals, clarifications }` |
-| `POST` | `/api/inbox/approvals/:request_id/resolve` | Body: `{ action: "approve"\|"reject", note?: string }` |
+| `POST` | `/api/inbox/approvals/:request_id/resolve` | Resolve an approval (see body below) |
 | `POST` | `/api/inbox/clarifications/:request_id/resolve` | Body: `{ answer: string }` |
+
+**Resolve approval body:**
+
+```json
+{
+  "action": "approve" | "reject",
+  "note": "",
+  "bypass_secs": 900,
+  "bypass_scope": "category" | "mcp_server" | "all"
+}
+```
+
+`bypass_secs` and `bypass_scope` are optional. When present (only on `approve`):
+
+- `bypass_secs = 0` → indefinite bypass (until WS disconnect)
+- `bypass_secs = N` → bypass expires after N seconds
+- `bypass_scope` defaults to `"category"` if `tool_category` is set, `"mcp_server"` if `mcp_server` is set, otherwise `"all"`
 
 The legacy endpoints `/api/approval/pending` and `/api/approval/resolve/:id` remain active for backwards compatibility.
 

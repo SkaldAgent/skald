@@ -41,12 +41,13 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::SqlitePool;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{broadcast, Mutex, oneshot};
 use tracing::{debug, info, warn};
 
 use crate::core::session::handler::ApprovalDecision;
 use crate::core::tools::tool_names as tn;
 use crate::core::tools::ToolCategory;
+use crate::core::events::{GlobalEvent, ServerEvent};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -143,20 +144,33 @@ pub struct PendingApprovalInfo {
     pub context_label: Option<String>,
     /// ISO-8601 timestamp string (UTC).
     pub created_at:    String,
+    /// Registered tool category (None for MCP and unknown tools).
+    pub tool_category: Option<ToolCategory>,
+    /// MCP server name extracted from the tool name (e.g. "gmail" from "mcp__gmail__search").
+    /// None for non-MCP tools.
+    pub mcp_server:    Option<String>,
 }
 
 // ── Session bypass ────────────────────────────────────────────────────────────
 
+/// What a session bypass entry applies to.
+pub enum BypassScope {
+    /// Covers every tool regardless of category.
+    All,
+    /// Covers only tools of the given registered category.
+    Category(ToolCategory),
+    /// Covers only tools belonging to the named MCP server
+    /// (matched by the `mcp__<server>__` prefix in the tool name).
+    McpServer(String),
+}
+
 /// A single in-memory bypass entry for a session.
 ///
-/// The bypass converts `GateResult::Require` → `Allow` for the matching
-/// category (or all categories when `category` is `None`).
+/// Converts `GateResult::Require` → `Allow` for the matching scope.
 /// `Deny` rules are never bypassed.
-struct CategoryBypass {
-    /// `None` = all categories; `Some(c)` = only tools of that category.
-    category:   Option<ToolCategory>,
-    /// `None` = no expiry (lasts until session ends / `clear_session_bypass` is called);
-    /// `Some(t)` = expires at `t`.
+struct ApprovalBypass {
+    scope:      BypassScope,
+    /// `None` = no expiry (lasts until session ends / `clear_session_bypass` is called).
     expires_at: Option<Instant>,
 }
 
@@ -173,16 +187,18 @@ pub struct ApprovalManager {
     db:               Arc<SqlitePool>,
     pending:          Mutex<HashMap<i64, PendingEntry>>,
     next_id:          AtomicI64,
-    session_bypasses: Mutex<HashMap<i64, Vec<CategoryBypass>>>,
+    session_bypasses: Mutex<HashMap<i64, Vec<ApprovalBypass>>>,
+    event_tx:         broadcast::Sender<GlobalEvent>,
 }
 
 impl ApprovalManager {
-    pub fn new(db: Arc<SqlitePool>) -> Self {
+    pub fn new(db: Arc<SqlitePool>, event_tx: broadcast::Sender<GlobalEvent>) -> Self {
         Self {
             db,
             pending:          Mutex::new(HashMap::new()),
             next_id:          AtomicI64::new(1),
             session_bypasses: Mutex::new(HashMap::new()),
+            event_tx,
         }
     }
 
@@ -313,7 +329,7 @@ impl ApprovalManager {
             if let Some(entries) = bypasses.get_mut(&session_id) {
                 // Prune expired entries lazily.
                 entries.retain(|b| b.expires_at.map_or(true, |t| Instant::now() < t));
-                let active = entries.iter().any(|b| bypass_matches(b, category));
+                let active = entries.iter().any(|b| bypass_matches(b, category, tool_name));
                 if active {
                     debug!(
                         tool = tool_name, session_id,
@@ -341,6 +357,7 @@ impl ApprovalManager {
         agent_id:      &str,
         source:        &str,
         context_label: Option<&str>,
+        category:      Option<ToolCategory>,
     ) -> (i64, oneshot::Receiver<ApprovalDecision>) {
         let request_id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx)   = oneshot::channel();
@@ -356,6 +373,8 @@ impl ApprovalManager {
                 source:        source.to_string(),
                 context_label: context_label.map(str::to_string),
                 created_at:    chrono::Utc::now().to_rfc3339(),
+                tool_category: category,
+                mcp_server:    mcp_server_from_tool_name(tool_name),
             },
             tx,
         };
@@ -368,25 +387,42 @@ impl ApprovalManager {
         (request_id, rx)
     }
 
-    /// Resolves a pending approval. Returns the info of the resolved entry so
-    /// callers can emit downstream events (e.g. `ApprovalResolved` on the bus).
+    /// Resolves a pending approval, unblocks the waiting session, and broadcasts
+    /// `ApprovalResolved` to all WebSocket subscribers.
     pub async fn resolve(&self, request_id: i64, decision: ApprovalDecision) -> Option<PendingApprovalInfo> {
         if let Some(entry) = self.pending.lock().await.remove(&request_id) {
-            let verb = match &decision {
-                ApprovalDecision::Approved        => "approved",
-                ApprovalDecision::Rejected { .. } => "rejected",
-            };
+            let approved = matches!(decision, ApprovalDecision::Approved);
+            let verb = if approved { "approved" } else { "rejected" };
             info!(
                 request_id, tool = entry.info.tool_name,
                 session_id = entry.info.session_id, verb,
                 "approval: resolved"
             );
             let _ = entry.tx.send(decision);
+            let _ = self.event_tx.send(GlobalEvent {
+                source:     Some(entry.info.source.clone()),
+                session_id: Some(entry.info.session_id),
+                event:      ServerEvent::ApprovalResolved {
+                    request_id,
+                    tool_call_id: entry.info.tool_call_id,
+                    approved,
+                },
+            });
             Some(entry.info)
         } else {
             warn!(request_id, "approval: resolve called for unknown/already-resolved request_id");
             None
         }
+    }
+
+    /// Convenience wrapper: approve a pending request.
+    pub async fn approve(&self, request_id: i64) -> Option<PendingApprovalInfo> {
+        self.resolve(request_id, ApprovalDecision::Approved).await
+    }
+
+    /// Convenience wrapper: reject a pending request with an optional note.
+    pub async fn reject(&self, request_id: i64, note: String) -> Option<PendingApprovalInfo> {
+        self.resolve(request_id, ApprovalDecision::Rejected { note }).await
     }
 
     /// Resolves a pending approval by `tool_call_id` (used by the REST endpoint,
@@ -437,12 +473,17 @@ impl ApprovalManager {
 
     // ── Session bypass ────────────────────────────────────────────────────────
 
+    /// Returns a snapshot of a single pending approval by `request_id`, without resolving it.
+    pub async fn get_pending(&self, request_id: i64) -> Option<PendingApprovalInfo> {
+        self.pending.lock().await.get(&request_id).map(|e| e.info.clone())
+    }
+
     /// Bypasses all approval prompts for `session_id` for the rest of the session.
     pub async fn bypass_session(&self, session_id: i64) {
         self.session_bypasses.lock().await
             .entry(session_id)
             .or_default()
-            .push(CategoryBypass { category: None, expires_at: None });
+            .push(ApprovalBypass { scope: BypassScope::All, expires_at: None });
         info!(session_id, "approval: bypass active (session)");
     }
 
@@ -451,25 +492,40 @@ impl ApprovalManager {
         self.session_bypasses.lock().await
             .entry(session_id)
             .or_default()
-            .push(CategoryBypass { category: None, expires_at: Some(Instant::now() + duration) });
+            .push(ApprovalBypass { scope: BypassScope::All, expires_at: Some(Instant::now() + duration) });
         info!(session_id, secs = duration.as_secs(), "approval: bypass active (timed)");
     }
 
-    /// Bypasses approval prompts for a specific tool `category` for `duration`.
+    /// Bypasses approval prompts for a specific tool `category`.
+    /// `duration` is `None` for an indefinite (session-scoped) bypass.
     pub async fn bypass_session_for_category(
         &self,
         session_id: i64,
         category:   ToolCategory,
-        duration:   Duration,
+        duration:   Option<Duration>,
     ) {
+        let expires_at = duration.map(|d| Instant::now() + d);
         self.session_bypasses.lock().await
             .entry(session_id)
             .or_default()
-            .push(CategoryBypass {
-                category:   Some(category),
-                expires_at: Some(Instant::now() + duration),
-            });
-        info!(session_id, ?category, secs = duration.as_secs(), "approval: bypass active (category)");
+            .push(ApprovalBypass { scope: BypassScope::Category(category), expires_at });
+        info!(session_id, ?category, secs = duration.map(|d| d.as_secs()), "approval: bypass active (category)");
+    }
+
+    /// Bypasses approval prompts for all tools belonging to `mcp_server`.
+    /// `duration` is `None` for an indefinite (session-scoped) bypass.
+    pub async fn bypass_session_for_mcp(
+        &self,
+        session_id: i64,
+        mcp_server: String,
+        duration:   Option<Duration>,
+    ) {
+        let expires_at = duration.map(|d| Instant::now() + d);
+        self.session_bypasses.lock().await
+            .entry(session_id)
+            .or_default()
+            .push(ApprovalBypass { scope: BypassScope::McpServer(mcp_server.clone()), expires_at });
+        info!(session_id, mcp_server, secs = duration.map(|d| d.as_secs()), "approval: bypass active (mcp_server)");
     }
 
     /// Removes all bypass entries for a session.
@@ -547,12 +603,22 @@ fn pattern_matches(pattern: &str, tool_name: &str) -> bool {
     }
 }
 
-/// Returns `true` when a `CategoryBypass` entry covers the given tool `category`.
-fn bypass_matches(bypass: &CategoryBypass, category: Option<ToolCategory>) -> bool {
-    match bypass.category {
-        None     => true,                                        // all-categories bypass
-        Some(bc) => category.map_or(false, |tc| tc == bc),      // category-specific bypass
+/// Returns `true` when an `ApprovalBypass` entry covers the given tool.
+fn bypass_matches(bypass: &ApprovalBypass, category: Option<ToolCategory>, tool_name: &str) -> bool {
+    match &bypass.scope {
+        BypassScope::All              => true,
+        BypassScope::Category(bc)     => category.map_or(false, |tc| tc == *bc),
+        BypassScope::McpServer(server) => {
+            mcp_server_from_tool_name(tool_name).map_or(false, |s| s == *server)
+        }
     }
+}
+
+/// Extracts the MCP server name from a tool name following the `mcp__<server>__<tool>` pattern.
+fn mcp_server_from_tool_name(name: &str) -> Option<String> {
+    let rest = name.strip_prefix("mcp__")?;
+    let end  = rest.find("__")?;
+    Some(rest[..end].to_string())
 }
 
 /// Returns `true` when a file-write tool is targeting the `memory/` directory.

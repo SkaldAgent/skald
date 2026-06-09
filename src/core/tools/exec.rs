@@ -66,34 +66,50 @@ async fn run(command: String) -> Result<String> {
         .arg(&command)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .stdin(Stdio::null())
         .kill_on_drop(true)
         .spawn()?;
 
-    let mut stdout = child.stdout.take();
-    let mut stderr = child.stderr.take();
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let stderr = child.stderr.take().expect("stderr is piped");
 
-    let status = match tokio::time::timeout(
-        Duration::from_secs(TIMEOUT_SECS),
-        child.wait(),
-    ).await {
-        Ok(s) => s?,
+    // Read stdout/stderr concurrently with wait() inside a single timeout.
+    //
+    // Bug prevented: reading *after* wait() deadlocks when the pipe buffer fills
+    // (~64KB) because the child blocks writing while the parent blocks on wait().
+    // Bug prevented: timeout must also cover the reads — background processes
+    // spawned by the command can hold the pipe descriptors open indefinitely even
+    // after the main shell exits, so unbounded reads outside the timeout block forever.
+    let result = tokio::time::timeout(Duration::from_secs(TIMEOUT_SECS), async {
+        let (out_res, err_res, status_res) = tokio::join!(
+            async {
+                let mut buf = String::new();
+                tokio::io::BufReader::new(stdout).read_to_string(&mut buf).await?;
+                Ok::<_, std::io::Error>(buf)
+            },
+            async {
+                let mut buf = String::new();
+                tokio::io::BufReader::new(stderr).read_to_string(&mut buf).await?;
+                Ok::<_, std::io::Error>(buf)
+            },
+            child.wait(),
+        );
+        Ok::<_, anyhow::Error>((out_res?, err_res?, status_res?))
+    })
+    .await;
+
+    match result {
+        Ok(Ok((out, err, status))) => {
+            let code = status.code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".to_string());
+            Ok(format!("exit: {code}\n--- stdout ---\n{out}\n--- stderr ---\n{err}"))
+        }
+        Ok(Err(e)) => Err(e),
         Err(_) => {
             let _ = child.start_kill();
             let _ = child.wait().await;
             anyhow::bail!("Command timed out after {TIMEOUT_SECS} seconds: {command}");
         }
-    };
-
-    let mut out = String::new();
-    if let Some(s) = stdout.as_mut() { s.read_to_string(&mut out).await?; }
-    let mut err = String::new();
-    if let Some(s) = stderr.as_mut() { s.read_to_string(&mut err).await?; }
-
-    let code = status.code()
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| "signal".to_string());
-
-    Ok(format!(
-        "exit: {code}\n--- stdout ---\n{out}\n--- stderr ---\n{err}"
-    ))
+    }
 }

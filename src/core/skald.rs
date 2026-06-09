@@ -205,7 +205,8 @@ impl Skald {
         tool_registry.register(super::tools::configure_plugin::ConfigurePlugin(Arc::clone(&plugin_manager)));
         debug!("tool registry built");
 
-        let approval = Arc::new(ApprovalManager::new(Arc::clone(&pool)));
+        let (event_tx, _) = tokio::sync::broadcast::channel::<core_api::events::GlobalEvent>(512);
+        let approval = Arc::new(ApprovalManager::new(Arc::clone(&pool), event_tx.clone()));
         if let Err(e) = approval.seed_defaults().await {
             warn!(error = %e, "failed to seed default approval rules (non-fatal)");
         }
@@ -298,6 +299,7 @@ impl Skald {
             Arc::clone(&pool),
             Arc::clone(&manager),
             Arc::clone(&approval),
+            event_tx,
             shutdown_token.clone(),
         );
         chat_hub.register("web").await;
@@ -308,7 +310,6 @@ impl Skald {
         let inbox = Inbox::new(
             Arc::clone(&approval),
             Arc::clone(&clarification),
-            Arc::clone(&chat_hub),
         );
 
         let catalog = ToolCatalog::new(

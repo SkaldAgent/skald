@@ -2,6 +2,7 @@
   "name": "Tinker",
   "description": "Executes simple well-defined tasks: file edits, shell commands, batch operations. No planning or QA.",
   "scope": "general",
+  "is_system_agent": false,
   "strength": "average",
   "icon": "icon.png"
 }

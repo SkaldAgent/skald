@@ -252,6 +252,60 @@
   background: var(--bs-tertiary-bg);
 }
 
+.approval-footer {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+/* ── Bypass timed dropdown ── */
+
+.inbox-bypass-wrap {
+  position: relative;
+}
+
+.inbox-bypass-wrap .btn {
+  width: 100%;
+}
+
+.inbox-bypass-menu {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: var(--bs-body-bg);
+  border: 1px solid var(--bs-border-color);
+  border-radius: 8px;
+  overflow: hidden;
+  z-index: 200;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+}
+
+.inbox-bypass-menu.open { display: block; }
+
+.inbox-bypass-menu button {
+  display: block;
+  width: 100%;
+  padding: 9px 14px;
+  text-align: left;
+  background: none;
+  border: none;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--bs-body-color);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.inbox-bypass-menu button + button {
+  border-top: 1px solid var(--bs-border-color);
+}
+
+.inbox-bypass-menu button:hover {
+  background: var(--bs-tertiary-bg);
+}
+
 /* ── Empty state ── */
 
 .inbox-empty {

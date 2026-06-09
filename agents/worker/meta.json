@@ -1,7 +1,7 @@
 {
   "name": "Worker",
   "description": "Background task executor. Runs scheduled jobs and one-shot tasks autonomously. Uses sub-agents (architect, engineer, researcher) for complex work. Not conversational.",
-  "is_system_agent": false,
+  "is_system_agent": true,
   "inject_memory": ["data/memory/index.md"],
   "icon": "icon.png"
 }

@@ -3,7 +3,6 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::core::approval::{ApprovalManager, PendingApprovalInfo};
-use crate::core::chat_hub::ChatHub;
 use crate::core::clarification::{ClarificationManager, PendingClarificationInfo};
 
 #[derive(Serialize)]
@@ -14,18 +13,16 @@ pub struct InboxItems {
 }
 
 pub struct Inbox {
-    approval:      Arc<ApprovalManager>,
+    pub approval:  Arc<ApprovalManager>,
     clarification: Arc<ClarificationManager>,
-    chat_hub:      Arc<ChatHub>,
 }
 
 impl Inbox {
     pub fn new(
-        approval: Arc<ApprovalManager>,
+        approval:      Arc<ApprovalManager>,
         clarification: Arc<ClarificationManager>,
-        chat_hub: Arc<ChatHub>,
     ) -> Self {
-        Self { approval, clarification, chat_hub }
+        Self { approval, clarification }
     }
 
     pub async fn list_pending(&self) -> InboxItems {
@@ -36,11 +33,11 @@ impl Inbox {
     }
 
     pub async fn approve(&self, request_id: i64) {
-        self.chat_hub.approve(request_id).await
+        self.approval.approve(request_id).await;
     }
 
     pub async fn reject(&self, request_id: i64, note: String) {
-        self.chat_hub.reject(request_id, note).await
+        self.approval.reject(request_id, note).await;
     }
 
     pub async fn answer(&self, request_id: i64, answer: String) -> bool {

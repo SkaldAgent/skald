@@ -1,6 +1,11 @@
+---
+name: ics2json
+description: Download an iCalendar (ICS) feed from a URL and output structured JSON with all events. Use this skill whenever the user needs to read, analyze, or integrate events from a public iCal feed such as Teamup or Google Calendar, especially when no API keys are available. Also use as the base for cron jobs that periodically analyze a calendar feed. If the user mentions an .ics file or calendar feed, use this skill.
+---
+
 # ics2json
 
-_Updated: 2026-05-20_
+_Updated: 2026-06-08_
 
 Downloads an iCalendar (ICS) feed from a URL and outputs structured JSON with all events.
 

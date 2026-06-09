@@ -8,7 +8,8 @@ Read `SKILL.md` before running any script. The file explains inputs, outputs, an
 
 ## Registered Skills
 
-| pdf2text | [SKILL.md](pdf2text/SKILL.md) | Extract text from PDF files |
 | ics2json | [SKILL.md](ics2json/SKILL.md) | Download an iCal feed and output events as JSON |
-| fetlife-api | [SKILL.md](fetlife-api/SKILL.md) | Fetch events from Fetlife's internal JSON API (bypasses Cloudflare) |
-| keynote-applescript | [SKILL.md](keynote-applescript/SKILL.md) | Generate Keynote presentations via AppleScript |
+| mcp-builder | [SKILL.md](mcp-builder/SKILL.md) | Complete guide + scripts for building high-quality MCP servers (Python FastMCP / TypeScript SDK) |
+| skill-creator | [SKILL.md](skill-creator/SKILL.md) | Framework for creating, validating, evaluating and packaging skills |
+
+

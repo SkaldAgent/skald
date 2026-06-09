@@ -295,7 +295,7 @@ impl ChatSessionHandler {
                     let (request_id, rx) = self.approval.register(
                         self.session_id, tc.id, &tc.name, args.clone(),
                         &config.agent_id, &self.source,
-                        ctx_label.as_deref(),
+                        ctx_label.as_deref(), category,
                     ).await;
 
                     info!(session_id = self.session_id, tool = tc.name, request_id, "resume: waiting for approval");

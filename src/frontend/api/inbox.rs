@@ -4,6 +4,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::time::Duration;
 
 use std::sync::Arc;
 use crate::core::skald::Skald;
@@ -34,6 +35,11 @@ pub struct ApproveBody {
     pub action: String,
     #[serde(default)]
     pub note: String,
+    /// Seconds for the bypass duration. `0` means indefinite (session-scoped).
+    /// Absent means no bypass.
+    pub bypass_secs: Option<u64>,
+    /// `"category"` | `"mcp_server"` | `"all"`. Defaults to auto-detect from tool info.
+    pub bypass_scope: Option<String>,
 }
 
 fn default_action() -> String { "approve".to_string() }
@@ -43,13 +49,52 @@ pub async fn resolve_approval(
     Path(p):      Path<ApprovePath>,
     Json(body):   Json<ApproveBody>,
 ) -> Result<Json<Value>, ApiError> {
+    // Peek info before resolving so we have session_id and tool metadata for bypass.
+    let info = skald.approval.get_pending(p.request_id).await;
+
     if body.action == "reject" {
         let note = if body.note.is_empty() { "Rejected via Agent Inbox.".into() } else { body.note.clone() };
         skald.inbox.reject(p.request_id, note).await;
     } else {
         skald.inbox.approve(p.request_id).await;
+
+        // Apply bypass if requested (only on approve).
+        if let (Some(info), Some(bypass_secs)) = (info, body.bypass_secs) {
+            let duration = if bypass_secs == 0 { None } else { Some(Duration::from_secs(bypass_secs)) };
+
+            let scope = body.bypass_scope.as_deref().unwrap_or_else(|| {
+                if info.tool_category.is_some() { "category" }
+                else if info.mcp_server.is_some() { "mcp_server" }
+                else { "all" }
+            });
+
+            match scope {
+                "category" => {
+                    if let Some(cat) = info.tool_category {
+                        skald.approval.bypass_session_for_category(info.session_id, cat, duration).await;
+                    } else {
+                        apply_all_bypass(&skald, info.session_id, duration).await;
+                    }
+                }
+                "mcp_server" => {
+                    if let Some(server) = info.mcp_server {
+                        skald.approval.bypass_session_for_mcp(info.session_id, server, duration).await;
+                    } else {
+                        apply_all_bypass(&skald, info.session_id, duration).await;
+                    }
+                }
+                _ => apply_all_bypass(&skald, info.session_id, duration).await,
+            }
+        }
     }
     Ok(Json(json!({ "ok": true, "request_id": p.request_id, "action": body.action })))
+}
+
+async fn apply_all_bypass(skald: &Skald, session_id: i64, duration: Option<Duration>) {
+    match duration {
+        Some(d) => skald.approval.bypass_session_for(session_id, d).await,
+        None    => skald.approval.bypass_session(session_id).await,
+    }
 }
 
 // ── POST /api/inbox/clarifications/:request_id/resolve ────────────────────────

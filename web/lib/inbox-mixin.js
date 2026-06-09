@@ -21,6 +21,7 @@ export const InboxMixin = (Base) => class extends Base {
     this._inboxError   = null;
     this._inboxLoading = false;
     this._expanded     = new Set();
+    this._bypassOpen   = new Set();
   }
 
   // ── Data ──────────────────────────────────────────────────────────────────
@@ -39,12 +40,17 @@ export const InboxMixin = (Base) => class extends Base {
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
-  async _resolveApproval(requestId, action, note = '') {
+  async _resolveApproval(requestId, action, note = '', bypassSecs = null, bypassScope = null) {
     try {
+      const body = { action, note };
+      if (bypassSecs !== null) {
+        body.bypass_secs  = bypassSecs;
+        body.bypass_scope = bypassScope;
+      }
       const res = await fetch(`/api/inbox/approvals/${requestId}/resolve`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ action, note }),
+        body:    JSON.stringify(body),
       });
       if (!res.ok) throw new Error(await res.text());
       await this._loadInbox();
@@ -56,6 +62,21 @@ export const InboxMixin = (Base) => class extends Base {
   _rejectWithNote(requestId) {
     const note = prompt('Rejection reason (optional):') ?? '';
     this._resolveApproval(requestId, 'reject', note);
+  }
+
+  /** Approve + set a timed or session bypass scoped to the tool's category or MCP server. */
+  _approveWithBypass(item, bypassSecs) {
+    const scope = item.tool_category ? 'category'
+                : item.mcp_server    ? 'mcp_server'
+                :                      'all';
+    this._resolveApproval(item.request_id, 'approve', '', bypassSecs, scope);
+  }
+
+  /** Human-readable bypass scope label, e.g. "filesystem" or "Gmail". */
+  _bypassLabel(item) {
+    if (item.tool_category) return item.tool_category;
+    if (item.mcp_server)    return item.mcp_server;
+    return 'session';
   }
 
   async _resolveClarification(requestId, inputEl) {
@@ -79,6 +100,12 @@ export const InboxMixin = (Base) => class extends Base {
   _toggleRaw(id) {
     if (this._expanded.has(id)) this._expanded.delete(id);
     else                        this._expanded.add(id);
+    this.requestUpdate();
+  }
+
+  _toggleBypassMenu(id) {
+    if (this._bypassOpen.has(id)) this._bypassOpen.delete(id);
+    else                          this._bypassOpen.add(id);
     this.requestUpdate();
   }
 
@@ -147,7 +174,7 @@ export const InboxMixin = (Base) => class extends Base {
           <pre class="inbox-args-raw ${open ? 'open' : ''}">${rawJson}</pre>
         </div>
 
-        <div class="inbox-card-footer">
+        <div class="inbox-card-footer approval-footer">
           <button class="btn btn-success"
                   @click=${() => this._resolveApproval(item.request_id, 'approve')}>
             <i class="bi bi-check-lg"></i> Approve
@@ -155,6 +182,27 @@ export const InboxMixin = (Base) => class extends Base {
           <button class="btn btn-outline-danger"
                   @click=${() => this._rejectWithNote(item.request_id)}>
             <i class="bi bi-x-lg"></i> Reject
+          </button>
+
+          <div class="inbox-bypass-wrap">
+            <button class="btn btn-outline-secondary"
+                    @click=${() => this._toggleBypassMenu(id)}>
+              <i class="bi bi-clock-history"></i> ×${this._bypassLabel(item)} ▾
+            </button>
+            <div class="inbox-bypass-menu ${this._bypassOpen.has(id) ? 'open' : ''}">
+              <button @click=${() => { this._bypassOpen.delete(id); this._approveWithBypass(item, 15 * 60); }}>
+                15 min
+              </button>
+              <button @click=${() => { this._bypassOpen.delete(id); this._approveWithBypass(item, 60 * 60); }}>
+                1 ora
+              </button>
+            </div>
+          </div>
+
+          <button class="btn btn-outline-secondary"
+                  @click=${() => this._approveWithBypass(item, 0)}
+                  title="Approva e non chiedere più per questa sessione">
+            <i class="bi bi-shield-check"></i> Sessione
           </button>
         </div>
       </div>

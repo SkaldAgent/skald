@@ -8,7 +8,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::core::approval::ApprovalManager;
-use crate::core::session::handler::ApprovalDecision;
 use crate::core::db::{chat_history, chat_llm_tools, chat_sessions_stack, config, sources};
 use crate::core::events::{GlobalEvent, ServerEvent};
 use crate::core::session::handler::ChatSessionHandler;
@@ -35,7 +34,7 @@ const NOTIFY_BATCH_WINDOW_MS: u64 = 200;
 pub struct ChatHub {
     db:          Arc<SqlitePool>,
     session_mgr: Arc<ChatSessionManager>,
-    approval:    Arc<ApprovalManager>,
+    pub approval: Arc<ApprovalManager>,
     /// Single global broadcast bus. All events from all sources flow here,
     /// wrapped in GlobalEvent with source/session_id tags. Subscribers filter.
     global_tx:   broadcast::Sender<GlobalEvent>,
@@ -49,10 +48,10 @@ impl ChatHub {
         db:          Arc<SqlitePool>,
         session_mgr: Arc<ChatSessionManager>,
         approval:    Arc<ApprovalManager>,
+        global_tx:   broadcast::Sender<GlobalEvent>,
         shutdown:    CancellationToken,
     ) -> Arc<Self> {
         let (notify_tx, notify_rx) = mpsc::channel::<String>(NOTIFY_CAPACITY);
-        let (global_tx, _)         = broadcast::channel::<GlobalEvent>(EVENTS_CAPACITY);
 
         let hub = Arc::new(Self {
             db,
@@ -221,24 +220,12 @@ impl ChatHub {
 
     /// Approve a pending tool-call approval request.
     pub async fn approve(&self, request_id: i64) {
-        if let Some(info) = self.approval.resolve(request_id, ApprovalDecision::Approved).await {
-            let _ = self.global_tx.send(GlobalEvent {
-                source:     Some(info.source),
-                session_id: Some(info.session_id),
-                event:      ServerEvent::ApprovalResolved { request_id, tool_call_id: info.tool_call_id, approved: true },
-            });
-        }
+        self.approval.approve(request_id).await;
     }
 
     /// Reject a pending tool-call approval request.
     pub async fn reject(&self, request_id: i64, note: String) {
-        if let Some(info) = self.approval.resolve(request_id, ApprovalDecision::Rejected { note }).await {
-            let _ = self.global_tx.send(GlobalEvent {
-                source:     Some(info.source),
-                session_id: Some(info.session_id),
-                event:      ServerEvent::ApprovalResolved { request_id, tool_call_id: info.tool_call_id, approved: false },
-            });
-        }
+        self.approval.reject(request_id, note).await;
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
