@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
@@ -42,6 +42,7 @@ impl ChatSessionHandler {
         extra_system:         Option<String>,
         extra_system_dynamic: Option<String>,
         mut interface_tools:  Vec<InterfaceTool>,
+        system_substitutions: HashMap<String, String>,
     ) -> anyhow::Result<AgentRunConfig> {
         let meta = crate::core::agents::load_meta(&self.agent_id).ok();
         let (key, _) = self.llm_manager.resolve(
@@ -122,6 +123,7 @@ impl ChatSessionHandler {
             extra_system,
             extra_system_dynamic,
             tail_reminder:        None,
+            system_substitutions,
             interface_tools,
             memory_tools,
             image_tools,

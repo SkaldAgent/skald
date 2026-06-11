@@ -55,7 +55,7 @@ impl ChatSessionHandler {
             // Messages are (re)built with the current model's prompt_cache flag.
             // On fallback within the same round they are rebuilt again if the new
             // model has a different prompt_cache setting.
-            let mut messages = self.build_openai_messages(pool, stack_id, &config.agent_id, config.extra_system.as_deref(), config.extra_system_dynamic.as_deref(), config.tail_reminder.as_deref(), &active_grants_snapshot, cur_llm.prompt_cache).await?;
+            let mut messages = self.build_openai_messages(pool, stack_id, &config.agent_id, config.extra_system.as_deref(), config.extra_system_dynamic.as_deref(), config.tail_reminder.as_deref(), &active_grants_snapshot, &config.system_substitutions, cur_llm.prompt_cache).await?;
             let tool_defs    = config.all_tool_defs();
 
             // ── LLM call with automatic fallback ──────────────────────────────
@@ -101,7 +101,7 @@ impl ChatSessionHandler {
                                     // Rebuild messages if the new model uses different
                                     // prompt_cache settings (e.g. switching from
                                     // OpenRouter/Anthropic to DeepSeek).
-                                    messages = self.build_openai_messages(pool, stack_id, &config.agent_id, config.extra_system.as_deref(), config.extra_system_dynamic.as_deref(), config.tail_reminder.as_deref(), &active_grants_snapshot, cur_llm.prompt_cache).await?;
+                                    messages = self.build_openai_messages(pool, stack_id, &config.agent_id, config.extra_system.as_deref(), config.extra_system_dynamic.as_deref(), config.tail_reminder.as_deref(), &active_grants_snapshot, &config.system_substitutions, cur_llm.prompt_cache).await?;
                                 }
                                 Err(_) => {
                                     tx.send(ServerEvent::LlmFailed {

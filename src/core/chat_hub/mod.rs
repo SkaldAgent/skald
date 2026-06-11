@@ -85,7 +85,8 @@ impl ChatHub {
         prompt:    &str,
         opts:      SendMessageOptions,
     ) -> anyhow::Result<()> {
-        let session_id = self.get_or_create_session(source_id).await?;
+        let agent_id = opts.agent_id.as_deref().unwrap_or("main");
+        let session_id = self.get_or_create_session(source_id, agent_id).await?;
         let source_tag = source_id.to_string();
 
         // Bridge mpsc from handle_message → global broadcast, tagging with source/session.
@@ -99,6 +100,7 @@ impl ChatHub {
             opts.extra_system_dynamic,
             opts.tail_reminder,
             opts.interface_tools,
+            opts.system_substitutions,
             tx,
             opts.is_synthetic,
         ).await
@@ -106,7 +108,7 @@ impl ChatHub {
 
     /// Returns the session handler for the source's active session, creating one lazily if needed.
     pub async fn session_handler(&self, source_id: &str) -> anyhow::Result<Arc<ChatSessionHandler>> {
-        let session_id = self.get_or_create_session(source_id).await?;
+        let session_id = self.get_or_create_session(source_id, "main").await?;
         self.session_mgr.get_or_create_handler(session_id).await
     }
 
@@ -152,7 +154,7 @@ impl ChatHub {
     /// Returns `(input_tokens, output_tokens)` — both are `None` when no
     /// messages exist or the provider did not report usage.
     pub async fn context_info(&self, source_id: &str) -> anyhow::Result<(Option<i64>, Option<i64>)> {
-        let session_id = self.get_or_create_session(source_id).await?;
+        let session_id = self.get_or_create_session(source_id, "main").await?;
         let stack = match chat_sessions_stack::active_for_session(&self.db, session_id).await? {
             Some(s) => s,
             None => return Ok((None, None)),
@@ -253,11 +255,11 @@ impl ChatHub {
         tx
     }
 
-    async fn get_or_create_session(&self, source_id: &str) -> anyhow::Result<i64> {
+    async fn get_or_create_session(&self, source_id: &str, agent_id: &str) -> anyhow::Result<i64> {
         if let Some(sid) = sources::active_session_id(&self.db, source_id).await? {
             return Ok(sid);
         }
-        let (session_id, _) = self.session_mgr.create_session("main", source_id, true, false).await?;
+        let (session_id, _) = self.session_mgr.create_session(agent_id, source_id, true, false).await?;
         sources::upsert(&self.db, source_id, session_id).await?;
         info!(source_id, session_id, "ChatHub: session created lazily");
         Ok(session_id)
@@ -313,7 +315,7 @@ impl ChatHub {
             // the last assistant message and runs the LLM loop so the agent can respond.
             let result_json = serde_json::to_string(&briefings).unwrap_or_else(|_| "[]".to_string());
 
-            let session_id = match hub.get_or_create_session(&home).await {
+            let session_id = match hub.get_or_create_session(&home, "main").await {
                 Ok(sid) => sid,
                 Err(e) => { error!(error = %e, "notification consumer: get_or_create_session failed"); continue; }
             };

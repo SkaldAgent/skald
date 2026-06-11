@@ -273,6 +273,7 @@ async fn run_job(
         Some(job_context),     // extra_system_dynamic_override
         None,                  // tail_reminder
         vec![],                // interface_tools
+        std::collections::HashMap::new(), // system_substitutions
         tx,
         false,                 // is_synthetic
     ).await;

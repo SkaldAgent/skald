@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
@@ -9,6 +11,13 @@ use crate::interface_tool::InterfaceTool;
 /// Optional parameters for a [`ChatHubApi::send_message`] call.
 #[derive(Default)]
 pub struct SendMessageOptions {
+    /// Agent to use for this source's session. Defaults to `"main"` if not set.
+    /// Only takes effect when a new session is created — ignored for existing sessions.
+    pub agent_id: Option<String>,
+    /// Named substitutions applied to the agent's system prompt.
+    /// Each entry replaces the sentinel `__KEY__` in the loaded prompt text.
+    /// Matches `<!-- KEY -->` placeholders that `agents::resolve_includes` converts to sentinels.
+    pub system_substitutions: HashMap<String, String>,
     pub client_name: Option<String>,
     /// Extra text prepended to the agent's system prompt for this turn only.
     /// STATIC: safe to cache — use for interface-specific formatting rules that

@@ -165,9 +165,19 @@ impl KokoroTtsPlugin {
                 "--default-speed",  &config.speed.to_string(),
             ])
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .context("kokoro_tts: failed to spawn python3")?;
+
+        // Log stderr in background so Python errors appear in Skald's log file.
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    tracing::warn!("kokoro_tts(py/err): {line}");
+                }
+            });
+        }
 
         let stdout = child.stdout.take()
             .ok_or_else(|| anyhow!("kokoro_tts: no stdout from subprocess"))?;
@@ -286,6 +296,7 @@ impl Plugin for KokoroTtsPlugin {
         warn!("kokoro_tts: stop() called without ctx — cannot unregister from TtsManager");
         if let Some(mut inner) = self.inner.lock().await.take() {
             let _ = inner.child.kill().await;
+            let _ = inner.child.wait().await;
         }
         self.running.store(false, Ordering::Relaxed);
         Ok(())

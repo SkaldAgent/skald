@@ -43,6 +43,10 @@ impl ChatSessionHandler {
         let target_meta = crate::core::agents::load_meta(target_id)
             .map_err(|e| anyhow::anyhow!("call_agent: agent `{target_id}` not found: {e}"))?;
 
+        if target_meta.is_system_agent {
+            anyhow::bail!("call_agent: agent `{target_id}` is a system agent and cannot be invoked via call_agent");
+        }
+
         // Depth cap.
         let parent_frame = chat_sessions_stack::find_by_id(pool, parent_stack_id).await?
             .ok_or_else(|| anyhow::anyhow!("call_agent: parent stack frame not found"))?;

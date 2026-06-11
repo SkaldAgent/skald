@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -58,6 +58,7 @@ impl MessageBuilder {
         extra_system_dynamic: Option<&str>,
         tail_reminder:        Option<&str>,
         active_mcp_grants:    &HashSet<String>,
+        system_substitutions: &HashMap<String, String>,
         cache_hints:          bool,
     ) -> anyhow::Result<Vec<Value>> {
         let pool = &*self.pool;
@@ -97,6 +98,13 @@ impl MessageBuilder {
                 "__MCP_LIST__",
                 &self.render_mcp_list(active_mcp_grants),
             );
+        }
+
+        for (key, value) in system_substitutions {
+            let sentinel = format!("__{key}__");
+            if static_content.contains(sentinel.as_str()) {
+                static_content = static_content.replace(sentinel.as_str(), value);
+            }
         }
 
         let static_msg = if cache_hints {

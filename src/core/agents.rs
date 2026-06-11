@@ -166,6 +166,14 @@ fn resolve_includes(content: &str) -> Result<String> {
             // active/hidden sections. Leave a sentinel so the injection point
             // is preserved and positioned correctly in the prompt.
             out.push_str("__MCP_LIST__\n");
+        } else if let Some(key) = trimmed
+            .strip_prefix("<!-- ")
+            .and_then(|s| s.strip_suffix(" -->"))
+            .filter(|k| k.chars().all(|c| c.is_ascii_uppercase() || c == '_'))
+        {
+            // Generic runtime substitution: <!-- KEY --> → __KEY__ sentinel.
+            // Replaced at request time via SendMessageOptions::system_substitutions.
+            out.push_str(&format!("__{key}__\n"));
         } else {
             out.push_str(line);
             out.push('\n');

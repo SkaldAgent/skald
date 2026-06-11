@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -20,6 +20,7 @@ impl ChatSessionHandler {
         extra_system_dynamic: Option<&str>,
         tail_reminder:        Option<&str>,
         active_mcp_grants:    &HashSet<String>,
+        system_substitutions: &HashMap<String, String>,
         cache_hints:          bool,
     ) -> anyhow::Result<Vec<Value>> {
         let builder = MessageBuilder {
@@ -34,6 +35,6 @@ impl ChatSessionHandler {
         // `pool` is passed in from the caller (always `&self.db`) but we take
         // ownership via Arc::clone above so the signature stays backward-compatible.
         let _ = pool; // suppress unused-variable warning; MessageBuilder uses its own Arc
-        builder.build(stack_id, agent_id, extra_system_static, extra_system_dynamic, tail_reminder, active_mcp_grants, cache_hints).await
+        builder.build(stack_id, agent_id, extra_system_static, extra_system_dynamic, tail_reminder, active_mcp_grants, system_substitutions, cache_hints).await
     }
 }

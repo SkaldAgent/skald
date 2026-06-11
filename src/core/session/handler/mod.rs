@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -322,6 +323,7 @@ impl ChatSessionHandler {
         extra_system_dynamic_override: Option<String>,
         tail_reminder:                Option<String>,
         interface_tools:              Vec<InterfaceTool>,
+        system_substitutions:         HashMap<String, String>,
         tx:                           mpsc::Sender<ServerEvent>,
         // True for system-generated messages injected as user turns
         // (TicManager ticks, notification briefings from ChatHub).
@@ -369,7 +371,7 @@ impl ChatSessionHandler {
         };
 
         let mut config = self.build_agent_config(
-            client_name, extra_system_context, extra_system_dynamic, interface_tools,
+            client_name, extra_system_context, extra_system_dynamic, interface_tools, system_substitutions,
         ).await?;
         config.tail_reminder = tail_reminder;
 

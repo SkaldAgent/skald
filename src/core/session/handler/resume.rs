@@ -38,7 +38,7 @@ impl ChatSessionHandler {
 
         let pool = &self.db;
         let mut config = self.build_agent_config(
-            client_name, extra_system_context, None, interface_tools,
+            client_name, extra_system_context, None, interface_tools, std::collections::HashMap::new(),
         ).await?;
         config.tail_reminder = None;
 

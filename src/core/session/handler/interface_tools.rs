@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
@@ -35,6 +35,9 @@ pub struct AgentRunConfig {
     pub extra_system_dynamic: Option<String>,
     /// Short reminder injected as a trailing `system` message in the message list.
     pub tail_reminder: Option<String>,
+    /// Named substitutions applied to the agent's system prompt at build time.
+    /// Each entry replaces `__KEY__` sentinels produced by `agents::resolve_includes`.
+    pub system_substitutions: HashMap<String, String>,
     /// Interface-specific tools.
     /// For sub-agents this contains only `show_mcp_tools`; all others are dropped.
     pub interface_tools: Vec<InterfaceTool>,
@@ -107,6 +110,7 @@ impl AgentRunConfig {
             extra_system:         None,
             extra_system_dynamic: None,
             tail_reminder:        None,
+            system_substitutions: HashMap::new(),
             interface_tools:      vec![],
             memory_tools:         self.memory_tools.clone(),
             image_tools:          self.image_tools.clone(),
