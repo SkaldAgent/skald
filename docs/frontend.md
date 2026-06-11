@@ -54,11 +54,12 @@ The web copilot supports the following slash commands, intercepted server-side i
 `src/frontend/api/ws.rs` before reaching the LLM:
 
 | Command | Effect |
-|---|---|
+|---|---|---|
 | `/new` | Create a new chat session (handled client-side, clears context) |
 | `/help` | Show available commands |
 | `/context` | Show last turn's token usage (`↑X tok · ↓Y tok`) |
 | `/compact` | Force context compaction (bypasses the token threshold) |
+| `/resetmcp` | Remove all activated MCP tools from the session |
 | `/sethome` | Set web as the home source for background notifications |
 
 Unknown commands are forwarded to the LLM as regular text.
@@ -125,7 +126,7 @@ Cancel message (abort current turn): `{"type":"cancel"}`
 ## Lit Component Inventory
 
 | File | Element | Responsibility |
-|---|---|---|
+|---|---|---|---|
 | `web/lib/chat-session.js` | `ChatSession` (base) | Shared WS logic, message state, all approval/LLM event handling. Subclasses override `_wsSource`, `_getInputContent`, `_clearInput`, `_scrollToBottom`, `_onMessagePushed` |
 | `web/components/copilot.js` | `<app-copilot>` | Desktop copilot panel (`_wsSource='web'`); resize, composer input with model pill and auto-resize textarea |
 | `web/components/shared/chat-page.js` | `<chat-page>` | Mobile chat page (`_wsSource='mobile'`); extends `ChatSession` with mobile-specific layout |
@@ -142,12 +143,16 @@ Cancel message (abort current turn): `{"type":"cancel"}`
 | `web/components/llm-providers.js` | `<llm-providers-page>` | LLM provider management |
 | `web/components/agents.js` | `<agents-page>` | Agent discovery and configuration |
 | `web/components/approval-rules.js` | `<approval-rules-page>` | Approval rule management |
+| `web/components/llm-requests.js` | `<llm-requests-page>` | LLM request log viewer with filterable table, pagination, clickable rows that drill into detail view (`#llm-requests/<id>`) |
+| `web/components/llm-request-detail.js` | `<llm-request-detail>` | LLM request detail: stat bar, system prompt, conversation messages, tool definitions, response — with collapsible sections |
 
 All components extend `LightElement` from `web/lib/base.js` (Lit-based).
 
 ### Agent Inbox page
 
-Approval cards have a yellow left border; clarification cards have a blue left border. Clarification cards show suggested-answer chips (click pre-populates the input) and a free-text input — submit with Enter or the Send button. Approval cards have Approve / Reject buttons (reject prompts for an optional note via `window.prompt`).
+Approval cards have a yellow left border; clarification cards have a blue left border. Clarification cards show suggested-answer chips (click pre-populates the input) and a free-text input — submit with Enter or the Send button.
+
+Approval cards have Approve / Reject buttons and a timed bypass menu (15 min / 1 hour / Session) scoped to the tool's category or MCP server. The bypass scope auto-detects from the pending approval's metadata: `tool_category` for category-scoped, `mcp_server` for MCP server-scoped, otherwise `all`. The REST API also supports `bypass_secs` and `bypass_scope` fields in the resolve body.
 
 ---
 
@@ -169,6 +174,8 @@ A persistent flag stored in the `config` DB table under key `DEBUG_MODE` (`"true
 | --- | --- | --- | --- |
 | `GET` | `/api/dev/debug_mode` | — | `{ "enabled": bool }` |
 | `POST` / `PUT` | `/api/dev/debug_mode` | `{ "enabled": bool }` | `{ "enabled": bool }` |
+| `GET` | `/api/dev/llm-requests` | query: `?page=1&per_page=20&agent_id=&source=&from=&to=` | `{ items: LlmRequest[], total: int }` |
+| `GET` | `/api/dev/llm-requests/{id}` | — | Full request/response payload with system prompt, messages, tool definitions, and response |
 
 The frontend reads this flag at startup and uses it to show or hide sections in the sidebar menu that are otherwise invisible in production.
 

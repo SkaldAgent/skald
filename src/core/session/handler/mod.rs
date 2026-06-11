@@ -15,6 +15,7 @@ use crate::core::clarification::ClarificationManager;
 use crate::core::compactor::ContextCompactor;
 use crate::core::config::DatetimeConfig;
 use crate::core::db::{chat_history, chat_sessions_stack};
+use crate::core::db::run_contexts::RunContextRow;
 use crate::core::events::ServerEvent;
 use crate::core::llm::LlmManager;
 use crate::core::mcp::McpManager;
@@ -199,6 +200,9 @@ pub struct ChatSessionHandler {
     /// Set by `ChatSessionManager::get_or_create_handler` immediately after creation.
     /// Used by `dispatch_call_agent` to spawn child tasks that need `Arc<Self>`.
     pub(super) weak_self: std::sync::OnceLock<std::sync::Weak<ChatSessionHandler>>,
+    /// Active RunContext for this session. `None` means the "default" run_context
+    /// is used implicitly (global rules only).
+    pub(super) run_context: tokio::sync::RwLock<Option<RunContextRow>>,
 }
 
 impl ChatSessionHandler {
@@ -222,6 +226,7 @@ impl ChatSessionHandler {
         memory_manager:           Arc<MemoryManager>,
         image_generator_manager:  Arc<ImageGeneratorManager>,
         compactor:                Option<Arc<ContextCompactor>>,
+        run_context:              Option<RunContextRow>,
     ) -> Self {
         Self {
             session_id,
@@ -249,6 +254,7 @@ impl ChatSessionHandler {
             auto_deny_approvals: AtomicBool::new(false),
             last_input_tokens:   AtomicU32::new(0),
             weak_self:           std::sync::OnceLock::new(),
+            run_context:         tokio::sync::RwLock::new(run_context),
         }
     }
 
@@ -258,6 +264,18 @@ impl ChatSessionHandler {
         if let Ok(mut g) = self.context_label.write() {
             *g = Some(label.into());
         }
+    }
+
+    /// Updates the RunContext for this session at runtime.
+    pub async fn set_run_context(&self, ctx: Option<RunContextRow>) {
+        *self.run_context.write().await = ctx;
+    }
+
+    /// Returns the active tool_group_id for this session (derived from the run_context).
+    pub(super) async fn tool_group_id(&self) -> Option<String> {
+        self.run_context.read().await
+            .as_ref()
+            .and_then(|rc| rc.tool_group_id.clone())
     }
 
     /// Signals the current tool-call loop to stop after the current round.

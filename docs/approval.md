@@ -31,9 +31,33 @@ llm_loop.rs
 
 ---
 
+## Permission Groups and RunContext
+
+Rules are scoped to **permission groups** (`tool_permission_groups` table). A session's active **RunContext** (`run_contexts` table) references a group; rules in that group take precedence over rules in the `"default"` group.
+
+### Evaluation Chain
+
+```
+chat_session.run_context_id
+  └─► run_contexts.tool_group_id  (e.g. "cron_restrictive")
+        │
+        ├─ rules WHERE group_id = "cron_restrictive"  ← evaluated first
+        └─ rules WHERE group_id = "default"           ← fallback
+```
+
+If a session has no `run_context_id` (or the run_context has no `tool_group_id`), only the `"default"` group rules apply.
+
+The `"default"` group and run_context are seeded automatically at startup and **cannot be deleted**. Their rules can be freely edited.
+
+See [session.md](session.md) for how RunContext is resolved at session creation.
+
+---
+
 ## Rules
 
-Rules are stored in SQLite in the `approval_rules` table and evaluated in `priority ASC` order (lower number = evaluated first). The first matching rule determines the action. If no rule matches, the default is `Allow`.
+Rules are stored in SQLite in the `approval_rules` table and evaluated in `priority ASC` order (lower number = evaluated first). The first matching rule determines the action. If no rule matches, the fallback is `Require` (default-closed policy).
+
+The **Default** group has a seeded `allow * priority=9999` catch-all rule so standard sessions remain permissive out of the box. Groups created without such a rule are automatically restrictive — any tool not explicitly allowed or denied will require human approval.
 
 ### Table Schema
 
@@ -47,6 +71,7 @@ Rules are stored in SQLite in the `approval_rules` table and evaluated in `prior
 | `action` | TEXT | `require` \| `allow` \| `deny` |
 | `note` | TEXT (nullable) | Descriptive note |
 | `priority` | INTEGER | Evaluation order (default 100; system defaults use 10) |
+| `group_id` | TEXT | Permission group this rule belongs to (default: `"default"`) |
 
 ### Pattern Matching
 
@@ -62,9 +87,9 @@ The `path_pattern` field uses the same glob logic, applied to the normalised pat
 ### Evaluation Order
 
 1. Hardcoded exception: file-write targeting `memory/` → always `Allow`
-2. DB rules in `priority ASC, id ASC` order — first matching rule wins
+2. DB rules for the session's group, then `"default"` group as fallback — sorted by `priority ASC, id ASC` within each tier — first matching rule wins
 3. **Session bypass** (in-memory): if the result would be `Require` and an active bypass matches `session_id` + `category`, convert to `Allow`. `Deny` is never bypassed.
-4. No matching rule → `Allow` (default-open)
+4. No matching rule → `Require` (default-closed)
 
 ### Path Whitelist (e.g. `data/`)
 
@@ -305,8 +330,25 @@ This is the current behaviour. Future work may add persistence of pending approv
 | `src/core/session/handler/mod.rs` | `ChatSessionHandler` holds `Arc<ApprovalManager>`, `Arc<ClarificationManager>`, `context_label: RwLock<Option<String>>` |
 | `src/frontend/api/inbox.rs` | `/api/inbox` endpoint + resolve for approval and clarification (uses `skald.inbox`) |
 | `src/frontend/api/approval.rs` | Approval rules CRUD + `/api/approval/pending` + `/api/approval/tools` (uses `skald.catalog` for tool listing) |
+| `web/components/approval-rules.js` | Two-level UI: groups list → rules per group. Manages `tool_permission_groups` via `/api/tool-permission-groups` and rules via `/api/approval/rules`. |
 | `src/frontend/api/ws.rs` | Handles `approve_tool`/`reject_tool`/`approve_write`/`reject_write` from the client |
 | `src/core/events.rs` | `ServerEvent::ApprovalRequired` (generic tools) and `PendingWrite` (files with diff) |
+
+---
+
+## Frontend — Approval Rules page
+
+The **Approval Rules** page (`web/components/approval-rules.js`, `<approval-rules-page>`) has two tabs at the root level and a drill-down rules view:
+
+**Groups view** (root): lists all `tool_permission_groups`. Each group card shows its name, description, and rule count. Clicking navigates to the rules view. Groups can be added, renamed, or deleted; the `"default"` group cannot be deleted.
+
+**Rules view** (drill-down from a group): shows rules for the selected group, filtered client-side by `group_id`. Rules can be added, edited, or deleted; `group_id` is set automatically to the current group.
+
+Each view has an informational guide banner (same style as the Agents page).
+
+Data is loaded in a single batch on page open (`GET /api/tool-permission-groups`, `GET /api/approval/rules`, `GET /api/approval/tools`). Group filtering is done client-side.
+
+The **Agent Profiles** page (`web/components/agent-profiles.js`, `<agent-profiles-page>`) is a separate sidebar entry that manages `run_contexts`. Each profile links a session to a permission group via a dropdown. The `"default"` profile cannot be deleted. See `docs/session.md` for the resolution chain.
 
 ---
 

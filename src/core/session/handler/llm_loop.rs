@@ -174,9 +174,11 @@ impl ChatSessionHandler {
 
                         // ── Approval gate ──────────────────────────────────────────────
                         let category = self.tools.category_of(&call.name);
+                        let group_id = self.tool_group_id().await;
                         let gate = self.approval.check(
                             self.session_id, category,
                             &config.agent_id, &self.source, &call.name, &call.arguments,
+                            group_id.as_deref(),
                         ).await;
                         match gate {
                             GateResult::Deny => {

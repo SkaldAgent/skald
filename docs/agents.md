@@ -46,6 +46,7 @@ When `allow_tools` is set, only those system tool names are injected into the LL
 | --- | --- |
 | `<!-- INCLUDE: path/to/file.md -->` | Replaced with the content of `agents/path/to/file.md` at load time. Supports recursive includes. |
 | `<!-- AGENTS_LIST -->` | Replaced with a bullet list of agents where `id != "main"` and `is_system_agent != true`: `- **id** — description` |
+| `<!-- KEY -->` (any uppercase name) | Runtime substitution sentinel. Replaced at request time via `SendMessageOptions::system_substitutions`. The agent's system prompt contains `__KEY__` which is swapped for the provided value before the LLM call. |
 
 ---
 
@@ -69,7 +70,8 @@ When `allow_tools` is set, only those system tool names are injected into the LL
 
 1. Validate `agent_id` and `prompt` args.
 2. Reject self-calls and calls to `main`.
-3. Load target agent's `meta.json`.
+3. Reject calls to system agents (`meta.json` → `is_system_agent: true`) — they are invisible to call_agent.
+4. Load target agent's `meta.json`.
 4. Check depth: `parent_frame.depth + 1 <= MAX_AGENT_DEPTH`.
 5. Resolve target client (see below).
 6. Create child `chat_sessions_stack` row (`depth = parent + 1`, `parent_tool_call_id` set).

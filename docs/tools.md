@@ -161,6 +161,16 @@ Filtering happens in `src/core/session/handler/config.rs` after assembling `base
 
 ---
 
+### Key Parameter Notes (recent additions)
+
+| Tool | New parameters | Notes |
+| --- | --- | --- |
+| `execute_cmd` | `workdir` (absolute path), `timeout` (1–600 s, default 120) | Output truncated at 100 KB. Description tells LLM to use dedicated tools (`read_file`, `grep_files`, etc.) instead of shell equivalents. |
+| `edit_file` | `replace_all` (bool, default false) | Replaces every occurrence when true; otherwise requires unique match. Description tells LLM to use instead of `sed`/`awk`. |
+| `grep_files` | `output_mode` (`content`/`files_only`/`count`), `context_lines` (0–10), `offset` (pagination) | Description tells LLM to use instead of `grep`/`rg`. |
+
+---
+
 ## Tool Display Labels
 
 Every `Tool` implementation can override `describe(&self, args: &Value, length: ToolDescriptionLength) -> String` to produce a compact human-readable label shown in the UI and on Telegram instead of the raw tool name.

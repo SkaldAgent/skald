@@ -10,11 +10,13 @@ pub mod llm_requests;
 pub mod mcp_events;
 pub mod mcp_servers;
 pub mod plugins;
+pub mod run_contexts;
 pub mod scheduled_jobs;
 pub mod scratchpad;
 pub mod session_mcp_grants;
 pub mod sources;
 pub mod stack_mcp_grants;
+pub mod tool_permission_groups;
 
 use anyhow::Result;
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
@@ -32,13 +34,14 @@ pub async fn init_pool(path: &str) -> Result<SqlitePool> {
 async fn create_tables(pool: &SqlitePool) -> Result<()> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS chat_sessions (
-            id             INTEGER PRIMARY KEY AUTOINCREMENT,
-            title          TEXT,
-            source         TEXT    NOT NULL DEFAULT 'web',
-            agent_id       TEXT    NOT NULL DEFAULT 'main',
-            is_interactive INTEGER NOT NULL DEFAULT 1,
-            is_ephemeral   INTEGER NOT NULL DEFAULT 0,
-            created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            title            TEXT,
+            source           TEXT    NOT NULL DEFAULT 'web',
+            agent_id         TEXT    NOT NULL DEFAULT 'main',
+            is_interactive   INTEGER NOT NULL DEFAULT 1,
+            is_ephemeral     INTEGER NOT NULL DEFAULT 0,
+            run_context_id   TEXT    REFERENCES run_contexts(id),
+            created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
         )",
     )
     .execute(pool)
@@ -209,6 +212,29 @@ async fn create_tables(pool: &SqlitePool) -> Result<()> {
     .await?;
 
     sqlx::query(
+        "CREATE TABLE IF NOT EXISTS tool_permission_groups (
+            id          TEXT PRIMARY KEY,
+            name        TEXT NOT NULL,
+            description TEXT,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS run_contexts (
+            id            TEXT PRIMARY KEY,
+            name          TEXT NOT NULL,
+            description   TEXT,
+            tool_group_id TEXT REFERENCES tool_permission_groups(id),
+            created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS approval_rules (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             agent_id     TEXT,
@@ -219,6 +245,7 @@ async fn create_tables(pool: &SqlitePool) -> Result<()> {
             note         TEXT,
             priority     INTEGER NOT NULL DEFAULT 100,
             path_pattern TEXT,
+            group_id     TEXT    REFERENCES tool_permission_groups(id),
             created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
         )",
     )
@@ -482,6 +509,19 @@ async fn migrate_tables(pool: &SqlitePool) -> Result<()> {
         sqlx::query(
             "INSERT OR REPLACE INTO config(key, value, updated_at)
              VALUES('schema_version', '4', datetime('now'))",
+        )
+        .execute(pool)
+        .await?;
+    }
+
+    if version < 5 {
+        sqlx::query("ALTER TABLE approval_rules ADD COLUMN group_id TEXT")
+            .execute(pool).await.ok();
+        sqlx::query("ALTER TABLE chat_sessions ADD COLUMN run_context_id TEXT")
+            .execute(pool).await.ok();
+        sqlx::query(
+            "INSERT OR REPLACE INTO config(key, value, updated_at)
+             VALUES('schema_version', '5', datetime('now'))",
         )
         .execute(pool)
         .await?;

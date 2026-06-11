@@ -115,6 +115,8 @@ pub struct ApprovalRule {
     pub note:         Option<String>,
     /// Lower priority number = evaluated first.
     pub priority:     i64,
+    /// Permission group this rule belongs to. `None` is treated as `"default"`.
+    pub group_id:     Option<String>,
 }
 
 /// Input for creating a new rule.
@@ -128,6 +130,8 @@ pub struct NewApprovalRule {
     pub action:       RuleAction,
     pub note:         Option<String>,
     pub priority:     Option<i64>,
+    /// Permission group for this rule. Defaults to `"default"` when omitted.
+    pub group_id:     Option<String>,
 }
 
 /// Public view of a pending approval request (no channel, safe to clone/serialize).
@@ -226,8 +230,8 @@ impl ApprovalManager {
 
         for (pattern, action) in defaults {
             sqlx::query(
-                "INSERT INTO approval_rules (tool_pattern, action, note, priority)
-                 VALUES (?, ?, 'default rule', 10)",
+                "INSERT INTO approval_rules (tool_pattern, action, note, priority, group_id)
+                 VALUES (?, ?, 'default rule', 10, 'default')",
             )
             .bind(pattern)
             .bind(action)
@@ -235,7 +239,41 @@ impl ApprovalManager {
             .await?;
         }
 
-        info!("approval_rules seeded with {} default rules", defaults.len());
+        // Catch-all allow at the bottom of the default group so unmatched tools stay
+        // permitted for standard sessions; groups without this rule are restrictive.
+        sqlx::query(
+            "INSERT INTO approval_rules (tool_pattern, action, note, priority, group_id)
+             VALUES ('*', 'allow', 'Allow all tools by default (catch-all)', 9999, 'default')",
+        )
+        .execute(self.db.as_ref())
+        .await?;
+
+        info!("approval_rules seeded with {} default rules + catch-all allow", defaults.len());
+        Ok(())
+    }
+
+    /// Idempotent migration: ensures the Default group has an allow-all catch-all rule
+    /// at priority 9999. Needed when upgrading from the old default-open policy.
+    pub async fn seed_allow_all_default(&self) -> Result<()> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM approval_rules
+             WHERE tool_pattern = '*' AND action = 'allow' AND group_id = 'default'",
+        )
+        .fetch_one(self.db.as_ref())
+        .await?;
+
+        if count > 0 {
+            return Ok(());
+        }
+
+        sqlx::query(
+            "INSERT INTO approval_rules (tool_pattern, action, note, priority, group_id)
+             VALUES ('*', 'allow', 'Allow all tools by default (catch-all)', 9999, 'default')",
+        )
+        .execute(self.db.as_ref())
+        .await?;
+
+        info!("approval_rules: migrated — seeded allow-all catch-all for default group (priority 9999)");
         Ok(())
     }
 
@@ -257,8 +295,8 @@ impl ApprovalManager {
         let file_write_tools = &["write_file", "edit_file", "insert_at_line", "replace_lines"];
         for tool in file_write_tools {
             sqlx::query(
-                "INSERT INTO approval_rules (tool_pattern, path_pattern, action, note, priority)
-                 VALUES (?, 'data/*', 'allow', 'auto-allow data/ writes', 5)",
+                "INSERT INTO approval_rules (tool_pattern, path_pattern, action, note, priority, group_id)
+                 VALUES (?, 'data/*', 'allow', 'auto-allow data/ writes', 5, 'default')",
             )
             .bind(tool)
             .execute(self.db.as_ref())
@@ -275,10 +313,13 @@ impl ApprovalManager {
     ///
     /// Evaluation order:
     /// 1. Hardcoded memory-path exception → `Allow`.
-    /// 2. Rules sorted by `priority ASC`; first match wins.
+    /// 2. Rules for `group_id` first, then "default" group as fallback, sorted by priority ASC.
+    ///    First match wins.
     /// 3. Session bypass: if a matching bypass is active, `Require` → `Allow`.
     ///    `Deny` is never bypassed.
-    /// 4. No match → `Allow` (default-open policy).
+    /// 4. No match → `Require` (default-closed policy).
+    ///    The Default group has a seeded `allow * priority=9999` catch-all that keeps the
+    ///    permissive behaviour for standard sessions; groups without that rule are restrictive.
     pub async fn check(
         &self,
         session_id: i64,
@@ -287,6 +328,7 @@ impl ApprovalManager {
         source:     &str,
         tool_name:  &str,
         args:       &Value,
+        group_id:   Option<&str>,
     ) -> GateResult {
         // Hardcoded exception: memory/ file writes are always auto-approved.
         if is_memory_path(tool_name, args) {
@@ -294,7 +336,7 @@ impl ApprovalManager {
             return GateResult::Allow;
         }
 
-        let rules = match self.list_rules().await {
+        let rules = match crate::core::db::approval_rules::list_for_group(&self.db, group_id).await {
             Ok(r)  => r,
             Err(e) => {
                 warn!("approval: failed to load rules: {e} — defaulting to Allow");
@@ -310,6 +352,7 @@ impl ApprovalManager {
                 debug!(
                     tool = tool_name, agent = agent_id, source,
                     rule_id = rule.id, action = ?rule.action,
+                    rule_group = rule.group_id.as_deref().unwrap_or("default"),
                     "approval: rule matched"
                 );
                 break 'rules match rule.action {
@@ -318,8 +361,8 @@ impl ApprovalManager {
                     RuleAction::Deny    => GateResult::Deny,
                 };
             }
-            debug!(tool = tool_name, "approval: no rule matched → allow");
-            GateResult::Allow
+            debug!(tool = tool_name, "approval: no rule matched → require");
+            GateResult::Require
         };
 
         // Session bypass: converts Require → Allow when an active bypass matches.

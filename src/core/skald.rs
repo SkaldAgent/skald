@@ -25,6 +25,7 @@ use super::memory::MemoryManager;
 use super::mcp::McpManager;
 use super::plugin::PluginManager;
 use super::provider::ProviderRegistry;
+use super::run_context::RunContextManager;
 use super::secrets::SecretsStore;
 use super::session::manager::ChatSessionManager;
 use super::tic::TicManager;
@@ -47,6 +48,7 @@ pub struct Skald {
     pub plugin_manager:          Arc<PluginManager>,
     pub tools:                   Arc<ToolRegistry>,
     pub approval:                Arc<ApprovalManager>,
+    pub run_context_manager:     Arc<RunContextManager>,
     pub image_generator_manager: Arc<ImageGeneratorManager>,
     pub inbox:                   Inbox,
     pub(crate) event_bus:        Arc<ChatEventBus>,
@@ -213,7 +215,16 @@ impl Skald {
         if let Err(e) = approval.seed_data_path_rules().await {
             warn!(error = %e, "failed to seed data path allow rules (non-fatal)");
         }
+        if let Err(e) = approval.seed_allow_all_default().await {
+            warn!(error = %e, "failed to seed allow-all catch-all rule (non-fatal)");
+        }
         info!("approval manager ready");
+
+        let run_context_manager = Arc::new(RunContextManager::new(Arc::clone(&pool)));
+        if let Err(e) = run_context_manager.seed_defaults().await {
+            warn!(error = %e, "failed to seed default run_context (non-fatal)");
+        }
+        info!("run_context manager ready");
 
         let tools = Arc::new(tool_registry);
 
@@ -268,6 +279,7 @@ impl Skald {
             Arc::clone(&memory_manager),
             Arc::clone(&image_generator_manager),
             compactor,
+            Arc::clone(&run_context_manager),
         ));
 
         // Wire session manager into cron, then start cron background tasks.
@@ -343,6 +355,7 @@ impl Skald {
             plugin_manager: Arc::clone(&plugin_manager),
             tools,
             approval,
+            run_context_manager,
             image_generator_manager,
             inbox,
             catalog,

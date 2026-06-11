@@ -24,6 +24,8 @@ struct RawMeta {
     is_system_agent: bool,
     #[serde(default)]
     icon:          Option<String>,
+    #[serde(default)]
+    run_context:   Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +61,10 @@ pub struct AgentMeta {
     /// Defaults to None if no icon is configured.
     #[serde(default)]
     pub icon: Option<String>,
+    /// Default RunContext id for sessions started with this agent.
+    /// When `None`, the session uses the built-in "default" run_context.
+    #[serde(default)]
+    pub run_context: Option<String>,
 }
 
 /// Scan `agents/` and return metadata for every agent that has both
@@ -103,6 +109,7 @@ pub fn discover() -> Result<Vec<AgentMeta>> {
             allow_tools:     raw.allow_tools,
             is_system_agent: raw.is_system_agent,
             icon:            raw.icon,
+            run_context:     raw.run_context,
         };
         trace!(agent_id = %meta.id, client = ?meta.client, scope = ?meta.scope, strength = ?meta.strength, "agent meta loaded");
         debug!(agent_id = %meta.id, name = %meta.name, "agent discovered");
@@ -133,6 +140,7 @@ pub fn load_meta(agent_id: &str) -> Result<AgentMeta> {
         allow_tools:     raw.allow_tools,
         is_system_agent: raw.is_system_agent,
         icon:            raw.icon,
+        run_context:     raw.run_context,
     })
 }
 

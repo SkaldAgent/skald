@@ -65,7 +65,7 @@ export class AppSidebar extends LightElement {
     const hash = location.hash.slice(1);
     if (!hash) return 'home';
     const segment = hash.split('/')[0];
-    return ['inbox', 'tasks', 'models', 'providers', 'approval', 'agents', 'llm-requests'].includes(segment) ? segment : 'home';
+    return ['inbox', 'tasks', 'models', 'providers', 'approval', 'agent-profiles', 'agents', 'llm-requests'].includes(segment) ? segment : 'home';
   }
 
   _applyPage(page) {
@@ -136,6 +136,11 @@ export class AppSidebar extends LightElement {
            @click=${(e) => this._togglePage('approval', e)}>
           <i class="bi bi-shield-check"></i>
           <span class="sidebar-link-name">Approval Rules</span>
+        </a>
+        <a href="#" class="sidebar-link ${this._activePage === 'agent-profiles' ? 'active' : ''}"
+           @click=${(e) => this._togglePage('agent-profiles', e)}>
+          <i class="bi bi-person-gear"></i>
+          <span class="sidebar-link-name">Agent Profiles</span>
         </a>
         <a href="#" class="sidebar-link ${this._activePage === 'agents' ? 'active' : ''}"
            @click=${(e) => this._togglePage('agents', e)}>

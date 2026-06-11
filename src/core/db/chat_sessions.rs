@@ -1,15 +1,18 @@
 use sqlx::SqlitePool;
 
 pub struct ChatSession {
-    pub id:             i64,
-    pub source:         String,
-    pub agent_id:       String,
+    pub id:              i64,
+    pub source:          String,
+    pub agent_id:        String,
     /// True when a real user is actively participating (web, telegram).
     /// False for fully automated sessions (cron, tic).
-    pub is_interactive: bool,
+    pub is_interactive:  bool,
     /// True for short-lived task sessions (cron, tic) with no long-term
     /// conversational value. May be used to skip memory / analytics sinks.
-    pub is_ephemeral:   bool,
+    pub is_ephemeral:    bool,
+    /// Optional RunContext profile assigned to this session.
+    /// `None` resolves to the implicit "default" run_context at runtime.
+    pub run_context_id:  Option<String>,
 }
 
 pub async fn create(
@@ -36,23 +39,25 @@ pub async fn create(
         agent_id:       agent_id.to_string(),
         is_interactive,
         is_ephemeral,
+        run_context_id: None,
     })
 }
 
 pub async fn find_by_id(pool: &SqlitePool, id: i64) -> anyhow::Result<Option<ChatSession>> {
-    let row = sqlx::query_as::<_, (i64, String, String, bool, bool)>(
-        "SELECT id, source, agent_id, is_interactive, is_ephemeral
+    let row = sqlx::query_as::<_, (i64, String, String, bool, bool, Option<String>)>(
+        "SELECT id, source, agent_id, is_interactive, is_ephemeral, run_context_id
          FROM chat_sessions WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|(id, source, agent_id, is_interactive, is_ephemeral)| ChatSession {
+    Ok(row.map(|(id, source, agent_id, is_interactive, is_ephemeral, run_context_id)| ChatSession {
         id,
         source,
         agent_id,
         is_interactive,
         is_ephemeral,
+        run_context_id,
     }))
 }

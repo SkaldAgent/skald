@@ -9,35 +9,38 @@ const ACTION_STYLE = {
   deny:    { icon: 'bi-slash-circle',  label: 'Deny',     bg: 'rgba(239,68,68,0.12)',  color: '#dc2626' },
 };
 
-// Dark mode overrides via CSS variables
-const ACTION_VARS = {
-  require: '--apr-action-bg',
-  allow:   '--apr-action-allow-bg',
-  deny:    '--apr-action-deny-bg',
-};
-
 export class ApprovalRulesPage extends LightElement {
   static properties = {
     _open:          { state: true },
+    _groups:        { state: true },
     _rules:         { state: true },
-    _tools:         { state: true },   // { built_in: [...], mcp: [...] }
+    _tools:         { state: true },
     _error:         { state: true },
-    _editingId:     { state: true },   // null | id | 'new'
-    _form:          { state: true },   // draft rule fields
-    _toolFilter:    { state: true },   // search string in tool picker
+    _selectedGroup: { state: true },   // null | group object
+    _editingId:     { state: true },   // null | rule id | 'new'
+    _form:          { state: true },
+    _toolFilter:    { state: true },
     _saving:        { state: true },
+    _groupEditId:   { state: true },   // null | 'new' | group.id
+    _groupForm:     { state: true },
+    _groupSaving:   { state: true },
   };
 
   constructor() {
     super();
-    this._open       = false;
-    this._rules      = [];
-    this._tools      = null;
-    this._error      = null;
-    this._editingId  = null;
-    this._form       = this._emptyForm();
-    this._toolFilter = '';
-    this._saving     = false;
+    this._open          = false;
+    this._groups        = [];
+    this._rules         = [];
+    this._tools         = null;
+    this._error         = null;
+    this._selectedGroup = null;
+    this._editingId     = null;
+    this._form          = this._emptyForm();
+    this._toolFilter    = '';
+    this._saving        = false;
+    this._groupEditId   = null;
+    this._groupForm     = { id: '', name: '', description: '' };
+    this._groupSaving   = false;
   }
 
   _emptyForm() {
@@ -56,20 +59,94 @@ export class ApprovalRulesPage extends LightElement {
   async _load() {
     this._error = null;
     try {
-      const [rulesRes, toolsRes] = await Promise.all([
+      const [groupsRes, rulesRes, toolsRes] = await Promise.all([
+        fetch('/api/tool-permission-groups'),
         fetch('/api/approval/rules'),
         fetch('/api/approval/tools'),
       ]);
-      if (!rulesRes.ok) throw new Error(`Rules: HTTP ${rulesRes.status}`);
-      if (!toolsRes.ok) throw new Error(`Tools: HTTP ${toolsRes.status}`);
+      if (!groupsRes.ok) throw new Error(`Groups: HTTP ${groupsRes.status}`);
+      if (!rulesRes.ok)  throw new Error(`Rules: HTTP ${rulesRes.status}`);
+      if (!toolsRes.ok)  throw new Error(`Tools: HTTP ${toolsRes.status}`);
+      const groups = await groupsRes.json();
+      this._groups = groups.sort((a, b) => {
+        if (a.id === 'default') return -1;
+        if (b.id === 'default') return 1;
+        return a.name.localeCompare(b.name);
+      });
       this._rules = await rulesRes.json();
       this._tools = await toolsRes.json();
+      if (this._selectedGroup) {
+        this._selectedGroup = this._groups.find(g => g.id === this._selectedGroup.id) ?? null;
+      }
     } catch (e) {
       this._error = e.message;
     }
   }
 
-  // ── Form helpers ────────────────────────────────────────────────────────────
+  _rulesForGroup(groupId) {
+    return this._rules.filter(r => (r.group_id ?? 'default') === groupId);
+  }
+
+  // ── Group management ──────────────────────────────────────────────────────────
+
+  _startNewGroup() {
+    this._groupEditId = 'new';
+    this._groupForm   = { id: '', name: '', description: '' };
+  }
+
+  _startEditGroup(group) {
+    this._groupEditId = group.id;
+    this._groupForm   = { id: group.id, name: group.name, description: group.description ?? '' };
+  }
+
+  _cancelGroupEdit() { this._groupEditId = null; }
+
+  _patchGroup(field, value) {
+    this._groupForm = { ...this._groupForm, [field]: value };
+  }
+
+  async _saveGroup() {
+    const isNew = this._groupEditId === 'new';
+    if (!this._groupForm.name.trim()) { this._error = 'Group name is required.'; return; }
+    if (isNew && !this._groupForm.id.trim()) { this._error = 'Group ID is required.'; return; }
+    this._groupSaving = true;
+    this._error = null;
+    try {
+      const body = isNew
+        ? { id: this._groupForm.id.trim(), name: this._groupForm.name.trim(), description: this._groupForm.description.trim() || null }
+        : { name: this._groupForm.name.trim(), description: this._groupForm.description.trim() || null };
+      const url = isNew ? '/api/tool-permission-groups' : `/api/tool-permission-groups/${this._groupEditId}`;
+      const res = await fetch(url, {
+        method:  isNew ? 'POST' : 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      this._groupEditId = null;
+      await this._load();
+    } catch (e) {
+      this._error = e.message;
+    } finally {
+      this._groupSaving = false;
+    }
+  }
+
+  async _deleteGroup(group) {
+    const count = this._rulesForGroup(group.id).length;
+    const msg = count > 0
+      ? `Delete group "${group.name}" and its ${count} rule${count === 1 ? '' : 's'}?`
+      : `Delete group "${group.name}"?`;
+    if (!confirm(msg)) return;
+    try {
+      const res = await fetch(`/api/tool-permission-groups/${group.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(await res.text());
+      await this._load();
+    } catch (e) {
+      this._error = e.message;
+    }
+  }
+
+  // ── Rule management ───────────────────────────────────────────────────────────
 
   _startNew() {
     this._editingId  = 'new';
@@ -91,24 +168,14 @@ export class ApprovalRulesPage extends LightElement {
     };
   }
 
-  _cancelEdit() {
-    this._editingId  = null;
-    this._toolFilter = '';
-  }
+  _cancelEdit() { this._editingId = null; this._toolFilter = ''; }
 
-  _patch(field, value) {
-    this._form = { ...this._form, [field]: value };
-  }
+  _patch(field, value) { this._form = { ...this._form, [field]: value }; }
 
-  _selectTool(name) {
-    this._form = { ...this._form, tool_pattern: name };
-  }
+  _selectTool(name) { this._form = { ...this._form, tool_pattern: name }; }
 
   async _save() {
-    if (!this._form.tool_pattern.trim()) {
-      this._error = 'Tool pattern is required.';
-      return;
-    }
+    if (!this._form.tool_pattern.trim()) { this._error = 'Tool pattern is required.'; return; }
     this._saving = true;
     this._error  = null;
     try {
@@ -120,6 +187,7 @@ export class ApprovalRulesPage extends LightElement {
         agent_id:     this._form.agent_id.trim()  || null,
         source:       this._form.source.trim()    || null,
         note:         this._form.note.trim()      || null,
+        group_id:     this._selectedGroup?.id ?? 'default',
       };
       const isNew = this._editingId === 'new';
       const url   = isNew ? '/api/approval/rules' : `/api/approval/rules/${this._editingId}`;
@@ -149,16 +217,16 @@ export class ApprovalRulesPage extends LightElement {
     }
   }
 
-  // ── Tool picker ─────────────────────────────────────────────────────────────
+  // ── Tool picker ───────────────────────────────────────────────────────────────
 
   _renderToolPicker() {
     if (!this._tools) return nothing;
-    const q = this._toolFilter.toLowerCase();
+    const q       = this._toolFilter.toLowerCase();
     const current = this._form.tool_pattern;
 
     const allTools = [
-      { name: '*',       description: 'Any tool', source: 'glob', server: null },
-      { name: 'mcp__*',  description: 'Any MCP tool', source: 'glob', server: null },
+      { name: '*',      description: 'Any tool',     source: 'glob', server: null },
+      { name: 'mcp__*', description: 'Any MCP tool', source: 'glob', server: null },
       ...this._tools.built_in,
       ...this._tools.mcp,
     ];
@@ -170,7 +238,6 @@ export class ApprovalRulesPage extends LightElement {
       (t.server && t.server.toLowerCase().includes(q))
     );
 
-    // Group by source/server
     const groups = {};
     for (const t of filtered) {
       const key = t.source === 'mcp' ? `MCP · ${t.server}` : t.source === 'built-in' ? 'Built-in' : 'Glob';
@@ -206,7 +273,67 @@ export class ApprovalRulesPage extends LightElement {
     `;
   }
 
-  // ── Form ────────────────────────────────────────────────────────────────────
+  // ── Group form ────────────────────────────────────────────────────────────────
+
+  _renderGroupForm() {
+    const isNew = this._groupEditId === 'new';
+    const f     = this._groupForm;
+    return html`
+      <div class="apr-form">
+        <div class="apr-form-header">
+          <i class="bi bi-collection"></i>
+          <span>${isNew ? 'New group' : 'Rename group'}</span>
+          <button class="apr-form-close" @click=${() => this._cancelGroupEdit()}>
+            <i class="bi bi-x"></i>
+          </button>
+        </div>
+        <div class="apr-form-body">
+          <div class="row g-3">
+            ${isNew ? html`
+              <div class="col-12">
+                <label class="form-label fw-semibold" style="font-size:0.82rem">ID <span class="text-danger">*</span></label>
+                <input
+                  class="form-control form-control-sm font-monospace"
+                  placeholder="e.g. cron_strict"
+                  .value=${f.id}
+                  @input=${(e) => this._patchGroup('id', e.target.value)}
+                />
+                <div class="form-text" style="font-size:0.75rem">Lowercase slug, no spaces. Cannot be changed later.</div>
+              </div>
+            ` : nothing}
+            <div class="col-12">
+              <label class="form-label fw-semibold" style="font-size:0.82rem">Name <span class="text-danger">*</span></label>
+              <input
+                class="form-control form-control-sm"
+                placeholder="e.g. Cron strict"
+                .value=${f.name}
+                @input=${(e) => this._patchGroup('name', e.target.value)}
+              />
+            </div>
+            <div class="col-12">
+              <label class="form-label fw-semibold" style="font-size:0.82rem">Description <span class="text-muted fw-normal">(optional)</span></label>
+              <input
+                class="form-control form-control-sm"
+                placeholder="Short description…"
+                .value=${f.description}
+                @input=${(e) => this._patchGroup('description', e.target.value)}
+              />
+            </div>
+          </div>
+          <div class="apr-form-actions">
+            <button type="button" class="btn btn-sm btn-outline-secondary" @click=${() => this._cancelGroupEdit()}>Cancel</button>
+            <button class="btn btn-sm btn-primary" @click=${() => this._saveGroup()} ?disabled=${this._groupSaving}>
+              ${this._groupSaving
+                ? html`<span class="spinner-border spinner-border-sm me-1"></span>Saving…`
+                : html`<i class="bi bi-check-lg me-1"></i>Save`}
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // ── Rule form ─────────────────────────────────────────────────────────────────
 
   _renderForm() {
     const f = this._form;
@@ -221,8 +348,6 @@ export class ApprovalRulesPage extends LightElement {
         </div>
         <div class="apr-form-body">
           <div class="row g-3">
-
-            <!-- Tool pattern + picker -->
             <div class="col-12">
               <label class="form-label fw-semibold" style="font-size:0.82rem">Tool pattern <span class="text-danger">*</span></label>
               <input
@@ -233,14 +358,10 @@ export class ApprovalRulesPage extends LightElement {
               />
               <div class="form-text" style="font-size:0.75rem">Use <code>*</code> as a trailing wildcard, e.g. <code>mcp__whatsapp__*</code></div>
             </div>
-
-            <!-- Tool picker -->
             <div class="col-12">
               <label class="form-label fw-semibold" style="font-size:0.82rem">Select tool</label>
               ${this._renderToolPicker()}
             </div>
-
-            <!-- Path pattern -->
             <div class="col-12">
               <label class="form-label fw-semibold" style="font-size:0.82rem">Path pattern <span class="text-muted fw-normal">(optional)</span></label>
               <input
@@ -249,12 +370,8 @@ export class ApprovalRulesPage extends LightElement {
                 .value=${f.path_pattern}
                 @input=${(e) => this._patch('path_pattern', e.target.value)}
               />
-              <div class="form-text" style="font-size:0.75rem">
-                Filter by file path. Use <code>*</code> as a wildcard.
-              </div>
+              <div class="form-text" style="font-size:0.75rem">Filter by file path. Use <code>*</code> as a wildcard.</div>
             </div>
-
-            <!-- Action -->
             <div class="col-sm-4">
               <label class="form-label fw-semibold" style="font-size:0.82rem">Action</label>
               <select
@@ -265,8 +382,6 @@ export class ApprovalRulesPage extends LightElement {
                 ${ACTIONS.map(a => html`<option value=${a} ?selected=${f.action === a}>${a}</option>`)}
               </select>
             </div>
-
-            <!-- Priority -->
             <div class="col-sm-4">
               <label class="form-label fw-semibold" style="font-size:0.82rem">Priority</label>
               <input
@@ -277,8 +392,6 @@ export class ApprovalRulesPage extends LightElement {
               />
               <div class="form-text" style="font-size:0.75rem">Lower number = evaluated first</div>
             </div>
-
-            <!-- Source -->
             <div class="col-sm-4">
               <label class="form-label fw-semibold" style="font-size:0.82rem">Source <span class="text-muted fw-normal">(optional)</span></label>
               <select
@@ -291,8 +404,6 @@ export class ApprovalRulesPage extends LightElement {
                 `)}
               </select>
             </div>
-
-            <!-- Agent ID -->
             <div class="col-sm-6">
               <label class="form-label fw-semibold" style="font-size:0.82rem">Agent ID <span class="text-muted fw-normal">(optional)</span></label>
               <input
@@ -302,8 +413,6 @@ export class ApprovalRulesPage extends LightElement {
                 @input=${(e) => this._patch('agent_id', e.target.value)}
               />
             </div>
-
-            <!-- Note -->
             <div class="col-sm-6">
               <label class="form-label fw-semibold" style="font-size:0.82rem">Note <span class="text-muted fw-normal">(optional)</span></label>
               <input
@@ -313,13 +422,9 @@ export class ApprovalRulesPage extends LightElement {
                 @input=${(e) => this._patch('note', e.target.value)}
               />
             </div>
-
           </div>
-
           <div class="apr-form-actions">
-            <button type="button" class="btn btn-sm btn-outline-secondary" @click=${() => this._cancelEdit()}>
-              Cancel
-            </button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" @click=${() => this._cancelEdit()}>Cancel</button>
             <button class="btn btn-sm btn-primary" @click=${() => this._save()} ?disabled=${this._saving}>
               ${this._saving
                 ? html`<span class="spinner-border spinner-border-sm me-1"></span>Saving…`
@@ -331,12 +436,11 @@ export class ApprovalRulesPage extends LightElement {
     `;
   }
 
-  // ── Rule card ───────────────────────────────────────────────────────────────
+  // ── Rule card ─────────────────────────────────────────────────────────────────
 
   _renderCard(rule) {
     const s   = ACTION_STYLE[rule.action] ?? ACTION_STYLE.require;
     const has = (v) => v != null && v !== '';
-
     return html`
       <div class="apr-card" style="--apr-action-bg: ${s.bg}; --apr-action-color: ${s.color}">
         <div class="apr-card-row1">
@@ -358,43 +462,64 @@ export class ApprovalRulesPage extends LightElement {
             </button>
           </div>
         </div>
-
         ${has(rule.path_pattern) ? html`
           <div class="apr-card-row2">
-            <span class="apr-tag">
-              <i class="bi bi-folder2"></i>
-              <code>${rule.path_pattern}</code>
-            </span>
+            <span class="apr-tag"><i class="bi bi-folder2"></i><code>${rule.path_pattern}</code></span>
           </div>
         ` : ''}
-
         <div class="apr-card-row3">
-          ${has(rule.source) ? html`
-            <span class="apr-tag">
-              <i class="bi bi-box-arrow-in-right"></i>
-              ${rule.source}
-            </span>
-          ` : ''}
-          ${has(rule.agent_id) ? html`
-            <span class="apr-tag">
-              <i class="bi bi-robot"></i>
-              ${rule.agent_id}
-            </span>
-          ` : ''}
-          ${has(rule.note) ? html`
-            <span class="apr-tag apr-tag-note">
-              <i class="bi bi-chat-text"></i>
-              ${rule.note}
-            </span>
-          ` : ''}
+          ${has(rule.source)   ? html`<span class="apr-tag"><i class="bi bi-box-arrow-in-right"></i>${rule.source}</span>` : ''}
+          ${has(rule.agent_id) ? html`<span class="apr-tag"><i class="bi bi-robot"></i>${rule.agent_id}</span>` : ''}
+          ${has(rule.note)     ? html`<span class="apr-tag apr-tag-note"><i class="bi bi-chat-text"></i>${rule.note}</span>` : ''}
         </div>
       </div>
     `;
   }
 
-  // ── Main render ─────────────────────────────────────────────────────────────
+  // ── Group card ────────────────────────────────────────────────────────────────
 
-  render() {
+  _renderGroupCard(group) {
+    const count     = this._rulesForGroup(group.id).length;
+    const isDefault = group.id === 'default';
+    return html`
+      <div
+        class="apr-card apr-group-card"
+        @click=${() => { this._selectedGroup = group; this._editingId = null; }}
+      >
+        <div class="apr-card-row1">
+          ${isDefault ? html`<span class="apr-group-default-badge">Default</span>` : nothing}
+          <span class="apr-group-name">${group.name}</span>
+          <span class="apr-priority-badge ms-auto" title="${count} rule${count === 1 ? '' : 's'}">
+            <i class="bi bi-list-ul"></i>
+            ${count}
+          </span>
+          <div class="apr-card-actions" @click=${(e) => e.stopPropagation()}>
+            <button class="apr-btn-icon apr-btn-edit" title="Rename"
+              @click=${(e) => { e.stopPropagation(); this._startEditGroup(group); }}>
+              <i class="bi bi-pencil"></i>
+            </button>
+            <button
+              class="apr-btn-icon apr-btn-delete"
+              title=${isDefault ? 'Cannot delete the default group' : 'Delete group'}
+              ?disabled=${isDefault}
+              @click=${(e) => { e.stopPropagation(); if (!isDefault) this._deleteGroup(group); }}
+            >
+              <i class="bi bi-trash"></i>
+            </button>
+          </div>
+        </div>
+        ${group.description ? html`
+          <div class="apr-card-row3">
+            <span class="apr-tag"><i class="bi bi-text-left"></i>${group.description}</span>
+          </div>
+        ` : nothing}
+      </div>
+    `;
+  }
+
+  // ── Groups list view ──────────────────────────────────────────────────────────
+
+  _renderGroupsView() {
     return html`
       <div class="apr-page">
         <div class="apr-header">
@@ -402,29 +527,115 @@ export class ApprovalRulesPage extends LightElement {
             <i class="bi bi-shield-check me-2"></i>Approval Rules
           </h2>
           <div class="apr-header-right">
-            <span class="apr-header-count">${this._rules.length}</span>
+            <span class="apr-header-count">${this._groups.length} group${this._groups.length === 1 ? '' : 's'}</span>
+            <button class="btn btn-sm btn-primary" @click=${() => this._startNewGroup()}>
+              <i class="bi bi-plus-lg me-1"></i>New group
+            </button>
+          </div>
+        </div>
+
+        <div class="agent-info-banner" style="margin: 14px 20px 0">
+          <div class="agent-info-banner-icon"><i class="bi bi-info-circle-fill"></i></div>
+          <div class="agent-info-banner-body">
+            <p class="mb-1">
+              <strong>Permission groups</strong> are named sets of approval rules.
+              A session's active <strong>Agent Profile</strong> determines which group applies —
+              that group's rules are evaluated first, with the <strong>Default</strong> group as fallback.
+            </p>
+            <p class="mb-0">
+              Click a group to view and manage its rules.
+              The <strong>Default</strong> group cannot be deleted, but its rules can be edited freely.
+            </p>
+          </div>
+        </div>
+
+        ${this._error ? html`
+          <div class="alert alert-danger py-2 mx-3 mt-3 mb-0" style="font-size:0.85rem">${this._error}</div>
+        ` : nothing}
+
+        ${this._groupEditId !== null ? this._renderGroupForm() : nothing}
+
+        <div class="apr-card-list">
+          ${this._groups.length === 0 ? html`
+            <div class="apr-empty">
+              <i class="bi bi-collection"></i>
+              <p>No groups yet.</p>
+              <button class="btn btn-sm btn-primary" @click=${() => this._startNewGroup()}>
+                <i class="bi bi-plus-lg me-1"></i>Create first group
+              </button>
+            </div>
+          ` : this._groups.map(g => this._renderGroupCard(g))}
+        </div>
+      </div>
+    `;
+  }
+
+  // ── Rules view (per group) ────────────────────────────────────────────────────
+
+  _renderRulesView() {
+    const group     = this._selectedGroup;
+    const rules     = this._rulesForGroup(group.id);
+    const isDefault = group.id === 'default';
+    return html`
+      <div class="apr-page">
+        <div class="apr-header">
+          <button
+            class="btn btn-sm btn-outline-secondary"
+            style="flex-shrink:0"
+            @click=${() => { this._selectedGroup = null; this._editingId = null; }}
+          >
+            <i class="bi bi-arrow-left"></i>
+          </button>
+          <h2 class="apr-title">
+            ${isDefault ? html`<span class="apr-group-default-badge" style="vertical-align:middle">Default</span>` : nothing}
+            ${group.name}
+          </h2>
+          <div class="apr-header-right">
+            <span class="apr-header-count">${rules.length}</span>
             <button class="btn btn-sm btn-primary" @click=${() => this._startNew()}>
               <i class="bi bi-plus-lg me-1"></i>New rule
             </button>
           </div>
         </div>
 
+        <div class="agent-info-banner" style="margin: 14px 20px 0">
+          <div class="agent-info-banner-icon"><i class="bi bi-info-circle-fill"></i></div>
+          <div class="agent-info-banner-body">
+            <p class="mb-1">
+              Rules are evaluated in <strong>priority order</strong> (lower number = evaluated first).
+              The first matching rule wins: <strong>allow</strong>, <strong>deny</strong>, or <strong>require</strong> confirmation.
+              If no rule matches, the tool call is <strong>allowed</strong> by default.
+            </p>
+            ${isDefault ? html`
+              <p class="mb-0">
+                Rules in the <strong>Default</strong> group apply to all sessions as a fallback,
+                including those whose Agent Profile group has no matching rule.
+              </p>
+            ` : html`
+              <p class="mb-0">
+                Rules here take precedence over the <strong>Default</strong> group for sessions
+                whose Agent Profile points to this group.
+              </p>
+            `}
+          </div>
+        </div>
+
         ${this._error ? html`
-          <div class="alert alert-danger py-2 mx-3 mb-0" style="font-size:0.85rem">${this._error}</div>
+          <div class="alert alert-danger py-2 mx-3 mt-3 mb-0" style="font-size:0.85rem">${this._error}</div>
         ` : nothing}
 
         ${this._editingId !== null ? this._renderForm() : nothing}
 
         <div class="apr-card-list">
-          ${this._rules.length === 0 ? html`
+          ${rules.length === 0 ? html`
             <div class="apr-empty">
               <i class="bi bi-shield-check"></i>
-              <p>No rules yet.</p>
+              <p>No rules in this group yet.</p>
               <button class="btn btn-sm btn-primary" @click=${() => this._startNew()}>
-                <i class="bi bi-plus-lg me-1"></i>Add your first rule
+                <i class="bi bi-plus-lg me-1"></i>Add first rule
               </button>
             </div>
-          ` : this._rules.map(r => this._renderCard(r))}
+          ` : rules.map(r => this._renderCard(r))}
         </div>
 
         <div class="apr-legend">
@@ -449,5 +660,11 @@ export class ApprovalRulesPage extends LightElement {
         </div>
       </div>
     `;
+  }
+
+  // ── Main render ───────────────────────────────────────────────────────────────
+
+  render() {
+    return this._selectedGroup ? this._renderRulesView() : this._renderGroupsView();
   }
 }

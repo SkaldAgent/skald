@@ -47,6 +47,7 @@ scripts/.gitignore
 *.swp
 *.swo
 run-log.sh
+/backup.sh
 debug/
 
 # Honcho Docker secrets

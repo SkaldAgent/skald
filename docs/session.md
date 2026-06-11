@@ -1,5 +1,25 @@
 # Session & Message Handling
 
+## RunContext Resolution
+
+Each session can have an active **RunContext** that controls which permission group is used for tool approval.
+
+Resolution order at handler creation (`get_or_create_handler`):
+
+1. `chat_sessions.run_context_id` — explicit assignment persisted in DB
+2. `agent_meta.run_context` — default from the agent's `meta.json` (e.g. `"run_context": "cron_default"`)
+3. `None` — falls back to the implicit `"default"` group
+
+The resolved `RunContextRow` is stored in `ChatSessionHandler::run_context` (`RwLock<Option<RunContextRow>>`). Its `tool_group_id` is extracted on every tool call and passed to `ApprovalManager::check()`.
+
+### Runtime Update
+
+`PUT /api/sessions/:id/run-context` with body `{ "run_context_id": "cron_restrictive" | null }`:
+- Updates `chat_sessions.run_context_id` in DB
+- If the handler is live in memory, calls `handler.set_run_context()` immediately (no restart needed)
+
+---
+
 ## ChatSessionHandler Fields
 
 | Field | Type | Purpose |
@@ -129,21 +149,21 @@ The gate is `ApprovalManager.check(session_id, category, agent_id, source, tool_
 
 1. Hardcoded exception: file-write tools targeting a path that starts with `memory/` → `Allow` (always auto-approved).
 2. Rules from the `approval_rules` table, sorted by `priority ASC` (lower = evaluated first). First match wins.
-3. **Session bypass** (in-memory, not persisted): if the result would be `Require` and an active bypass exists for this `session_id` whose `category` matches (or is `None` for all categories), convert to `Allow`. `Deny` is never bypassed.
+3. **Session bypass** (in-memory, not persisted): if the result would be `Require` and an active bypass exists for this `session_id` whose `scope` matches (All, Category, or McpServer), convert to `Allow`. `Deny` is never bypassed.
 4. No match → `Allow` (default-open policy).
 
 **Default rules** (seeded at startup if the table is empty):
 `execute_cmd`, `restart`, `write_file`, `edit_file`, `insert_at_line`, `replace_lines` → `require`
 
-**Session bypass** is activated by the LLM via the three `approval_bypass_*` interface tools (injected in `build_agent_config`):
+**Session bypass** is activated by the **human** (not the LLM) from the **Agent Inbox** UI or via the REST endpoint. Each bypass entry targets a `BypassScope`:
 
-| Tool | Effect |
-| --- | --- |
-| `approval_bypass_session` | Bypasses all `Require` for the rest of this session (no expiry) |
-| `approval_bypass_timed(minutes)` | Bypasses all `Require` for N minutes (default 10, max 120) |
-| `approval_bypass_category(category, minutes)` | Bypasses `Require` for one `ToolCategory` for N minutes |
+| Scope | What it covers |
+| ----- | -------------- |
+| `All` | Every tool regardless of category |
+| `Category(ToolCategory)` | Only tools with the given registered category (e.g. `Filesystem`, `Shell`) |
+| `McpServer(String)` | Only tools from the named MCP server (matched by the `mcp__<server>__` prefix) |
 
-The bypass state lives in `ApprovalManager::session_bypasses` (`Mutex<HashMap<i64, Vec<CategoryBypass>>>`). Expired entries are pruned lazily on each `check()` call. All entries for a session are cleared when `cancel_for_session()` is called (WS disconnect). The state is **never persisted** — it is reset on app restart.
+The bypass state lives in `ApprovalManager::session_bypasses` (`Mutex<HashMap<i64, Vec<ApprovalBypass>>>`). `check()` receives `session_id`, `category`, and `tool_name`. Expired entries are pruned lazily on each `check()` call. All entries for a session are cleared when `cancel_for_session()` is called (WS disconnect). The state is **never persisted** — it is reset on app restart.
 
 **GateResult handling in `run_agent_turn`:**
 
@@ -190,6 +210,8 @@ This allows the message-building logic to be tested in isolation with an in-memo
 ### 1. Static system message
 
 Contents: AGENT.md + `inject_memory` files + `extra_system_static` (e.g. Telegram format rules) + MCP list.
+
+**Runtime substitutions**: after assembling the static content, `MessageBuilder::build` applies `system_substitutions` — each entry replaces the `__KEY__` sentinel with the provided value. These sentinels originate from `<!-- KEY -->` directives in AGENT.md (resolved by `agents::resolve_includes`).
 
 When `cache_hints = true` (Anthropic models via OpenRouter), the content is wrapped in a `cache_control: ephemeral` block so the provider caches it as a KV prefix. For all other providers this message is a plain string that never changes turn-to-turn, so the provider's own automatic prefix cache (if any) hits on it.
 
@@ -289,6 +311,7 @@ Built once per `handle_message` call and passed by reference through the entire 
 | `depth` | Recursion depth: 0 = root, 1+ = sub-agent |
 | `base_tool_defs` | Built-in tool definitions only (no MCP — those come from `all_tool_defs()` dynamically) |
 | `extra_system` | Optional extra system context (set to `None` for sub-agents) |
+| `system_substitutions` | `HashMap<String, String>` — named substitutions applied to the system prompt at build time. Each entry replaces `__KEY__` sentinels in the prompt text. |
 | `interface_tools` | Interface-specific tools. For sub-agents contains only `show_mcp_tools`; all other interface tools are dropped |
 | `memory_tools` | Memory backend tools (inherited by sub-agents) |
 | `mcp` | `Arc<McpManager>` — used by `all_tool_defs()` to resolve MCP tools dynamically |

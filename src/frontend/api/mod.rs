@@ -10,6 +10,7 @@ pub mod inbox;
 pub mod llm;
 pub mod mcp;
 pub mod plugins;
+pub mod run_context;
 pub mod sessions;
 pub mod transcribe_audio;
 pub mod transcribe_models;
@@ -76,6 +77,14 @@ pub fn router() -> Router<Arc<Skald>> {
         .route("/approval/rules",               get(approval::list_rules).post(approval::create_rule))
         .route("/approval/rules/{id}",          put(approval::update_rule).delete(approval::delete_rule))
         .route("/approval/tools",               get(approval::list_tools))
+        // Tool permission groups
+        .route("/tool-permission-groups",       get(run_context::list_groups).post(run_context::create_group))
+        .route("/tool-permission-groups/{id}",  put(run_context::update_group).delete(run_context::delete_group))
+        // Run contexts
+        .route("/run-contexts",                 get(run_context::list_contexts).post(run_context::create_context))
+        .route("/run-contexts/{id}",            put(run_context::update_context).delete(run_context::delete_context))
+        // Session run_context assignment (runtime)
+        .route("/sessions/{session_id}/run-context", put(run_context::set_session_run_context))
         // MCP
         .route("/mcp/servers",                  get(mcp::list_servers))
         // Dev / debug

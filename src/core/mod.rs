@@ -19,6 +19,7 @@ pub mod memory;
 pub mod mcp;
 pub mod plugin;
 pub mod provider;
+pub mod run_context;
 pub mod secrets;
 pub mod service_manager;
 pub mod session;
