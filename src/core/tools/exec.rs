@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -7,7 +8,9 @@ use tokio::io::AsyncReadExt;
 
 use crate::core::tools::{Tool, ToolDescriptionLength, truncate_label, MAX_LABEL_SHORT, MAX_LABEL_FULL};
 
-const TIMEOUT_SECS: u64 = 120;
+const DEFAULT_TIMEOUT_SECS: u64 = 120;
+const MAX_TIMEOUT_SECS:     u64 = 600;
+const MAX_OUTPUT_BYTES:     usize = 100_000;
 
 pub struct ExecuteCmd;
 
@@ -16,19 +19,45 @@ impl Tool for ExecuteCmd {
     fn category(&self) -> crate::core::tools::ToolCategory { crate::core::tools::ToolCategory::Shell }
 
     fn description(&self) -> &str {
-        "Execute a shell command (interpreted by `sh -c`) from the project root. \
-         Captures stdout, stderr, and exit status. \
-         Times out after 120 seconds. \
-         Requires user approval before running."
+        "Execute a shell command (sh -c) on the host machine. \
+         Reserve this for: builds, installs, git, tests, scripts, processes, network, package managers. \
+         Do NOT use cat/head/tail to read files — use read_file instead. \
+         Do NOT use grep/rg/find to search — use grep_files instead. \
+         Do NOT use ls to list directories — use list_files instead. \
+         Do NOT use sed/awk to edit files — use edit_file instead. \
+         Do NOT use echo/cat heredoc to write files — use write_file instead. \
+         Captures stdout and stderr. Requires user approval before running."
     }
 
     fn parameters_schema(&self) -> Value {
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string());
+
         json!({
             "type": "object",
             "properties": {
                 "command": {
                     "type":        "string",
                     "description": "Full command line, passed to `sh -c`. May include pipes, redirects, and shell expansions."
+                },
+                "workdir": {
+                    "type":        "string",
+                    "description": format!(
+                        "Working directory for the command (absolute path). \
+                         Omit to use the project root (currently: {cwd})."
+                    )
+                },
+                "timeout": {
+                    "type":        "integer",
+                    "description": format!(
+                        "Max seconds to wait (default: {DEFAULT_TIMEOUT_SECS}, max: {MAX_TIMEOUT_SECS}). \
+                         The command returns immediately when it finishes — set high for long builds, \
+                         you won't wait unnecessarily."
+                    ),
+                    "default":     DEFAULT_TIMEOUT_SECS,
+                    "minimum":     1,
+                    "maximum":     MAX_TIMEOUT_SECS
                 }
             },
             "required": ["command"]
@@ -54,33 +83,53 @@ impl Tool for ExecuteCmd {
             .ok_or_else(|| anyhow::anyhow!("Missing required argument: command"))?
             .to_string();
 
+        let workdir = match args["workdir"].as_str() {
+            Some(p) => {
+                let path = PathBuf::from(p);
+                if !path.is_absolute() {
+                    anyhow::bail!("workdir must be an absolute path, got: {p}");
+                }
+                if !path.is_dir() {
+                    anyhow::bail!("workdir does not exist or is not a directory: {p}");
+                }
+                Some(path)
+            }
+            None => None,
+        };
+
+        let timeout_secs = args["timeout"].as_u64()
+            .unwrap_or(DEFAULT_TIMEOUT_SECS)
+            .clamp(1, MAX_TIMEOUT_SECS);
+
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(run(command))
+            tokio::runtime::Handle::current().block_on(run(command, workdir, timeout_secs))
         })
     }
 }
 
-async fn run(command: String) -> Result<String> {
-    let mut child = tokio::process::Command::new("sh")
-        .arg("-c")
+async fn run(command: String, workdir: Option<PathBuf>, timeout_secs: u64) -> Result<String> {
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c")
         .arg(&command)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()?;
+        .kill_on_drop(true);
+
+    if let Some(dir) = workdir {
+        cmd.current_dir(dir);
+    }
+
+    let mut child = cmd.spawn()?;
 
     let stdout = child.stdout.take().expect("stdout is piped");
     let stderr = child.stderr.take().expect("stderr is piped");
 
     // Read stdout/stderr concurrently with wait() inside a single timeout.
-    //
-    // Bug prevented: reading *after* wait() deadlocks when the pipe buffer fills
-    // (~64KB) because the child blocks writing while the parent blocks on wait().
-    // Bug prevented: timeout must also cover the reads — background processes
-    // spawned by the command can hold the pipe descriptors open indefinitely even
-    // after the main shell exits, so unbounded reads outside the timeout block forever.
-    let result = tokio::time::timeout(Duration::from_secs(TIMEOUT_SECS), async {
+    // Reading after wait() deadlocks when the pipe buffer fills (~64KB).
+    // The timeout must also cover the reads — background processes spawned by
+    // the command can hold pipe descriptors open indefinitely after sh exits.
+    let result = tokio::time::timeout(Duration::from_secs(timeout_secs), async {
         let (out_res, err_res, status_res) = tokio::join!(
             async {
                 let mut buf = String::new();
@@ -103,13 +152,36 @@ async fn run(command: String) -> Result<String> {
             let code = status.code()
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "signal".to_string());
-            Ok(format!("exit: {code}\n--- stdout ---\n{out}\n--- stderr ---\n{err}"))
+            let combined = format!("exit: {code}\n--- stdout ---\n{out}\n--- stderr ---\n{err}");
+            Ok(truncate_output(combined))
         }
         Ok(Err(e)) => Err(e),
         Err(_) => {
             let _ = child.start_kill();
             let _ = child.wait().await;
-            anyhow::bail!("Command timed out after {TIMEOUT_SECS} seconds: {command}");
+            anyhow::bail!("Command timed out after {timeout_secs}s: {command}");
         }
     }
+}
+
+fn truncate_output(s: String) -> String {
+    if s.len() <= MAX_OUTPUT_BYTES {
+        return s;
+    }
+    let head_size = MAX_OUTPUT_BYTES * 40 / 100;
+    let tail_size = MAX_OUTPUT_BYTES - head_size;
+    let head_end  = floor_char_boundary(&s, head_size);
+    let tail_start = floor_char_boundary(&s, s.len().saturating_sub(tail_size));
+    format!(
+        "{}\n\n[... {} bytes omitted (showing first 40% and last 60%) ...]\n\n{}",
+        &s[..head_end],
+        s.len().saturating_sub(MAX_OUTPUT_BYTES),
+        &s[tail_start..]
+    )
+}
+
+fn floor_char_boundary(s: &str, idx: usize) -> usize {
+    let mut i = idx.min(s.len());
+    while !s.is_char_boundary(i) { i -= 1; }
+    i
 }

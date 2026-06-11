@@ -68,10 +68,11 @@ impl Tool for EditFile {
 
     fn description(&self) -> &str {
         "Replace a substring in a file with new text. \
+         Use instead of sed/awk in the terminal. \
          Relative paths are resolved from the project root; absolute paths (starting with /) are used as-is. \
-         `old` must appear exactly once; include enough surrounding context to make it unique. \
-         Always call read_file first and copy text exactly as shown (the '  N | ' prefix is \
-         NOT part of the file — copy only the text after '| ')."
+         By default `old` must be unique — include enough surrounding context to make it so. \
+         Always call read_file first and copy text exactly as shown after '| ' (the '  N | ' prefix is NOT part of the file). \
+         Set replace_all=true to replace every occurrence instead of requiring uniqueness."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -79,8 +80,13 @@ impl Tool for EditFile {
             "type": "object",
             "properties": {
                 "path": { "type": "string", "description": "File path. Relative to project root, or absolute." },
-                "old":  { "type": "string", "description": "Exact text to find and replace. Must be unique in the file." },
-                "new":  { "type": "string", "description": "Replacement text." }
+                "old":  { "type": "string", "description": "Text to find and replace. Must be unique in the file unless replace_all=true." },
+                "new":  { "type": "string", "description": "Replacement text. Pass empty string to delete the matched text." },
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "Replace every occurrence of old instead of requiring a unique match (default: false).",
+                    "default": false
+                }
             },
             "required": ["path", "old", "new"]
         })
@@ -100,26 +106,36 @@ impl Tool for EditFile {
         let new = args["new"].as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing required argument: new"))?;
 
+        let replace_all = args["replace_all"].as_bool().unwrap_or(false);
         let content = read_to_string(user_path)?;
 
-        let exact_count = content.matches(old).count();
-        if exact_count > 1 {
-            anyhow::bail!(
-                "Text found {exact_count} times in {user_path}. \
-                 Include more surrounding context in `old` to make it unique."
-            );
-        }
-
-        let updated = if exact_count == 1 {
-            content.replacen(old, new, 1)
-        } else {
-            let normalized_old = normalize_ws(old);
-            let (start, end) = find_normalized(&content, &normalized_old)
-                .ok_or_else(|| anyhow::anyhow!(
+        let updated = if replace_all {
+            if !content.contains(old) {
+                anyhow::bail!(
                     "Text not found in {user_path}. \
                      Call read_file first and copy the text exactly as shown after the '| ' prefix."
-                ))?;
-            format!("{}{}{}", &content[..start], new, &content[end..])
+                );
+            }
+            content.replace(old, new)
+        } else {
+            let exact_count = content.matches(old).count();
+            if exact_count > 1 {
+                anyhow::bail!(
+                    "Text found {exact_count} times in {user_path}. \
+                     Include more surrounding context in `old` to make it unique, or set replace_all=true."
+                );
+            }
+            if exact_count == 1 {
+                content.replacen(old, new, 1)
+            } else {
+                let normalized_old = normalize_ws(old);
+                let (start, end) = find_normalized(&content, &normalized_old)
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "Text not found in {user_path}. \
+                         Call read_file first and copy the text exactly as shown after the '| ' prefix."
+                    ))?;
+                format!("{}{}{}", &content[..start], new, &content[end..])
+            }
         };
 
         write_string(user_path, &updated)?;

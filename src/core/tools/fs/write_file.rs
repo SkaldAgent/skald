@@ -16,8 +16,9 @@ impl Tool for WriteFile {
 
     fn description(&self) -> &str {
         "Create a new file or fully overwrite an existing one. \
+         Use instead of echo/cat heredoc in the terminal. \
          Relative paths are resolved from the project root; absolute paths (starting with /) are used as-is. \
-         For small targeted edits to an existing file, prefer edit_file instead."
+         OVERWRITES the entire file — for targeted edits to an existing file use edit_file instead."
     }
 
     fn parameters_schema(&self) -> Value {

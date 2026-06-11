@@ -20,11 +20,12 @@ impl Tool for ListFiles {
     fn category(&self) -> crate::core::tools::ToolCategory { crate::core::tools::ToolCategory::Filesystem }
 
     fn description(&self) -> &str {
-        "List files and/or directories under a path. \
+        "List files and directories under a path. \
+         Use instead of ls/find in the terminal. \
          Relative paths are resolved from the project root; absolute paths (starting with /) are used as-is. \
          Skips .git, target, node_modules, .cache. \
-         Returns a JSON array of path strings relative to the requested directory. \
-         Use depth=1 to see only the immediate contents, depth=2-3 for moderate exploration."
+         Returns a JSON array of paths relative to the requested directory. \
+         Use depth=1 for immediate contents only, depth=2-3 for moderate exploration."
     }
 
     fn parameters_schema(&self) -> Value {

@@ -19,7 +19,6 @@ pub use insert_at_line::InsertAtLine;
 pub use list_files::ListFiles;
 pub use read_file::ReadFile;
 pub use replace_lines::ReplaceLines;
-pub use search_file::SearchFile;
 pub use write_file::WriteFile;
 
 /// Resolve a user-supplied path:
@@ -59,6 +58,5 @@ pub fn register_all(registry: &mut ToolRegistry) {
     registry.register(ListFiles::new());
     registry.register(ReadFile::new());
     registry.register(ReplaceLines::new());
-    registry.register(SearchFile::new());
     registry.register(WriteFile::new());
 }

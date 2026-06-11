@@ -15,11 +15,11 @@ impl Tool for ReadFile {
     fn category(&self) -> crate::core::tools::ToolCategory { crate::core::tools::ToolCategory::Filesystem }
 
     fn description(&self) -> &str {
-        "Read the content of any file, optionally limited to a line range. \
-         Relative paths are resolved from the project root; absolute paths (starting with /) are used as-is. \
-         Returns text with 1-based line numbers prefixed as '  N | '. \
-         When calling edit_file, copy the text after '| ' exactly. \
-         Use start_line/end_line to read large files in chunks instead of loading the whole file."
+        "Read the content of a file with 1-based line numbers. \
+         Use instead of cat/head/tail in the terminal. \
+         Returns text prefixed as '  N | line'. When calling edit_file, copy the text after '| ' exactly. \
+         For large files use start_line/end_line to read in chunks — files over ~2000 lines should never be read whole. \
+         Use limit to cap output when end_line is unknown."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -37,6 +37,11 @@ impl Tool for ReadFile {
                 "end_line": {
                     "type":        "integer",
                     "description": "Last line to read (1-based, inclusive). Omit to read to the end of the file."
+                },
+                "limit": {
+                    "type":        "integer",
+                    "description": "Maximum number of lines to return (max 2000). Applied after start_line when end_line is omitted.",
+                    "maximum":     2000
                 }
             },
             "required": ["path"]
@@ -68,12 +73,15 @@ impl Tool for ReadFile {
         let lines: Vec<&str> = content.lines().collect();
         let total = lines.len();
 
+        let limit = args["limit"].as_u64().map(|n| n.min(2000) as usize);
         let start = args["start_line"].as_u64()
             .map(|n| (n as usize).saturating_sub(1))
             .unwrap_or(0);
-        let end = args["end_line"].as_u64()
-            .map(|n| (n as usize).min(total))
-            .unwrap_or(total);
+        let end = match (args["end_line"].as_u64(), limit) {
+            (Some(e), _)    => (e as usize).min(total),
+            (None, Some(l)) => (start + l).min(total),
+            (None, None)    => total,
+        };
 
         if start >= total && total > 0 {
             return Ok(format!("(file has only {total} lines; start_line {start_line} is out of range)",
