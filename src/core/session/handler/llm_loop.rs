@@ -254,6 +254,11 @@ impl ChatSessionHandler {
                             self.dispatch_update_scratchpad(&call.arguments).await
                         } else if call.name == tn::ASK_USER_CLARIFICATION {
                             self.dispatch_ask_user_clarification(tool_call_id, &call.arguments, tx).await
+                        } else if call.name == "task_completed" {
+                            // Defensive stub: if the LLM somehow calls this itself, return a hint.
+                            // Real delivery is via inject_async_result (synthetic message from the system).
+                            let task_id = call.arguments["task_id"].as_i64().unwrap_or(0);
+                            Ok(format!(r#"{{"status":"not_ready","task_id":{task_id},"message":"This tool is invoked by the system, not by you. Do not call it again — the result will arrive automatically as a new message in this conversation."}}"#))
                         } else if let Some(tool) = config.interface_tools.iter().find(|t| t.name() == call.name) {
                             (tool.handler)(call.arguments.clone()).await
                         } else if let Some(tool) = config.memory_tools.iter().find(|t| t.name() == call.name) {

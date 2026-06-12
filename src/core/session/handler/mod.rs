@@ -203,6 +203,9 @@ pub struct ChatSessionHandler {
     /// Active RunContext for this session. `None` means the "default" run_context
     /// is used implicitly (global rules only).
     pub(super) run_context: tokio::sync::RwLock<Option<RunContextRow>>,
+    /// When set, scratchpad reads/writes use this session_id instead of `self.session_id`.
+    /// Used by async sub-tasks to share the parent's scratchpad.
+    pub(super) scratchpad_session_id: std::sync::OnceLock<i64>,
 }
 
 impl ChatSessionHandler {
@@ -248,13 +251,14 @@ impl ChatSessionHandler {
             memory_manager,
             image_generator_manager,
             compactor,
-            context_label:       std::sync::RwLock::new(None),
-            processing:          Mutex::new(()),
-            cancelled:           Arc::new(AtomicBool::new(false)),
-            auto_deny_approvals: AtomicBool::new(false),
-            last_input_tokens:   AtomicU32::new(0),
-            weak_self:           std::sync::OnceLock::new(),
-            run_context:         tokio::sync::RwLock::new(run_context),
+            context_label:          std::sync::RwLock::new(None),
+            processing:             Mutex::new(()),
+            cancelled:              Arc::new(AtomicBool::new(false)),
+            auto_deny_approvals:    AtomicBool::new(false),
+            last_input_tokens:      AtomicU32::new(0),
+            weak_self:              std::sync::OnceLock::new(),
+            run_context:            tokio::sync::RwLock::new(run_context),
+            scratchpad_session_id:  std::sync::OnceLock::new(),
         }
     }
 
@@ -266,9 +270,25 @@ impl ChatSessionHandler {
         }
     }
 
+    /// Override the session used for scratchpad reads/writes.
+    /// Called by the cron runner for async tasks so they share the parent's scratchpad.
+    pub fn set_scratchpad_session_id(&self, id: i64) {
+        let _ = self.scratchpad_session_id.set(id);
+    }
+
+    /// Returns the session_id to use for scratchpad operations.
+    pub(super) fn scratchpad_sid(&self) -> i64 {
+        *self.scratchpad_session_id.get().unwrap_or(&self.session_id)
+    }
+
     /// Updates the RunContext for this session at runtime.
     pub async fn set_run_context(&self, ctx: Option<RunContextRow>) {
         *self.run_context.write().await = ctx;
+    }
+
+    /// Returns the id of the active RunContext, if any.
+    pub async fn run_context_id(&self) -> Option<String> {
+        self.run_context.read().await.as_ref().map(|rc| rc.id.clone())
     }
 
     /// Returns the active tool_group_id for this session (derived from the run_context).

@@ -18,6 +18,16 @@ If you are in doubt about a user request, you can read the application documenta
 The file is an index containing references to others documents.
 For instance you can read it if the user asks about the Telegram plugin.
 
+## Task execution
+
+Use `execute_task` to run agent work outside the current context window.
+
+- **`mode=cron`** — schedule a recurring or one-shot task (7-field cron expression, `Europe/London`). The result is delivered as a notification.
+- **`mode=sync`** — run now, block, get the result inline. Best for heavy sub-tasks where you want the answer but not the noise: complex code analysis, deep web research, large file processing. The work happens in a clean session so it won't bloat your context.
+- **`mode=async`** — fire and forget. Use when you want to start multiple tasks in parallel or keep talking to the user while work runs. The result arrives automatically via `task_completed` — **do not poll** with `read_notifications` or any other tool after launching.
+
+Default agent is `worker`. Use `agent_id` to pick a specialist (e.g. `researcher`, `engineer`).
+
 ## Background notifications
 
 You have access to the `read_notification` tool. Call it when the system signals that there are pending notifications.

@@ -90,7 +90,7 @@ The `llm.clients` block in `config.yml` is for reference only — actual runtime
 | LLM providers | DB (`llm_providers`) | UI or REST API |
 | LLM models | DB (`llm_models`) | UI or REST API |
 | MCP servers | DB (`mcp_servers`) | `register_mcp` tool or UI |
-| Cron jobs | DB (`scheduled_jobs`) | `add_cron_job` tool or UI |
+| Cron jobs | DB (`scheduled_jobs`) | `execute_task` tool (mode=cron) or UI |
 
 ---
 

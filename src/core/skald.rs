@@ -197,7 +197,9 @@ impl Skald {
         tool_registry.register(super::tools::register_mcp::RegisterMcp::new(Arc::clone(&mcp)));
         tool_registry.register(super::tools::toggle_mcp::ToggleMcp::new(Arc::clone(&mcp)));
         tool_registry.register(super::tools::cron_jobs::ListCronJobs(Arc::clone(&cron)));
-        tool_registry.register(super::tools::cron_jobs::AddCronJob(Arc::clone(&cron)));
+        // execute_task is NOT in the global registry — it is injected as an
+        // InterfaceTool per interactive session by ChatHub::send_message so that
+        // the session_id is available in the closure for async result delivery.
         tool_registry.register(super::tools::cron_jobs::DeleteCronJob(Arc::clone(&cron)));
         tool_registry.register(super::tools::cron_jobs::ToggleCronJob(Arc::clone(&cron)));
         tool_registry.register(super::tools::list_plugins::ListPlugins(Arc::clone(&plugin_manager)));
@@ -317,6 +319,8 @@ impl Skald {
         chat_hub.register("web").await;
         chat_hub.register("talk").await;
         cron.set_hub(Arc::clone(&chat_hub));
+        cron.set_self_arc(Arc::clone(&cron));
+        chat_hub.set_task_mgr(Arc::clone(&cron));
         info!("ChatHub initialised");
 
         let inbox = Inbox::new(

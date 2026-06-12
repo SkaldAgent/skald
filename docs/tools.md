@@ -41,7 +41,7 @@ Every tool declares a `ToolCategory`, used for access-control filtering and audi
 | `Shell` | `execute_cmd`, `restart` |
 | `Subagent` | `call_agent` (synthetic — not in registry) |
 | `Introspection` | `list_agents`, `list_mcp`, `list_plugins`, `list_cron_jobs`, `image_generate_providers_list` |
-| `Config` | `register_mcp`, `toggle_mcp`, `add_cron_job`, `delete_cron_job`, `toggle_cron_job`, `toggle_plugin`, `configure_plugin`, `image_generate`, `set_secret`, `list_secrets` |
+| `Config` | `register_mcp`, `toggle_mcp`, `execute_task` (InterfaceTool, interactive only), `delete_cron_job`, `toggle_cron_job`, `toggle_plugin`, `configure_plugin`, `image_generate`, `set_secret`, `list_secrets` |
 
 ---
 
@@ -145,7 +145,9 @@ Filtering happens in `src/core/session/handler/config.rs` after assembling `base
 | `list_cron_jobs` | `tools::cron_jobs` | Introspection | No | No |
 | `register_mcp` | `tools::register_mcp` | Config | No | No |
 | `toggle_mcp` | `tools::toggle_mcp` | Config | No | No |
-| `add_cron_job` | `tools::cron_jobs` | Config | No | No |
+| `execute_task` | InterfaceTool (not in registry) | Config | No | Interactive sessions only; `session_id` and `run_context_id` captured in closure at tool-build time; tasks inherit the parent RunContext |
+| `run_subtask` | InterfaceTool (injected in run_job) | — | No | Background sessions only (sync sub-tasks); inherits `run_context_id` from the parent job |
+| `read_agent_result` | synthetic | — | No | Interactive only; always returns not_ready; real delivery is async synthetic message |
 | `delete_cron_job` | `tools::cron_jobs` | Config | No | No |
 | `toggle_cron_job` | `tools::cron_jobs` | Config | No | No |
 | `toggle_plugin` | `tools::toggle_plugin` | Config | No | No |

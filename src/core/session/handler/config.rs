@@ -59,6 +59,26 @@ impl ChatSessionHandler {
         if !self.is_interactive {
             base_tool_defs.push(super::ask_user_clarification_tool_def());
         }
+        // Interactive sessions get read_agent_result so the LLM can poll for async
+        // task status. The real delivery happens via inject_async_result (synthetic msg).
+        if self.is_interactive {
+            base_tool_defs.push(serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "task_completed",
+                    "description": "Invoked BY THE SYSTEM (not by you) when an async task finishes, \
+                                    delivering its result. You will never need to call this yourself — \
+                                    the system calls it automatically when execute_task(mode=async) completes.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["task_id"],
+                        "properties": {
+                            "task_id": { "type": "integer", "description": "The completed task id" }
+                        }
+                    }
+                }
+            }));
+        }
 
         // Per-agent allow_tools whitelist (from agent meta.json).
         if let Some(allowed) = meta.as_ref().and_then(|m| m.allow_tools.as_ref()) {

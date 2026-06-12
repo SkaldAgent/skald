@@ -532,5 +532,35 @@ async fn migrate_tables(pool: &SqlitePool) -> Result<()> {
         .await?;
     }
 
+    if version < 6 {
+        // Rename legacy kind 'immediate' → 'sync'
+        sqlx::query("UPDATE scheduled_jobs SET kind = 'sync' WHERE kind = 'immediate'")
+            .execute(pool).await.ok();
+        // Add parent_session_id for async tasks (which session to inject the result into)
+        sqlx::query(
+            "ALTER TABLE scheduled_jobs ADD COLUMN parent_session_id INTEGER REFERENCES chat_sessions(id)",
+        )
+        .execute(pool).await.ok();
+        sqlx::query(
+            "INSERT OR REPLACE INTO config(key, value, updated_at)
+             VALUES('schema_version', '6', datetime('now'))",
+        )
+        .execute(pool)
+        .await?;
+    }
+
+    if version < 7 {
+        sqlx::query(
+            "ALTER TABLE scheduled_jobs ADD COLUMN run_context_id TEXT",
+        )
+        .execute(pool).await.ok();
+        sqlx::query(
+            "INSERT OR REPLACE INTO config(key, value, updated_at)
+             VALUES('schema_version', '7', datetime('now'))",
+        )
+        .execute(pool)
+        .await?;
+    }
+
     Ok(())
 }

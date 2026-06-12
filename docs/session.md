@@ -219,6 +219,8 @@ When `cache_hints = true` (Anthropic models via OpenRouter), the content is wrap
 
 The session scratchpad emitted as a separate `[system]` message **before** the conversation. Kept isolated from the static block so a mid-turn `update_scratchpad` call only invalidates this small message, not the large cacheable prefix.
 
+**Async sub-tasks** share the parent session's scratchpad: when a task is launched with `kind='async'`, its handler is initialised with `scratchpad_session_id = parent_session_id`. All reads and writes via `update_scratchpad` are then scoped to the parent session instead of the task's own isolated session, so 5 parallel async tasks launched by the same parent all read/write the same shared pad.
+
 ### 3. Compaction summary system message *(if present)*
 
 See *Context Compaction*.
@@ -265,13 +267,13 @@ When all three are true, the content sent to the LLM is replaced with:
 
 ```xml
 <scratchpad>
-  <!-- Temporary notes shared by all agents in this chat session. Not persisted across sessions. -->
+  <!-- Temporary notes shared by all agents in this session (including async sub-tasks). Not persisted across sessions. -->
   <note key="db_url">postgres://localhost/mydb</note>
   <note key="main_struct">src/session/handler/mod.rs</note>
 </scratchpad>
 ```
 
-Only injected when the `session_scratchpad` table has at least one row for the session.
+Only injected when the `session_scratchpad` table has at least one row for the session. For async sub-tasks the `session_id` used here is the parent's (see above).
 
 ---
 

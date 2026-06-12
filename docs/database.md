@@ -248,10 +248,12 @@ See [tts-providers.md](tts-providers.md).
 | `next_run_at` | TEXT | nullable (RFC3339); pre-computed next fire time; used by `list_due()` (added via ALTER) |
 | `single_run` | INTEGER | NOT NULL DEFAULT 0; if 1 the job is disabled after its first execution (added via ALTER) |
 | `running_session_id` | INTEGER | nullable; non-null while a run is in-flight; cleared by `finish_run()`; used by `list_interrupted()` for restart recovery (added via ALTER) |
-| `kind` | TEXT | NOT NULL DEFAULT `'cron'` — `'cron'` for scheduled jobs, `'immediate'` for one-shot tasks that run immediately on creation |
+| `kind` | TEXT | NOT NULL DEFAULT `'cron'` — `'cron'` scheduled, `'sync'` run-now-blocking, `'async'` run-now fire-and-forget |
+| `parent_session_id` | INTEGER | nullable FK → `chat_sessions(id)`; set for `kind='async'` tasks to route the result back to the calling session |
+| `run_context_id` | TEXT | nullable; the RunContext profile inherited from the creating session (or overridden via the Tasks UI); applied to the ephemeral child session at run time |
 | `created_at` | TEXT | NOT NULL |
 
-**`next_run_at`** is set at job creation (first upcoming fire time after now), advanced after each successful run, cleared on disable, and recalculated by `toggle_cron_job` when re-enabling. `list_due(pool, now)` queries `WHERE kind='cron' AND enabled=1 AND next_run_at <= now AND running_session_id IS NULL`. Immediate tasks (`kind='immediate'`) are never picked up by the scheduler — they run immediately on creation.
+**`next_run_at`** is set at job creation (first upcoming fire time after now), advanced after each successful run, cleared on disable, and recalculated by `toggle_cron_job` when re-enabling. `list_due(pool, now)` queries `WHERE kind='cron' AND enabled=1 AND next_run_at <= now AND running_session_id IS NULL`. Sync and async tasks run immediately on creation and are never picked up by the scheduler tick.
 
 **`running_session_id`** is set by `set_running()` before `handle_message()` starts and cleared by `finish_run()` after the run completes. At startup, `recover_interrupted()` queries `list_interrupted()` and re-spawns any jobs still in-flight from a crash.
 
@@ -411,7 +413,7 @@ llm:
 
 ### session_scratchpad
 
-Per-session key-value store used by the `update_scratchpad` tool. Shared by all agents in the same chat session; not persisted across sessions (tied to `chat_sessions.id`).
+Per-session key-value store used by the `update_scratchpad` tool. Shared by all agents in the same chat session (including async sub-tasks, which are transparently redirected to the parent session's scratchpad at runtime); not persisted across sessions (tied to `chat_sessions.id`).
 
 | Column | Type | Constraints |
 | --- | --- | --- |
@@ -454,6 +456,9 @@ async fn migrate_tables(pool: &SqlitePool) -> Result<()> {
 | 2 | `tts_models`: added `voice_id TEXT` (speaker voice, separate from generation model) |
 | 3 | `llm_requests`: added `cache_read_tokens` and `cache_creation_tokens` INTEGER |
 | 4 | `scheduled_jobs`: added `kind TEXT NOT NULL DEFAULT 'cron'` to distinguish cron jobs from immediate tasks |
+| 5 | (see codebase history) |
+| 6 | `scheduled_jobs`: renamed `kind='immediate'` → `kind='sync'`; added `parent_session_id INTEGER` FK for async result delivery |
+| 7 | `scheduled_jobs`: added `run_context_id TEXT` — inherited from the creating session; applied to the child session at run time |
 
 ---
 

@@ -19,6 +19,7 @@ pub struct TaskManager {
     tz:      Option<Tz>,
     session: std::sync::OnceLock<Arc<ChatSessionManager>>,
     hub:     std::sync::OnceLock<Arc<ChatHub>>,
+    self_arc: std::sync::OnceLock<Arc<Self>>,
 }
 
 /// Returns `(next_utc, is_single)` where `is_single` is `true` when the
@@ -45,8 +46,9 @@ impl TaskManager {
         Arc::new(Self {
             pool,
             tz,
-            session: std::sync::OnceLock::new(),
-            hub:     std::sync::OnceLock::new(),
+            session:  std::sync::OnceLock::new(),
+            hub:      std::sync::OnceLock::new(),
+            self_arc: std::sync::OnceLock::new(),
         })
     }
 
@@ -60,8 +62,18 @@ impl TaskManager {
         let _ = self.hub.set(hub);
     }
 
+    /// Called once after Arc<Self> is available (in skald.rs after new()).
+    pub fn set_self_arc(&self, arc: Arc<Self>) {
+        let _ = self.self_arc.set(arc);
+    }
+
     fn session(&self) -> Result<&Arc<ChatSessionManager>> {
         self.session.get().ok_or_else(|| anyhow::anyhow!("cron: session manager not initialized"))
+    }
+
+    fn self_arc(&self) -> Result<Arc<Self>> {
+        self.self_arc.get().cloned()
+            .ok_or_else(|| anyhow::anyhow!("cron: self_arc not initialized"))
     }
 
     /// Start the background loops. Must be called after set_session().
@@ -109,17 +121,19 @@ impl TaskManager {
     }
 
     async fn recover_interrupted(&self) -> Result<()> {
-        let session = self.session()?;
+        let session  = self.session()?;
+        let self_arc = self.self_arc()?;
         let jobs = scheduled_jobs::list_interrupted(&self.pool).await?;
         if jobs.is_empty() { return Ok(()); }
         info!("cron: recovering {} interrupted job(s)", jobs.len());
         for job in jobs {
-            let pool    = Arc::clone(&self.pool);
-            let session = Arc::clone(session);
-            let hub     = self.hub.get().cloned();
-            let tz      = self.tz;
+            let pool     = Arc::clone(&self.pool);
+            let session  = Arc::clone(session);
+            let hub      = self.hub.get().cloned();
+            let task_mgr = Arc::clone(&self_arc);
+            let tz       = self.tz;
             tokio::spawn(async move {
-                if let Err(e) = run_job(&pool, &session, hub.as_ref(), &job, tz).await {
+                if let Err(e) = run_job(&pool, &session, &task_mgr, hub.as_ref(), &job, tz).await {
                     error!("cron: recovery of job {} ('{}') failed: {e}", job.id, job.title);
                 }
             });
@@ -128,17 +142,19 @@ impl TaskManager {
     }
 
     async fn tick(&self) -> Result<()> {
-        let session = self.session()?;
-        let now = Utc::now().to_rfc3339();
+        let session  = self.session()?;
+        let self_arc = self.self_arc()?;
+        let now  = Utc::now().to_rfc3339();
         let jobs = scheduled_jobs::list_due(&self.pool, &now).await?;
         for job in jobs {
-            let pool    = Arc::clone(&self.pool);
-            let session = Arc::clone(session);
-            let hub     = self.hub.get().cloned();
-            let job     = job.clone();
-            let tz      = self.tz;
+            let pool     = Arc::clone(&self.pool);
+            let session  = Arc::clone(session);
+            let hub      = self.hub.get().cloned();
+            let task_mgr = Arc::clone(&self_arc);
+            let job      = job.clone();
+            let tz       = self.tz;
             tokio::spawn(async move {
-                if let Err(e) = run_job(&pool, &session, hub.as_ref(), &job, tz).await {
+                if let Err(e) = run_job(&pool, &session, &task_mgr, hub.as_ref(), &job, tz).await {
                     error!("cron job {} ('{}') failed: {e}", job.id, job.title);
                 }
             });
@@ -157,15 +173,17 @@ impl TaskManager {
 
     pub fn add_job(
         &self,
-        title:       &str,
-        description: &str,
-        cron:        &str,
-        prompt:      &str,
-        agent_id:    &str,
-        single_run:  bool,
-        kind:        &str,
+        title:             &str,
+        description:       &str,
+        cron:              &str,
+        prompt:            &str,
+        agent_id:          &str,
+        single_run:        bool,
+        kind:              &str,
+        parent_session_id: Option<i64>,
+        run_context_id:    Option<&str>,
     ) -> Result<ScheduledJob> {
-        let (first_fire, _is_single, single_run) = if kind == "immediate" {
+        let (first_fire, _is_single, single_run) = if kind == "sync" || kind == "immediate" {
             (None, true, true)
         } else {
             let schedule = Schedule::from_str(cron).map_err(|_| {
@@ -183,25 +201,66 @@ impl TaskManager {
         let job = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(scheduled_jobs::create(
                 &self.pool, title, description, cron, prompt, agent_id,
-                single_run, next_run_at, kind,
+                single_run, next_run_at, kind, parent_session_id, run_context_id,
             ))
         })?;
+        Ok(job)
+    }
 
-        if kind == "immediate" {
-            let pool    = Arc::clone(&self.pool);
-            let session = self.session()?.clone();
-            let hub     = self.hub.get().cloned();
-            let tz      = self.tz;
-            let job_run = job.clone();
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    if let Err(e) = run_job(&pool, &session, hub.as_ref(), &job_run, tz).await {
-                        tracing::error!("immediate task {} ('{}') failed: {e}", job_run.id, job_run.title);
-                    }
-                });
-            });
-        }
+    /// Execute a task synchronously: creates the DB record, runs it inline,
+    /// and returns the agent's final response. Blocks until completion.
+    pub fn add_job_sync(
+        &self,
+        title:          &str,
+        description:    &str,
+        prompt:         &str,
+        agent_id:       &str,
+        run_context_id: Option<&str>,
+    ) -> Result<String> {
+        let job = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(scheduled_jobs::create(
+                &self.pool, title, description, "", prompt, agent_id,
+                true, None, "sync", None, run_context_id,
+            ))
+        })?;
+        let session  = self.session()?;
+        let self_arc = self.self_arc()?;
+        let result = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(
+                run_job(&self.pool, session, &self_arc, self.hub.get(), &job, self.tz)
+            )
+        })?;
+        Ok(result.unwrap_or_else(|| "(no output)".to_string()))
+    }
 
+    /// Start a task asynchronously: creates the DB record, spawns the run,
+    /// returns immediately. Result is injected into parent_session_id when done.
+    pub fn add_job_async(
+        &self,
+        title:             &str,
+        description:       &str,
+        prompt:            &str,
+        agent_id:          &str,
+        parent_session_id: i64,
+        run_context_id:    Option<&str>,
+    ) -> Result<ScheduledJob> {
+        let job = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(scheduled_jobs::create(
+                &self.pool, title, description, "", prompt, agent_id,
+                true, None, "async", Some(parent_session_id), run_context_id,
+            ))
+        })?;
+        let pool     = Arc::clone(&self.pool);
+        let session  = self.session()?.clone();
+        let hub      = self.hub.get().cloned();
+        let task_mgr = self.self_arc()?;
+        let tz       = self.tz;
+        let job_c    = job.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_job(&pool, &session, &task_mgr, hub.as_ref(), &job_c, tz).await {
+                error!("async task {} ('{}') failed: {e}", job_c.id, job_c.title);
+            }
+        });
         Ok(job)
     }
 
@@ -240,50 +299,78 @@ impl TaskManager {
 // ── Job execution ─────────────────────────────────────────────────────────────
 
 async fn run_job(
-    pool:    &SqlitePool,
-    session: &ChatSessionManager,
-    hub:     Option<&Arc<ChatHub>>,
-    job:     &ScheduledJob,
-    tz:      Option<Tz>,
-) -> Result<()> {
-    info!("running cron job {} ('{}')", job.id, job.title);
+    pool:     &SqlitePool,
+    session:  &ChatSessionManager,
+    task_mgr: &Arc<TaskManager>,
+    hub:      Option<&Arc<ChatHub>>,
+    job:      &ScheduledJob,
+    tz:       Option<Tz>,
+) -> Result<Option<String>> {
+    info!("running {} task {} ('{}')", job.kind, job.id, job.title);
 
     let started_at = Utc::now();
 
-    // Each run gets a fresh ephemeral session; running_session_id is solely
-    // for detecting interruptions at restart.
     let (session_id, _) = session.create_session(&job.agent_id, "cron", false, true).await?;
     scheduled_jobs::set_running(pool, job.id, session_id).await?;
 
+    if let Some(rc_id) = &job.run_context_id {
+        crate::core::db::run_contexts::set_run_context_for_session(pool, session_id, Some(rc_id.as_str()))
+            .await
+            .ok();
+    }
+
     let handler = session.get_or_create_handler(session_id).await?;
     handler.set_context_label(format!("CronJob: {}", job.title));
+    if job.kind == "async" {
+        if let Some(parent_id) = job.parent_session_id {
+            handler.set_scratchpad_session_id(parent_id);
+        }
+    }
 
-    // Inject job identity as dynamic system context so the prompt stays clean.
     let job_context = format!(
         "[Job context]\nJob ID: {} — {}\nTime: {} UTC",
         job.id, job.title,
         started_at.format("%Y-%m-%d %H:%M"),
     );
 
-    let (tx, _rx) = mpsc::channel(64);
-    let run_result = handler.handle_message(
-        &job.prompt,
-        None,                  // client_name
-        None,                  // extra_system_context
-        Some(job_context),     // extra_system_dynamic_override
-        None,                  // tail_reminder
-        vec![],                // interface_tools
-        std::collections::HashMap::new(), // system_substitutions
-        tx,
-        false,                 // is_synthetic
-    ).await;
+    // Build interface_tools: run_subtask for background sessions (sync only, no async/cron).
+    let task_mgr_clone = Arc::clone(task_mgr);
+    let run_subtask_tool = build_run_subtask_tool(task_mgr_clone, job.run_context_id.clone());
 
-    let completed_at = Utc::now();
-    let duration_ms  = (completed_at - started_at).num_milliseconds();
+    // Use a large buffer and drain rx concurrently with handle_message to avoid
+    // deadlock: handle_message may emit many events (ToolStart/ToolDone/Thinking
+    // per tool call), and the channel blocks when full if nobody is reading.
+    let (tx, mut rx) = mpsc::channel(512);
 
+    let handler_arc = Arc::clone(&handler);
+    let prompt      = job.prompt.clone();
+    let ctx         = job_context.clone();
+    let jh = tokio::spawn(async move {
+        handler_arc.handle_message(
+            &prompt,
+            None,
+            None,
+            Some(ctx),
+            None,
+            vec![run_subtask_tool],
+            std::collections::HashMap::new(),
+            tx,
+            false,
+        ).await
+    });
+
+    // Drain events concurrently. rx closes when the last tx clone is dropped,
+    // which happens only after resume_turn() completes the full sub-agent chain.
+    while let Some(_) = rx.recv().await {}
+
+    let handle_result = jh.await
+        .unwrap_or_else(|e| Err(anyhow::anyhow!("run_job task panicked: {e}")));
+
+    let completed_at  = Utc::now();
+    let duration_ms   = (completed_at - started_at).num_milliseconds();
     let final_response = last_assistant_message(pool, session_id).await.ok().flatten();
 
-    let next_run_at: Option<String> = if job.single_run {
+    let next_run_at: Option<String> = if job.single_run || job.kind != "cron" {
         None
     } else {
         Schedule::from_str(&job.cron).ok()
@@ -291,43 +378,186 @@ async fn run_job(
             .map(|t| t.to_rfc3339())
     };
 
-    match &run_result {
+    match handle_result {
         Ok(_) => {
-            crate::core::db::job_runs::insert(
-                pool, job.id, Some(session_id),
-                &started_at.to_rfc3339(), &completed_at.to_rfc3339(), duration_ms,
-                "completed", final_response.as_deref(), None,
-            ).await?;
+            record_job_run(pool, job.id, session_id, &started_at.to_rfc3339(),
+                           &completed_at.to_rfc3339(), duration_ms,
+                           "completed", final_response.as_deref(), None).await?;
             scheduled_jobs::finish_run(pool, job.id, next_run_at.as_deref()).await?;
-            if let Some(hub) = hub {
-                let outcome = final_response.as_deref().unwrap_or("(no output)");
-                let msg = format!(
-                    "CronJob ID {} ({}) has completed with the following outcome: {}",
-                    job.id, job.title, outcome,
-                );
-                let _ = hub.notify(msg).await;
+
+            match job.kind.as_str() {
+                "cron" => {
+                    if let Some(hub) = hub {
+                        let outcome = final_response.as_deref().unwrap_or("(no output)");
+                        hub.notify(format!(
+                            "CronJob ID {} ({}) has completed with the following outcome: {}",
+                            job.id, job.title, outcome,
+                        )).await.ok();
+                    }
+                }
+                "async" => {
+                    if let Some(parent_id) = job.parent_session_id {
+                        if let Some(hub) = hub {
+                            inject_async_result(
+                                pool,
+                                hub,
+                                parent_id,
+                                job.id,
+                                &job.title,
+                                final_response.as_deref().unwrap_or("(no output)"),
+                            ).await;
+                        }
+                    }
+                }
+                _ => {} // sync: result was already returned inline via add_job_sync
             }
-            info!("cron job {} done", job.id);
+
+            info!("{} task {} done", job.kind, job.id);
+            Ok(final_response)
         }
         Err(e) => {
             let err_str = e.to_string();
-            crate::core::db::job_runs::insert(
-                pool, job.id, Some(session_id),
-                &started_at.to_rfc3339(), &completed_at.to_rfc3339(), duration_ms,
-                "failed", None, Some(&err_str),
-            ).await?;
+            record_job_run(pool, job.id, session_id, &started_at.to_rfc3339(),
+                           &completed_at.to_rfc3339(), duration_ms,
+                           "failed", None, Some(&err_str)).await?;
             scheduled_jobs::finish_run(pool, job.id, next_run_at.as_deref()).await?;
             if let Some(hub) = hub {
-                let msg = format!(
+                hub.notify(format!(
                     "CronJob ID {} ({}) has failed with the following error: {} (check the logs)",
                     job.id, job.title, err_str,
-                );
-                let _ = hub.notify(msg).await;
+                )).await.ok();
             }
+            Err(e)
         }
     }
+}
 
-    run_result
+/// Injects an async task result into the parent session using the same pattern as
+/// the notification system: writes a synthetic assistant message + completed
+/// `task_completed` tool call directly to the DB, then calls `hub.resume()` so
+/// the parent LLM wakes up and events are properly bridged to the WebSocket.
+async fn inject_async_result(
+    pool:              &SqlitePool,
+    hub:               &Arc<ChatHub>,
+    parent_session_id: i64,
+    task_id:           i64,
+    task_title:        &str,
+    result:            &str,
+) {
+    // Resolve source_id from the parent session row.
+    let source_id = match crate::core::db::chat_sessions::find_by_id(pool, parent_session_id).await {
+        Ok(Some(s)) => s.source,
+        Ok(None)    => { error!("inject_async_result: session {parent_session_id} not found"); return; }
+        Err(e)      => { error!("inject_async_result: DB error: {e}"); return; }
+    };
+
+    // Get the active stack for the parent session.
+    let stack = match crate::core::db::chat_sessions_stack::active_for_session(pool, parent_session_id).await {
+        Ok(Some(s)) => s,
+        Ok(None)    => { error!("inject_async_result: no active stack for session {parent_session_id}"); return; }
+        Err(e)      => { error!("inject_async_result: stack lookup failed: {e}"); return; }
+    };
+
+    // Write a synthetic assistant message (reasoning trace).
+    let reasoning = format!(
+        "The system is notifying me that async task #{task_id} ('{}') has completed. \
+         Let me process the result via task_completed.",
+        task_title,
+    );
+    let assistant_id = match crate::core::db::chat_history::append(
+        pool, stack.id, &crate::core::db::chat_history::Role::Assistant,
+        "", true, Some(&reasoning),
+    ).await {
+        Ok(id)  => id,
+        Err(e)  => { error!("inject_async_result: append assistant failed: {e}"); return; }
+    };
+
+    // Write the completed task_completed tool call with the result payload.
+    let result_json = serde_json::to_string(&serde_json::json!({
+        "task_id": task_id,
+        "title":   task_title,
+        "result":  result,
+    })).unwrap_or_else(|_| "{}".to_string());
+
+    let tool_call_id = match crate::core::db::chat_llm_tools::append(
+        pool, assistant_id, "task_completed",
+        &serde_json::json!({"task_id": task_id}).to_string(),
+    ).await {
+        Ok(id)  => id,
+        Err(e)  => { error!("inject_async_result: append tool call failed: {e}"); return; }
+    };
+
+    if let Err(e) = crate::core::db::chat_llm_tools::complete(pool, tool_call_id, &result_json).await {
+        error!("inject_async_result: complete tool call failed: {e}"); return;
+    }
+
+    info!(parent_session_id, task_id, task_title, "inject_async_result: resuming parent session");
+
+    if let Err(e) = hub.resume(&source_id).await {
+        error!("inject_async_result: hub.resume failed: {e}");
+    }
+}
+
+/// Builds the `run_subtask` InterfaceTool injected into background sessions.
+/// Background tasks can only run synchronous sub-tasks — no cron or async.
+fn build_run_subtask_tool(task_mgr: Arc<TaskManager>, run_context_id: Option<String>) -> crate::core::session::handler::InterfaceTool {
+    use crate::core::session::handler::{InterfaceTool, ToolFuture};
+    use serde_json::json;
+
+    InterfaceTool {
+        definition: json!({
+            "type": "function",
+            "function": {
+                "name": "run_subtask",
+                "description": "Run a synchronous sub-task and return its result. Blocks until the sub-task completes.",
+                "parameters": {
+                    "type": "object",
+                    "required": ["title", "prompt"],
+                    "properties": {
+                        "title":       { "type": "string", "description": "Short name for this sub-task" },
+                        "description": { "type": "string", "description": "What this sub-task does" },
+                        "prompt":      { "type": "string", "description": "Prompt sent to the agent" },
+                        "agent_id":    { "type": "string", "description": "Agent to use (default: worker)" }
+                    }
+                }
+            }
+        }),
+        handler: Arc::new(move |args: serde_json::Value| -> ToolFuture {
+            let tm             = Arc::clone(&task_mgr);
+            let title          = args["title"].as_str().unwrap_or("").to_string();
+            let desc           = args["description"].as_str().unwrap_or("").to_string();
+            let prompt         = args["prompt"].as_str().unwrap_or("").to_string();
+            let agent_id       = args["agent_id"].as_str().unwrap_or("worker").to_string();
+            let run_context_id = run_context_id.clone();
+            Box::pin(async move {
+                tokio::task::spawn_blocking(move || {
+                    tm.add_job_sync(&title, &desc, &prompt, &agent_id, run_context_id.as_deref())
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("run_subtask task panicked: {e}"))?
+            })
+        }),
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+async fn record_job_run(
+    pool:         &SqlitePool,
+    job_id:       i64,
+    session_id:   i64,
+    started_at:   &str,
+    completed_at: &str,
+    duration_ms:  i64,
+    status:       &str,
+    response:     Option<&str>,
+    error:        Option<&str>,
+) -> Result<()> {
+    crate::core::db::job_runs::insert(
+        pool, job_id, Some(session_id),
+        started_at, completed_at, duration_ms,
+        status, response, error,
+    ).await.map(|_| ())
 }
 
 /// Returns the most recent successful assistant message in the given session.

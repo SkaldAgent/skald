@@ -17,6 +17,8 @@ pub struct ScheduledJob {
     pub running_session_id: Option<i64>,
     pub kind:               String,
     pub created_at:         String,
+    pub parent_session_id:  Option<i64>,
+    pub run_context_id:     Option<String>,
 }
 
 const SELECT: &str =
@@ -27,7 +29,9 @@ const SELECT: &str =
             CAST(single_run AS BOOLEAN) AS single_run,
             running_session_id,
             kind,
-            created_at
+            created_at,
+            parent_session_id,
+            run_context_id
      FROM scheduled_jobs";
 
 pub async fn list(pool: &SqlitePool) -> Result<Vec<ScheduledJob>> {
@@ -66,19 +70,21 @@ pub async fn list_interrupted(pool: &SqlitePool) -> Result<Vec<ScheduledJob>> {
 }
 
 pub async fn create(
-    pool:        &SqlitePool,
-    title:       &str,
-    description: &str,
-    cron:        &str,
-    prompt:      &str,
-    agent_id:    &str,
-    single_run:  bool,
-    next_run_at: Option<&str>,
-    kind:        &str,
+    pool:              &SqlitePool,
+    title:             &str,
+    description:       &str,
+    cron:              &str,
+    prompt:            &str,
+    agent_id:          &str,
+    single_run:        bool,
+    next_run_at:       Option<&str>,
+    kind:              &str,
+    parent_session_id: Option<i64>,
+    run_context_id:    Option<&str>,
 ) -> Result<ScheduledJob> {
     let id = sqlx::query(
-        "INSERT INTO scheduled_jobs (title, description, cron, prompt, agent_id, single_run, next_run_at, kind)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO scheduled_jobs (title, description, cron, prompt, agent_id, single_run, next_run_at, kind, parent_session_id, run_context_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(title)
     .bind(description)
@@ -88,6 +94,8 @@ pub async fn create(
     .bind(single_run as i64)
     .bind(next_run_at)
     .bind(kind)
+    .bind(parent_session_id)
+    .bind(run_context_id)
     .execute(pool)
     .await?
     .last_insert_rowid();
@@ -142,6 +150,16 @@ pub async fn set_running(pool: &SqlitePool, id: i64, session_id: i64) -> Result<
     .execute(pool)
     .await?;
     Ok(())
+}
+
+pub async fn set_run_context(pool: &SqlitePool, id: i64, run_context_id: Option<&str>) -> Result<bool> {
+    let n = sqlx::query("UPDATE scheduled_jobs SET run_context_id = ? WHERE id = ?")
+        .bind(run_context_id)
+        .bind(id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(n > 0)
 }
 
 /// Mark a job as finished. Called at the end of run_job() regardless of outcome.

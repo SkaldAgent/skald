@@ -139,7 +139,7 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 - [gmaps-mcp.md](gmaps-mcp.md) — Google Maps transit/directions MCP server (custom Python)
 - [whatsapp-mcp.md](whatsapp-mcp.md) — WhatsApp read+send MCP server (custom Node.js)
 - [approval.md](approval.md) — ApprovalManager: human-in-the-loop, rules, pending approvals, session bypass; tool visibility filtering; group duplication; AllTools MCP server metadata
-- [cron.md](cron.md) — TaskManager, cron jobs & immediate tasks, 7-field cron syntax, job lifecycle
+- [cron.md](cron.md) — TaskManager, task kinds (cron/sync/async), 7-field cron syntax, job lifecycle, async result delivery
 - [database.md](database.md) — SQLite schema, migration pattern
 - [frontend.md](frontend.md) — WebSocket protocol, ServerEvent types, Lit components
 - [logging-config.md](logging-config.md) — log levels, config.yml full reference

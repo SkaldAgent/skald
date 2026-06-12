@@ -9,16 +9,18 @@ function formatDate(iso) {
 
 export class TasksPage extends LightElement {
   static properties = {
-    _jobs:    { state: true },
-    _error:   { state: true },
-    _open:    { state: true },
+    _jobs:     { state: true },
+    _contexts: { state: true },
+    _error:    { state: true },
+    _open:     { state: true },
   };
 
   constructor() {
     super();
-    this._jobs  = [];
-    this._error = null;
-    this._open  = false;
+    this._jobs     = [];
+    this._contexts = [];
+    this._error    = null;
+    this._open     = false;
   }
 
   connectedCallback() {
@@ -32,9 +34,13 @@ export class TasksPage extends LightElement {
 
   async _load() {
     try {
-      const res = await fetch('/api/cron/jobs');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      this._jobs = await res.json();
+      const [jobsRes, ctxRes] = await Promise.all([
+        fetch('/api/cron/jobs'),
+        fetch('/api/run-contexts'),
+      ]);
+      if (!jobsRes.ok) throw new Error(`HTTP ${jobsRes.status}`);
+      this._jobs     = await jobsRes.json();
+      this._contexts = ctxRes.ok ? await ctxRes.json() : [];
     } catch (e) {
       this._error = e.message;
     }
@@ -44,6 +50,20 @@ export class TasksPage extends LightElement {
     if (!confirm(`Delete job "${job.title}"?`)) return;
     try {
       const res = await fetch(`/api/cron/jobs/${job.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(await res.text());
+      await this._load();
+    } catch (e) {
+      this._error = e.message;
+    }
+  }
+
+  async _setRunContext(job, value) {
+    try {
+      const res = await fetch(`/api/cron/jobs/${job.id}/run-context`, {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ run_context_id: value || null }),
+      });
       if (!res.ok) throw new Error(await res.text());
       await this._load();
     } catch (e) {
@@ -66,14 +86,18 @@ export class TasksPage extends LightElement {
   }
 
   _renderCard(job) {
-    const isImmediate = job.kind === 'immediate';
+    const isCron = job.kind === 'cron';
+    const kindBadge = {
+      sync:  html`<span class="task-badge task-badge--sync">sync</span>`,
+      async: html`<span class="task-badge task-badge--async">async</span>`,
+    }[job.kind] ?? '';
     return html`
       <div class="task-card ${job.enabled ? '' : 'task-card--disabled'}">
         <div class="task-card-header">
           <div class="task-card-title-row">
             <span class="task-card-title">${job.title}</span>
-            ${isImmediate ? html`<span class="task-badge task-badge--immediate">Immediate</span>` : ''}
-            ${!isImmediate && job.single_run ? html`<span class="task-badge task-badge--oneshot">one-shot</span>` : ''}
+            ${kindBadge}
+            ${isCron && job.single_run ? html`<span class="task-badge task-badge--oneshot">one-shot</span>` : ''}
           </div>
           <button class="task-card-delete" title="Delete" @click=${() => this._delete(job)}>
             <i class="bi bi-trash"></i>
@@ -82,7 +106,7 @@ export class TasksPage extends LightElement {
 
         ${job.description ? html`<div class="task-card-desc">${job.description}</div>` : ''}
 
-        ${!isImmediate ? html`
+        ${isCron ? html`
         <div class="task-card-expr">
           <i class="bi bi-clock"></i>
           <div class="task-card-expr-text">
@@ -102,13 +126,22 @@ export class TasksPage extends LightElement {
             <span class="task-card-meta-value">${formatDate(job.last_run_at)}</span>
           </div>
           <div class="task-card-meta-item">
-            <span class="task-card-meta-label">${isImmediate ? 'Created' : 'Next run'}</span>
-            <span class="task-card-meta-value">${isImmediate ? formatDate(job.created_at) : formatDate(job.next_run_at)}</span>
+            <span class="task-card-meta-label">${isCron ? 'Next run' : 'Created'}</span>
+            <span class="task-card-meta-value">${isCron ? formatDate(job.next_run_at) : formatDate(job.created_at)}</span>
+          </div>
+          <div class="task-card-meta-item task-card-meta-item--full">
+            <span class="task-card-meta-label">Run context</span>
+            <select class="task-card-select" @change=${(e) => this._setRunContext(job, e.target.value)}>
+              <option value="" .selected=${!job.run_context_id}>(default)</option>
+              ${this._contexts.map(c => html`
+                <option value=${c.id} .selected=${job.run_context_id === c.id}>${c.name}</option>
+              `)}
+            </select>
           </div>
         </div>
 
         <div class="task-card-footer">
-          ${!isImmediate ? html`
+          ${isCron ? html`
           <div class="form-check form-switch mb-0 task-card-toggle">
             <input class="form-check-input" type="checkbox" role="switch"
               .checked=${job.enabled}
@@ -138,7 +171,7 @@ export class TasksPage extends LightElement {
         ${this._jobs.length === 0 ? html`
           <div class="task-empty">
             <i class="bi bi-lightning-charge"></i>
-            <p>No tasks configured. Ask the agent to create one with <code>add_cron_job</code>.</p>
+            <p>No tasks configured. Ask the agent to create one with <code>execute_task</code>.</p>
           </div>
         ` : html`
           <div class="task-grid">

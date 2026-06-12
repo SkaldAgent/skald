@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::core::approval::ApprovalManager;
+use crate::core::cron::TaskManager;
 use crate::core::db::{chat_history, chat_llm_tools, chat_sessions_stack, config, sources};
 use crate::core::events::{GlobalEvent, ServerEvent};
 use crate::core::session::handler::ChatSessionHandler;
@@ -15,7 +16,6 @@ use crate::core::session::manager::ChatSessionManager;
 use crate::core::tools::tool_names as tn;
 
 pub use core_api::chat_hub::{ChatHubApi, SendMessageOptions};
-pub use core_api::interface_tool::InterfaceTool;
 
 pub const HOME_SOURCE_KEY:     &str = "source_home";
 pub const DEFAULT_HOME_SOURCE: &str = "web";
@@ -41,6 +41,9 @@ pub struct ChatHub {
     /// Central inbound notification queue from background agents.
     /// Consumer task is spawned in new() and drains this channel.
     notify_tx:   mpsc::Sender<String>,
+    /// TaskManager reference for injecting execute_task into interactive sessions.
+    /// Set via set_task_mgr() after construction (breaks circular dep with cron).
+    task_mgr:    std::sync::OnceLock<Arc<TaskManager>>,
 }
 
 impl ChatHub {
@@ -59,6 +62,7 @@ impl ChatHub {
             approval,
             global_tx,
             notify_tx,
+            task_mgr: std::sync::OnceLock::new(),
         });
 
         // Spawn the background consumer with a Weak reference so it doesn't
@@ -66,6 +70,12 @@ impl ChatHub {
         tokio::spawn(Self::notification_consumer(Arc::downgrade(&hub), notify_rx, shutdown));
 
         hub
+    }
+
+    /// Called once after TaskManager is built (breaks circular dep: TaskManager needs
+    /// ChatSessionManager, ChatHub needs TaskManager for execute_task injection).
+    pub fn set_task_mgr(&self, task_mgr: Arc<TaskManager>) {
+        let _ = self.task_mgr.set(task_mgr);
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -92,14 +102,30 @@ impl ChatHub {
         // Bridge mpsc from handle_message → global broadcast, tagging with source/session.
         let tx = Self::bridge_to_global(self.global_tx.clone(), source_tag, session_id);
 
+        // get_or_create_handler is idempotent; we call it early to read the
+        // session's RunContext so it can be inherited by any task spawned here.
         let handler = self.session_mgr.get_or_create_handler(session_id).await?;
+        let run_context_id = handler.run_context_id().await;
+
+        // Inject execute_task as an InterfaceTool for all interactive sessions.
+        // session_id and run_context_id are captured so tasks inherit the parent context.
+        let mut interface_tools = opts.interface_tools;
+        if let Some(task_mgr) = self.task_mgr.get() {
+            interface_tools.push(
+                crate::core::tools::cron_jobs::build_execute_task_interface_tool(
+                    Arc::clone(task_mgr),
+                    session_id,
+                    run_context_id,
+                )
+            );
+        }
         handler.handle_message(
             prompt,
             opts.client_name,
             opts.extra_system_context,
             opts.extra_system_dynamic,
             opts.tail_reminder,
-            opts.interface_tools,
+            interface_tools,
             opts.system_substitutions,
             tx,
             opts.is_synthetic,

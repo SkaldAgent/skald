@@ -25,7 +25,7 @@ impl ChatSessionHandler {
     ) -> anyhow::Result<Vec<Value>> {
         let builder = MessageBuilder {
             pool:                  Arc::clone(&self.db),
-            session_id:            self.session_id,
+            session_id:            self.scratchpad_sid(),
             mcp:                   Arc::clone(&self.mcp),
             datetime_config:       self.datetime_config.clone(),
             max_history_messages:  self.max_history_messages,

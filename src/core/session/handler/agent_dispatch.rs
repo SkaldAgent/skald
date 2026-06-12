@@ -204,7 +204,7 @@ impl ChatSessionHandler {
     ) -> anyhow::Result<String> {
         let key   = args["key"].as_str().unwrap_or("").to_string();
         let value = args["value"].as_str().unwrap_or("").to_string();
-        scratchpad::upsert(&self.db, self.session_id, &key, &value).await
+        scratchpad::upsert(&self.db, self.scratchpad_sid(), &key, &value).await
             .map(|_| format!("Scratchpad updated: {key}"))
     }
 

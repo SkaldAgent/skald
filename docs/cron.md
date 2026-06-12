@@ -1,13 +1,14 @@
-# Cron Jobs & Immediate Tasks
+# Cron Jobs & Background Tasks
 
 ## TaskManager
 
-`TaskManager` (formerly `CronTaskManager`) manages both scheduled cron jobs and immediate (one-shot) tasks. It uses `std::sync::OnceLock` to hold two late-injected dependencies, breaking circular chains that would arise if they were required at construction time:
+`TaskManager` manages scheduled cron jobs and on-demand background tasks (sync and async). It uses `std::sync::OnceLock` to hold late-injected dependencies, breaking circular chains that would arise if they were required at construction time:
 
 | Dependency | Injected via | Needed for |
 |---|---|---|
 | `ChatSessionManager` | `set_session()` | Creating ephemeral sessions per job run |
-| `ChatHub` | `set_hub()` | Sending completion/failure notifications |
+| `ChatHub` | `set_hub()` | Sending completion/failure notifications; injecting `execute_task` InterfaceTool |
+| `Arc<TaskManager>` (self) | `set_self_arc()` | Passing self-reference into `run_job` for sub-task tools |
 
 In `main.rs`:
 1. `TaskManager::new(pool)` — created first, OnceLocks empty
@@ -16,8 +17,10 @@ In `main.rs`:
 4. `cron.start()` — background tasks begin (tick every 30 s)
 5. `ChatHub::new()` — created after cron starts
 6. `cron.set_hub(Arc::clone(&chat_hub))` — fills second OnceLock
+7. `cron.set_self_arc(Arc::clone(&cron))` — fills third OnceLock
+8. `chat_hub.set_task_mgr(Arc::clone(&cron))` — hub holds ref for InterfaceTool injection
 
-The cron tick loop first fires 30 s after `start()`, so both OnceLocks are guaranteed to be filled before any job dispatch.
+The cron tick loop first fires 30 s after `start()`, so all OnceLocks are guaranteed to be filled before any job dispatch.
 
 ---
 
@@ -29,7 +32,7 @@ The cron tick loop first fires 30 s after `start()`, so both OnceLocks are guara
 
 - Ticks every **30 seconds**
 - Calls `db::scheduled_jobs::list_due(pool, &Utc::now().to_rfc3339())`
-- Any job with `enabled=1`, `next_run_at <= now`, and `running_session_id IS NULL` is returned
+- Any cron job with `enabled=1`, `next_run_at <= now`, and `running_session_id IS NULL` is returned
 - Each due job is spawned as an independent `tokio::task` via `run_job()`
 
 ### Cleanup Loop
@@ -63,7 +66,7 @@ Examples:
 | `0 */30 * * * * *` | Every 30 minutes |
 | `0 0 8 * * 1 *` | Every Monday at 08:00 |
 
-`add_cron_job` validates the expression with `Schedule::from_str()` before saving.
+The `execute_task` tool (mode=cron) validates the expression with `Schedule::from_str()` before saving.
 
 ---
 
@@ -88,20 +91,104 @@ This means: a tick simply does `WHERE next_run_at <= now` — no expression eval
 
 ---
 
+## `kind` Column (three modes)
+
+`scheduled_jobs` has a `kind` column with three values:
+
+| `kind` | Behavior |
+| ------ | -------- |
+| `cron` | Scheduled job with a 7-field cron expression. Picked up by the tick loop when `next_run_at` is due. Result notified via `ChatHub::notify` (home conversation). |
+| `sync` | Runs immediately on creation. No cron expression, no `next_run_at`. `single_run` is always true. Caller blocks until the agent finishes and receives the result inline. |
+| `async` | Runs immediately in the background. Returns `task_id` immediately. When the agent finishes, the result is injected into the parent session as a synthetic message (see [Async Result Delivery](#async-result-delivery)). |
+
+The `list_due()` query filters by `kind = 'cron'`, so sync/async tasks are never picked up by the scheduler tick loop. Recovery (`list_interrupted()`) applies to all kinds.
+
+---
+
+## `single_run` (one-shot jobs)
+
+If `single_run=true`, after the first execution `finish_run()` receives `next_run_at=None`, which sets `enabled=0` (disabling the job) rather than advancing the schedule. The job stays in the DB as a disabled record and is purged after 7 days by the cleanup loop.
+
+**Auto-detection for cron mode**: `add_job()` calls `next_fire_and_single()` which advances the cron iterator twice. If there is no second fire time — i.e. the expression can only ever match one point in time (e.g. `0 30 9 15 6 * 2026`) — `single_run` is forced to `true` regardless of what the caller passed. The LLM does not need to set `single_run` explicitly for specific-datetime expressions.
+
+For `sync` and `async` modes, `single_run` is always `true` (they run once and are done).
+
+---
+
 ## Job Lifecycle
 
-1. LLM calls `add_cron_job(title, description, cron, prompt, agent_id, single_run?)` → inserted in DB with `enabled=1`, `next_run_at` set to first upcoming fire time
+### `cron` mode
+
+1. LLM calls `execute_task(mode="cron", title, cron, prompt, agent_id?)` → inserted in DB with `enabled=1`, `next_run_at` set to first upcoming fire time
 2. Scheduler tick → `list_due()` returns the job
-3. `run_job()` spawned:
-   a. New ephemeral session created (`is_ephemeral=1, is_interactive=0`) for `agent_id` (default: `"worker"`)
-   b. `set_running(pool, job.id, session_id)` — marks job in-flight
-   c. `handler.set_context_label("CronJob: <title>")` — used for Agent Inbox labels
-   d. Job context injected via `extra_system_dynamic_override`
-   e. `handler.handle_message(job.prompt, ...)` — agent runs
-   f. Last assistant message read from DB → stored in `job_runs`
-   g. `finish_run(pool, job.id, next_run_at)` — advances `next_run_at`; if `single_run=true` passes `None` to disable the job
-   h. `hub.notify(...)` emits a completion/failure briefing to the home conversation
-4. If run fails: error logged, job_runs row recorded with status `"failed"`, job still advanced/disabled
+3. `run_job()` spawned (see below)
+4. On completion: `hub.notify(...)` emits a completion briefing to the home conversation
+
+### `sync` mode
+
+1. LLM calls `execute_task(mode="sync", title, prompt, agent_id?)` → LLM tool call blocks
+2. `add_job_sync()` creates DB record and calls `run_job()` inside `block_in_place`
+3. Agent runs to completion; final assistant message returned inline to the LLM tool call
+4. Job marked disabled (single_run)
+
+### `async` mode
+
+1. LLM calls `execute_task(mode="async", title, prompt, agent_id?)` → returns `task_id` immediately
+2. `add_job_async()` creates DB record with `parent_session_id` set to the calling session and `run_context_id` inherited from the parent
+3. Agent spawned in background; LLM continues
+4. On completion: `inject_async_result()` sends a synthetic message to the parent session
+
+---
+
+## `run_job` — execution core
+
+`run_job(pool, session_mgr, task_mgr, hub, job, tz)` handles all three kinds:
+
+1. New ephemeral session created (`is_ephemeral=1, is_interactive=0, source="cron"`)
+2. `set_running(pool, job.id, session_id)` — marks job in-flight
+3. If `job.run_context_id` is `Some`, calls `db::run_contexts::set_run_context_for_session(pool, session_id, rc_id)` to stamp the RunContext onto the new session **before** `get_or_create_handler()` loads it
+4. `handler.set_context_label("CronJob: <title>")` — used for Agent Inbox labels
+5. Job context injected via `extra_system_dynamic_override`
+6. `run_subtask` InterfaceTool injected, carrying the same `run_context_id` so nested subtasks also inherit it (see [Background Tool Restrictions](#background-tool-restrictions))
+7. `tokio::spawn(handler.handle_message(...))` + concurrent drain of the event channel (prevents deadlock when the buffer fills)
+8. After completion: delivery branch on `job.kind` (notify / return inline / inject_async_result)
+9. `record_job_run()` writes to `job_runs` audit trail
+10. `finish_run()` advances `next_run_at` for cron jobs; disables single-run jobs
+
+On failure: error logged, job_runs row recorded with status `"failed"`, `hub.notify(...)` sends an error notification.
+
+### Deadlock prevention
+
+`handle_message` sends `ServerEvent` values into a bounded channel. If the caller drains only _after_ `handle_message` returns, the channel buffer can fill (especially with long agent chains) causing a deadlock. Fix: `handle_message` is spawned via `tokio::spawn`, and the calling task drains the channel concurrently. The `JoinHandle` is awaited after the channel closes.
+
+---
+
+## Async Result Delivery
+
+When a `kind="async"` job completes, `inject_async_result()` follows the same pattern as the notification system:
+
+1. Resolves the `source_id` via `chat_sessions::find_by_id(pool, parent_session_id)` → `session.source`
+2. Gets the active stack for the parent session via `chat_sessions_stack::active_for_session`
+3. Writes a synthetic **assistant message** (reasoning trace) directly to `chat_history`
+4. Writes a completed **`task_completed` tool call** to `chat_llm_tools`, carrying `{task_id, title, result}` as the tool result payload
+5. Calls `hub.resume(source_id)` — this bridges events to the global WebSocket bus and runs the LLM loop, which sees the completed tool call and responds
+
+The delivery happens inside `run_job` (not in the `add_job_async` spawn closure) so the recovery path also calls it correctly.
+
+**Note:** if the parent session has been cleared (`/clear`) the result is still injected — the session's history starts fresh but the notification arrives. This is intentional: the parent session ID is the correct semantic target even after a clear.
+
+---
+
+## Background Tool Restrictions
+
+Background sessions (`kind="cron"` or `kind="async"`) **cannot** call `execute_task`. They receive `run_subtask` instead:
+
+| Tool | Available in | Notes |
+| ---- | ------------ | ----- |
+| `execute_task` | Interactive sessions only | Injected as InterfaceTool by `ChatHub::send_message`; `session_id` and `run_context_id` captured in closure at tool-build time |
+| `run_subtask` | Background sessions only | Sync-only; no `mode` field; calls `add_job_sync()` internally; `run_context_id` propagated from the parent job |
+
+This rule eliminates the complexity of tracking nested async/cron task lifecycles. Background tasks can spawn synchronous sub-work (via `run_subtask` or via `call_agent`) but cannot launch new fire-and-forget or cron tasks.
 
 ---
 
@@ -112,31 +199,9 @@ This means: a tick simply does `WHERE next_run_at <= now` — no expression eval
 1. `recover_interrupted()` runs once, before the first tick
 2. Queries `list_interrupted()` — all jobs where `running_session_id IS NOT NULL`
 3. For each interrupted job, `run_job()` is spawned again (creates a fresh session — the old one is abandoned)
+4. For async jobs, `inject_async_result()` is called when the re-run completes
 
 `list_due()` excludes rows with `running_session_id IS NOT NULL`, preventing double-runs.
-
----
-
-## `kind` Column (cron vs immediate)
-
-`scheduled_jobs` has a `kind` column with two values:
-
-| `kind` | Behavior |
-|--------|----------|
-| `cron` | Scheduled job with a cron expression. Picked up by the tick loop when `next_run_at` is due. |
-| `immediate` | Runs immediately on creation. No cron expression, no `next_run_at`. `single_run` is always true. Spawned in background via `add_job(kind="immediate")`. |
-
-Immediate tasks are useful for fire-and-forget background work. The caller receives the task ID and can monitor completion via the `job_runs` audit trail and ChatHub notifications.
-
-The `list_due()` query filters by `kind = 'cron'`, so immediate tasks are never picked up by the scheduler tick loop. Recovery (`list_interrupted()`) applies to both kinds.
-
----
-
-## `single_run` (one-shot jobs)
-
-If `single_run=true`, after the first execution `finish_run()` receives `next_run_at=None`, which sets `enabled=0` (disabling the job) rather than advancing the schedule. The job stays in the DB as a disabled record and is purged after 7 days by the cleanup loop.
-
-**Auto-detection**: `add_job()` calls `next_fire_and_single()` which advances the cron iterator twice. If there is no second fire time — i.e. the expression can only ever match one point in time (e.g. `0 30 9 15 6 * 2026`) — `single_run` is forced to `true` regardless of what the caller passed. The LLM therefore does not need to set `single_run` explicitly for specific-datetime jobs.
 
 ---
 
@@ -150,8 +215,25 @@ Each run always creates a **new ephemeral session**:
 | `is_interactive` | `0` |
 | `is_ephemeral` | `1` |
 | `agent_id` | job's `agent_id` (default `"worker"`) |
+| `run_context_id` | inherited from `scheduled_jobs.run_context_id` (may be null → falls back to agent `meta.json` default) |
 
 Sessions are not reused across runs. Each run gets a fresh context.
+
+---
+
+## RunContext Inheritance
+
+Every task inherits the RunContext of the session that created it. This controls which tool-permission group the task runs under (tool visibility, approval rules).
+
+**Inheritance chain:**
+
+1. The parent interactive session has a `run_context_id` (set by the user, or resolved from the agent's `meta.json` at handler load time)
+2. `ChatHub::send_message` reads `handler.run_context_id()` **before** building the `execute_task` InterfaceTool and captures the value in the closure
+3. `execute_with_session()` passes `run_context_id` to `add_job / add_job_sync / add_job_async`, which store it in `scheduled_jobs.run_context_id`
+4. `run_job()` stamps the value onto the ephemeral child session via `set_run_context_for_session()` before `get_or_create_handler()` loads the session — the manager's existing resolution path (`session.run_context_id` → `meta.json` → `None`) picks it up automatically
+5. `run_subtask` also captures `run_context_id`, so nested synchronous sub-tasks inherit it transitively
+
+**Override via Tasks UI:** the `PATCH /api/cron/jobs/{id}/run-context` endpoint allows overriding `scheduled_jobs.run_context_id` after creation. The dropdown in the Tasks page calls this endpoint.
 
 ---
 
@@ -162,13 +244,7 @@ Jobs run via the `worker` agent by default (see [agents.md](agents.md)). The wor
 - Executes the task described in the cron prompt
 - Delegates complex work to sub-agents (engineer, researcher, architect)
 - Calls `ask_user_clarification` when genuinely uncertain — this creates a pending entry in the `ClarificationManager` (visible in Agent Inbox) rather than blocking
-- Its final assistant message is captured and sent as a completion notification via `ChatHub`
-
----
-
-## Completion Notifications
-
-After every run, `TaskManager` calls `hub.notify(briefing)`, which routes the message through `ChatHub`'s notification consumer to the home conversation. The briefing includes job title, status, and the agent's final response.
+- Its final assistant message is captured for delivery (notification / inline result / async injection)
 
 ---
 
@@ -178,16 +254,16 @@ Every execution is recorded in `db::job_runs`. Schema: see [database.md](databas
 
 ---
 
-## LLM Tools for Cron
+## LLM Tools for Tasks
 
-| Tool | Action |
-|---|---|
-| `list_cron_jobs` | Returns JSON array of all tasks (id, title, cron, enabled, kind, next_run_at, single_run, last_run_at) |
-| `add_cron_job` | Creates a new cron job; validates cron expression; computes next_run_at in the configured timezone; auto-detects single_run for one-fire expressions |
-| `delete_cron_job` | Permanently deletes job by id |
-| `toggle_cron_job` | Enables or disables a job; recalculates next_run_at when re-enabling |
-
-The `add_cron_job` tool description tells the LLM that cron times are interpreted in the server timezone (`Europe/London` in the default config) and that `single_run` is auto-detected — the LLM should not need to set it for specific-datetime expressions.
+| Tool | Availability | Action |
+| ---- | ------------ | ------ |
+| `execute_task` | Interactive sessions (web, telegram) | Create and run a task — cron/sync/async modes; validates cron expression; auto-detects single_run |
+| `run_subtask` | Background sessions only | Run a sync sub-task; blocks until complete; returns result inline |
+| `read_agent_result` | Interactive sessions | Poll stub — always returns `not_ready`; real delivery is via synthetic message |
+| `list_cron_jobs` | All sessions | Returns JSON array of all tasks (id, title, cron, enabled, kind, next_run_at, single_run, last_run_at) |
+| `delete_cron_job` | All sessions | Permanently deletes task by id |
+| `toggle_cron_job` | All sessions | Enables or disables a task; recalculates next_run_at when re-enabling |
 
 ---
 
@@ -196,5 +272,6 @@ The `add_cron_job` tool description tells the LLM that cron times are interprete
 - Scheduler tick interval changes
 - `next_run_at` / `list_due` logic changes
 - `run_job` session-handling logic changes
-- New cron-related tools are added
+- New task-related tools are added
 - Recovery or cleanup loop logic changes
+- Async delivery mechanism changes
