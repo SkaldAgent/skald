@@ -13,11 +13,10 @@ use super::interface_tools::{AgentRunConfig, InterfaceTool, ToolFuture};
 use super::config::show_mcp_tools_tool_def;
 
 impl ChatSessionHandler {
-    /// Handles the synthetic `call_agent` tool call: validates args, creates a
-    /// child stack frame, loads any persisted stack-scoped MCP grants (for restart
-    /// recovery), runs the sub-agent loop, cleans up stack grants, terminates the
-    /// frame, and returns the sub-agent's final assistant message as the tool result.
-    pub(super) async fn dispatch_call_agent(
+    /// Dispatches a sub-agent as a child stack frame within the current session.
+    /// Used by `execute_task` (mode=sync) and `run_subtask` interceptions in `llm_loop`.
+    /// Args must contain `agent_id` and `prompt`; optionally `client`.
+    pub(super) async fn dispatch_sub_agent(
         &self,
         parent_stack_id:     i64,
         parent_config:       &AgentRunConfig,
@@ -28,46 +27,41 @@ impl ChatSessionHandler {
         let pool = &self.db;
 
         let target_id = args["agent_id"].as_str()
-            .ok_or_else(|| anyhow::anyhow!("call_agent: missing required argument `agent_id`"))?;
+            .ok_or_else(|| anyhow::anyhow!("dispatch_sub_agent: missing required argument `agent_id`"))?;
         let prompt = args["prompt"].as_str()
-            .ok_or_else(|| anyhow::anyhow!("call_agent: missing required argument `prompt`"))?;
+            .ok_or_else(|| anyhow::anyhow!("dispatch_sub_agent: missing required argument `prompt`"))?;
 
         if target_id == parent_config.agent_id {
-            anyhow::bail!("call_agent: an agent cannot call itself (`{target_id}`)");
+            anyhow::bail!("dispatch_sub_agent: an agent cannot call itself (`{target_id}`)");
         }
         if target_id == "main" {
-            anyhow::bail!("call_agent: the `main` agent is the root entry point and cannot be invoked as a sub-agent");
+            anyhow::bail!("dispatch_sub_agent: the `main` agent cannot be invoked as a sub-agent");
         }
 
-        // Validate the target exists and load its meta (for client resolution).
         let target_meta = crate::core::agents::load_meta(target_id)
-            .map_err(|e| anyhow::anyhow!("call_agent: agent `{target_id}` not found: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("dispatch_sub_agent: agent `{target_id}` not found: {e}"))?;
 
         if target_meta.is_system_agent {
-            anyhow::bail!("call_agent: agent `{target_id}` is a system agent and cannot be invoked via call_agent");
+            anyhow::bail!("dispatch_sub_agent: agent `{target_id}` is a system agent and cannot be invoked as a sub-agent");
         }
 
-        // Depth cap.
         let parent_frame = chat_sessions_stack::find_by_id(pool, parent_stack_id).await?
-            .ok_or_else(|| anyhow::anyhow!("call_agent: parent stack frame not found"))?;
+            .ok_or_else(|| anyhow::anyhow!("dispatch_sub_agent: parent stack frame not found"))?;
         let new_depth = parent_frame.depth + 1;
         if new_depth > MAX_AGENT_DEPTH {
             anyhow::bail!(
-                "call_agent: maximum agent depth ({}) exceeded — refusing to recurse further",
+                "dispatch_sub_agent: maximum agent depth ({}) exceeded — refusing to recurse further",
                 MAX_AGENT_DEPTH
             );
         }
 
-        // Resolve which LLM client the sub-agent will use.
-        let explicit_client = args["client"].as_str()
-            .or(target_meta.client.as_deref());
+        let explicit_client = args["client"].as_str().or(target_meta.client.as_deref());
         let (resolved_client, _) = self.llm_manager.resolve(
             explicit_client,
             target_meta.scope.as_deref(),
             target_meta.strength,
-        ).await.map_err(|e| anyhow::anyhow!("call_agent: {e}"))?;
+        ).await.map_err(|e| anyhow::anyhow!("dispatch_sub_agent: {e}"))?;
 
-        // Create the child stack frame.
         let child = chat_sessions_stack::create(
             pool,
             self.session_id,
@@ -77,32 +71,18 @@ impl ChatSessionHandler {
             Some(parent_tool_call_id),
         ).await?;
 
-        // ── Stack-scoped MCP grants ─────────────────────────────────────────────
-        //
-        // Sub-agents start with zero MCP grants and activate what they need via
-        // `show_mcp_tools` (stack-scoped, no session leak).
-        //
-        // On restart recovery: any grants the sub-agent had already persisted to
-        // `stack_mcp_grants` are re-loaded here so execution can resume correctly.
         let persisted_grants = stack_mcp_grants::list_for_stack(pool, child.id)
             .await
             .unwrap_or_default();
         let active_mcp_grants: Arc<RwLock<HashSet<String>>> =
             Arc::new(RwLock::new(persisted_grants.into_iter().collect()));
 
-        // Build the child config, then patch in MCP state and inject show_mcp_tools.
         let mut child_config = parent_config.for_sub_agent(target_id.to_string(), resolved_client.clone());
-
-        // Replace the empty grants arc created by for_sub_agent with the one we just
-        // populated from DB (so restart recovery works and the tool shares the same arc).
         child_config.active_mcp_grants = Arc::clone(&active_mcp_grants);
 
-        // Add tools that are only available to sub-agents.
         child_config.base_tool_defs.extend(self.tools.openai_definitions_sub_agents_only());
         child_config.base_tool_defs.push(super::ask_user_clarification_tool_def());
 
-        // Apply the same approval-rules visibility filter as for the parent agent.
-        // Sub-agents share the same permission group as their session.
         {
             let group_id    = self.tool_group_id().await;
             let gid         = group_id.as_deref().unwrap_or("default");
@@ -115,7 +95,6 @@ impl ChatSessionHandler {
             });
         }
 
-        // Inject show_mcp_tools (stack-scoped) so the sub-agent can activate MCPs.
         {
             let pool_clone   = Arc::clone(&self.db);
             let session_id   = self.session_id;
@@ -144,9 +123,7 @@ impl ChatSessionHandler {
                 }),
             });
         }
-        // ── End stack-scoped MCP grants ─────────────────────────────────────────
 
-        // Append the caller's prompt as the first message of the sub-agent.
         chat_history::append(pool, child.id, &chat_history::Role::Agent, prompt, false, None).await?;
 
         let prompt_preview = if prompt.len() > 500 {
@@ -157,7 +134,7 @@ impl ChatSessionHandler {
 
         tx.send(ServerEvent::AgentStart {
             stack_id:            child.id,
-            parent_tool_call_id: parent_tool_call_id,
+            parent_tool_call_id,
             agent_id:            target_id.to_string(),
             parent_agent_id:     parent_config.agent_id.clone(),
             depth:               new_depth,
@@ -170,16 +147,15 @@ impl ChatSessionHandler {
             child_stack  = child.id,
             target_agent = target_id,
             client       = %resolved_client,
-            "call_agent: spawning independent sub-agent task"
+            "dispatch_sub_agent: spawning child task"
         );
 
-        // Obtain Arc<Self> via the weak back-reference set by ChatSessionManager.
         let self_arc = self.weak_self.get()
             .and_then(|w| w.upgrade())
-            .ok_or_else(|| anyhow::anyhow!("call_agent: handler Arc no longer alive"))?;
+            .ok_or_else(|| anyhow::anyhow!("dispatch_sub_agent: handler Arc no longer alive"))?;
 
-        let tx_child       = tx.clone();
-        let child_stack_id = child.id;
+        let tx_child        = tx.clone();
+        let child_stack_id  = child.id;
         let parent_agent_id = parent_config.agent_id.clone();
 
         tokio::spawn(async move {
@@ -192,8 +168,6 @@ impl ChatSessionHandler {
             ).await;
         });
 
-        // Signal to the parent loop: convert to TurnOutcome::WaitingChild and exit,
-        // releasing the processing mutex so the child task can proceed.
         Err(anyhow::Error::new(super::AgentFlowSignal::WaitingChild(child_stack_id)))
     }
 

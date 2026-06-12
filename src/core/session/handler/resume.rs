@@ -79,8 +79,6 @@ impl ChatSessionHandler {
 
         // Cascade completion upward through parent stacks (handles app-restart recovery
         // when a sub-agent was running — child completes, then parent continues).
-        // If run_agent_turn returns WaitingChild, a new async task was spawned and will
-        // drive the cascade — break immediately so we don't double-execute.
         if matches!(current_outcome, TurnOutcome::WaitingChild { .. }) {
             info!(session_id = self.session_id, "resume_turn: sub-agent dispatched asynchronously — deferring to child task");
             return Ok(());
@@ -153,10 +151,11 @@ impl ChatSessionHandler {
             current_outcome = self.run_agent_turn(parent_stack.id, &config, &tx).await?;
             current_stack = parent_stack;
 
-            if matches!(current_outcome, TurnOutcome::WaitingChild { .. }) {
-                info!(session_id = self.session_id, "resume_turn cascade: sub-agent dispatched asynchronously — deferring to child task");
-                return Ok(());
-            }
+        }
+
+        if matches!(current_outcome, TurnOutcome::WaitingChild { .. }) {
+            info!(session_id = self.session_id, "resume_turn cascade: sub-agent dispatched asynchronously — deferring to child task");
+            return Ok(());
         }
 
         // current_stack is now the root (depth=0); emit the final event.

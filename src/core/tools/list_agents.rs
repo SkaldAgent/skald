@@ -11,10 +11,9 @@ impl Tool for ListAgents {
     fn category(&self) -> crate::core::tools::ToolCategory { crate::core::tools::ToolCategory::Introspection }
 
     fn description(&self) -> &str {
-        "List sub-agents available to delegate work to via `call_agent`. \
+        "List sub-agents available to delegate work to. \
          Returns a JSON array of objects with id, name, description, and (optional) client. \
-         Call this before `call_agent` to discover who can help. \
-         Do NOT call_agent yourself or the `main` agent."
+         Do NOT invoke the `main` agent."
     }
 
     fn parameters_schema(&self) -> Value {

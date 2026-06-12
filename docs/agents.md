@@ -55,9 +55,8 @@ When `allow_tools` is set, only those system tool names are injected into the LL
 | id | name | scope | strength | system | description |
 | --- | --- | --- | --- | --- | --- |
 | `main` | Main Assistant | — | — | ✓ | General-purpose; persists notes in `data/memory/index.md` |
-| `architect` | Architect | `reasoning` | `high` | | Plans code changes and delegates to engineer and qa |
+| `architect` | Architect | `reasoning` | `high` | | Plans code changes and delegates to engineer |
 | `engineer` | Engineer | `coding` | `high` | | Writes and modifies source files across any file type |
-| `qa` | QA | `coding` | `average` | | Runs build and test commands, reports results |
 | `researcher` | Researcher | `general` | `average` | | Multi-step web research; returns a structured summary and saves findings to the scratchpad |
 | `worker` | Worker | — | — | ✓ | Autonomous background task executor for scheduled jobs. Uses sub-agents for complex work. Ephemeral per run. Not conversational — produces a final response captured as completion notification. |
 | `tic` | TIC | — | — | ✓ | Background event processor; calls `notify` when something is worth surfacing. Ephemeral. `notify` is injected as an `InterfaceTool` by `TicManager` — not in `allow_tools`. |

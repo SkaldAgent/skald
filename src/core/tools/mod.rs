@@ -40,7 +40,7 @@ use anyhow::Result;
 use serde_json::Value;
 
 pub use core_api::tool::{Tool, ToolCategory, ToolDescriptionLength, truncate_label};
-use crate::core::tools::tool_names as tn;
+
 
 pub const MAX_LABEL_SHORT: usize = 60;
 pub const MAX_LABEL_FULL: usize = 120;
@@ -99,22 +99,7 @@ impl ToolRegistry {
             return tool.describe(args, length);
         }
         // Non-registry tools handled inline.
-        match name {
-            tn::CALL_AGENT => {
-                let agent = args["agent_id"].as_str().unwrap_or("?");
-                match length {
-                    ToolDescriptionLength::Short => {
-                        truncate_label(&format!("call_agent `{agent}`"), MAX_LABEL_SHORT)
-                    }
-                    ToolDescriptionLength::Full => {
-                        let prompt = args["prompt"].as_str().unwrap_or("");
-                        let first = prompt.lines().next().unwrap_or(prompt);
-                        truncate_label(&format!("call_agent `{agent}`: {first}"), MAX_LABEL_FULL)
-                    }
-                }
-            }
-            _ => name.to_string(),
-        }
+        name.to_string()
     }
 
     /// Returns the category of a registered tool, or `None` for unknown tools

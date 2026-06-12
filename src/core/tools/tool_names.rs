@@ -1,4 +1,5 @@
 pub const CALL_AGENT:             &str = "call_agent";
+pub const RUN_SUBTASK:            &str = "run_subtask";
 pub const RESTART:                &str = "restart";
 pub const UPDATE_SCRATCHPAD:      &str = "update_scratchpad";
 pub const ASK_USER_CLARIFICATION: &str = "ask_user_clarification";

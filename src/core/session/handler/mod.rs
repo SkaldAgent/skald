@@ -37,7 +37,7 @@ pub use interface_tools::{InterfaceTool, ToolFuture};
 
 pub const DEFAULT_MAX_TOOL_ROUNDS: usize = 20;
 
-const MAX_AGENT_DEPTH: i64 = 5;
+pub(super) const MAX_AGENT_DEPTH: i64 = 5;
 
 /// Control-flow signals returned as `anyhow::Error` by internal dispatch methods.
 /// Using a typed enum instead of two separate sentinel structs allows a single
@@ -77,7 +77,7 @@ pub(super) enum TurnOutcome {
     Cancelled,
     Exhausted,
     /// A sub-agent was spawned asynchronously. The child task will complete
-    /// the parent's `call_agent` tool and resume the parent when done.
+    /// the parent tool call and resume the parent when done.
     WaitingChild { child_stack_id: i64 },
 }
 
@@ -129,24 +129,6 @@ fn ask_user_clarification_tool_def() -> Value {
     })
 }
 
-pub(super) fn call_agent_tool_def() -> Value {
-    json!({
-        "type": "function",
-        "function": {
-            "name": tn::CALL_AGENT,
-            "description": "Delegate work to a specialized sub-agent. Call list_agents() first to discover available agents. Do NOT call yourself or the `main` agent.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "agent_id": { "type": "string", "description": "ID of the agent to invoke (from list_agents)." },
-                    "prompt":   { "type": "string", "description": "Task description to send to the sub-agent." },
-                    "client":   { "type": "string", "description": "Optional LLM client name override. Omit to use the agent's configured client." }
-                },
-                "required": ["agent_id", "prompt"]
-            }
-        }
-    })
-}
 
 pub enum ApprovalDecision {
     Approved,
@@ -197,8 +179,9 @@ pub struct ChatSessionHandler {
     /// (provider did not report usage on the first turn).
     pub(super) last_input_tokens: AtomicU32,
     /// Weak back-reference to the owning `Arc<Self>`.
+    /// Weak back-reference to the owning `Arc<Self>`.
     /// Set by `ChatSessionManager::get_or_create_handler` immediately after creation.
-    /// Used by `dispatch_call_agent` to spawn child tasks that need `Arc<Self>`.
+    /// Used by `dispatch_sub_agent` to spawn child tasks that need `Arc<Self>`.
     pub(super) weak_self: std::sync::OnceLock<std::sync::Weak<ChatSessionHandler>>,
     /// Active RunContext for this session. `None` means the "default" run_context
     /// is used implicitly (global rules only).

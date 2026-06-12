@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 use serde_json::Value;
 
 use crate::core::tools::tool_names as tn;
-use super::{ChatSessionHandler, call_agent_tool_def, update_scratchpad_tool_def};
+use super::{ChatSessionHandler, update_scratchpad_tool_def};
 use super::interface_tools::{AgentRunConfig, InterfaceTool, ToolFuture};
 
 /// Returns a `show_mcp_tools` OpenAI tool definition.
@@ -52,7 +52,6 @@ impl ChatSessionHandler {
         ).await?;
 
         let mut base_tool_defs = self.tools.openai_definitions();
-        base_tool_defs.push(call_agent_tool_def());
         base_tool_defs.push(update_scratchpad_tool_def());
         // Background sessions (cron, tic) get ask_user_clarification so the worker
         // can pause for user input. Interactive sessions get it inline via AgentQuestion.

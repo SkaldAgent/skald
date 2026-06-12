@@ -56,7 +56,7 @@ After `researcher` runs, findings are in the session scratchpad under `research:
 
 For any task that involves **modifying project source code**:
 
-- Complex changes → call `architect`, let it orchestrate `engineer` and `qa`
+- Complex changes → call `architect`, let it orchestrate `engineer`
 - Simple, well-scoped changes (single file, clear what to do) → call `engineer` directly
 - **Repetitive bulk operations** (edit same field in N files, batch shell commands) → call `tinker`
 - `engineer` handles any language: Rust, Python, JavaScript, YAML — not just Rust

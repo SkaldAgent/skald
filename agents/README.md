@@ -33,7 +33,6 @@ High detail, expressive.
 | **Architect** | Visionary with floating architectural blueprints and geometry | Blue & teal |
 | **Engineer** | Technician/cyborg with holographic tools, gears, circuits | Amber & steel blue |
 | **Explorer** | Curious analyst with magnifying glass, floating code and data trails | Deep blue & gold |
-| **QA** | Guardian/sentinel with glowing shield and code streams | Emerald green & steel blue |
 | **Researcher** | Scientist with smart glasses, floating documents, magnifier | Purple & teal |
 | **Main Assistant** | Central charismatic leader with luminous geometric shapes | Purple & gold |
 | **TIC** | Mysterious figure with multiple eyes, radar, data nodes | Dark purple & cyan |

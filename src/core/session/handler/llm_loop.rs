@@ -248,8 +248,11 @@ impl ChatSessionHandler {
                             std::process::exit(-1);
                         }
 
-                        let dispatch_result: anyhow::Result<String> = if call.name == tn::CALL_AGENT {
-                            self.dispatch_call_agent(stack_id, config, tool_call_id, &call.arguments, tx).await
+                        let dispatch_result: anyhow::Result<String> = if
+                            (call.name == "execute_task" && call.arguments["mode"].as_str() == Some("sync") && call.arguments.get("agent_id").is_some())
+                            || call.name == tn::RUN_SUBTASK
+                        {
+                            self.dispatch_sub_agent(stack_id, config, tool_call_id, &call.arguments, tx).await
                         } else if call.name == tn::UPDATE_SCRATCHPAD {
                             self.dispatch_update_scratchpad(&call.arguments).await
                         } else if call.name == tn::ASK_USER_CLARIFICATION {
@@ -290,8 +293,6 @@ impl ChatSessionHandler {
                             Err(err) => {
                                 if let Some(signal) = err.downcast_ref::<super::AgentFlowSignal>() {
                                     match signal {
-                                        // Sub-agent dispatched asynchronously — parent exits now,
-                                        // child task will complete the tool call and resume the parent.
                                         super::AgentFlowSignal::WaitingChild(child_stack_id) => {
                                             return Ok(TurnOutcome::WaitingChild { child_stack_id: *child_stack_id });
                                         }
