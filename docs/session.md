@@ -37,8 +37,7 @@ The resolved `RunContextRow` is stored in `ChatSessionHandler::run_context` (`Rw
 | `event_bus` | `Arc<ChatEventBus>` | Publishes completed turns (user + assistant) to the in-process event bus |
 | `question_registry` | `Arc<Mutex<HashMap<i64, oneshot::Sender<String>>>>` | Pending `ask_user_clarification` channels |
 | `processing` | `Mutex<()>` | Prevents concurrent `handle_message` / `resume_turn` calls |
-| `cancelled` | `Arc<AtomicBool>` | Set by `cancel()` to abort the tool loop early |
-| `weak_self` | `OnceLock<Weak<ChatSessionHandler>>` | Weak back-reference set by `ChatSessionManager` after `Arc` creation; used by `dispatch_call_agent` to obtain `Arc<Self>` for spawning child tasks |
+| `current_cancel` | `std::sync::Mutex<CancellationToken>` | Cancellation scope for the in-flight turn. A fresh token is minted per user message / resume and a clone is threaded by value through the whole recursive call tree; `cancel()` cancels the stored token. Never reset mid-turn → a `/stop` is sticky across sub-agent recursion |
 
 ---
 
@@ -58,7 +57,7 @@ Private helper called by both `handle_message` and `resume_turn` to avoid duplic
 ## handle_message Flow
 
 1. Acquire `processing` mutex (blocks if another message is being processed).
-2. Reset `cancelled` flag to `false`.
+2. Mint a fresh `CancellationToken`, store it in `current_cancel`, and thread a clone by value through `run_agent_turn` (and the sub-agent recursion).
 3. **Memory context** — call `memory_manager.query_context(session_id, user_message)` for **all** sessions (including cron and tic). If a string is returned it is stored as `extra_system_dynamic` — **not** merged into `extra_system_context`. It will be injected as a dynamic tail system message after the conversation history (see *Context Building*). Only the write path filters by `is_interactive`/`is_ephemeral`.
 4. Call `build_agent_config(client_name, enabled_mcp_servers, extra_system_static, extra_system_dynamic, interface_tools)` → `AgentRunConfig`. This also calls `memory_manager.tools()` and stores them in `AgentRunConfig::memory_tools`.
 5. Get or create the active `chat_sessions_stack` frame.
@@ -76,18 +75,17 @@ Private helper called by both `handle_message` and `resume_turn` to avoid duplic
 
 ## resume_turn Flow
 
-Called by `ChatHub::resume()` (routed through the global event bus) when the client sends `{"type":"resume"}`. Also called internally by `run_child_frame` after a sub-agent completes, to continue the parent's LLM loop. Continues without appending a new user message.
+Called by `ChatHub::resume()` (routed through the global event bus) when the client sends `{"type":"resume"}`, and by `inject_async_result` after an async task finishes. Continues without appending a new user message. It is **not** part of the normal synchronous sub-agent path (that is plain recursion in `dispatch_sub_agent`); `resume_turn` exists for app-restart recovery of an active child stack, async result injection, and the WS resume message.
 
 1. Acquire `processing` mutex.
-2. Reset `cancelled` flag to `false`.
+2. Mint a fresh `CancellationToken` (a resume is a new unit of work — it must not inherit a stale cancellation, but a `/stop` during the resume still cancels this token) and store it in `current_cancel`.
 3. Call `build_agent_config(...)` → `AgentRunConfig`.
 4. Get the active `chat_sessions_stack` frame — if none exists, return immediately.
 5. Call `resume_pending_tools(stack_id)`.
-6. **Guard**: if no pending tools were found AND the last assistant message has no associated tool calls (pure-text final response), the turn already completed — return immediately. If the last assistant message *does* have tool calls (e.g. a `call_agent` that completed asynchronously), fall through so the LLM can process the results.
-7. Call `run_agent_turn(stack_id, &config, &tx)`.
-8. If outcome is `WaitingChild` (another async sub-agent was spawned), return immediately — the new child task will drive the cascade.
-9. **Cascade loop**: while the current stack has a `parent_tool_call_id`, complete/fail the parent's tool call, terminate the child stack, and run `run_agent_turn` on the parent stack. Repeat until reaching the root (depth = 0) or another `WaitingChild`.
-10. At root: same `Final` / `Cancelled` / `Exhausted` handling as `handle_message`.
+6. **Guard**: if no pending tools were found AND the last assistant message has no associated tool calls (pure-text final response), the turn already completed — return immediately. If the last assistant message *does* have tool calls (e.g. a `task_completed` injected asynchronously), fall through so the LLM can process the results.
+7. Call `run_agent_turn(stack_id, &config, &token, &tx)`.
+8. **Cascade loop**: while the current stack has a `parent_tool_call_id`, complete/fail the parent's tool call, terminate the child stack, and run `run_agent_turn` on the parent stack. Repeat until reaching the root (depth = 0). (Used only by restart recovery — normal sync recursion never leaves a child stack for the cascade to pick up.)
+9. At root: same `Final` / `Cancelled` / `Exhausted` handling as `handle_message`.
 
 ---
 
@@ -111,10 +109,9 @@ Tool dispatch order (same as `run_agent_turn`):
 
 | Variant | Emitted by | Handled in |
 | --- | --- | --- |
-| `WaitingChild(i64)` | `dispatch_call_agent` (sub-agent spawned async) | `llm_loop.rs` → returns `TurnOutcome::WaitingChild` |
 | `QuestionChannelClosed` | `dispatch_ask_user_clarification` (WS dropped) | `llm_loop.rs` → returns `TurnOutcome::Cancelled`; `resume.rs` → aborts resume |
 
-The dispatcher uses a single `downcast_ref::<AgentFlowSignal>()` + `match` instead of two separate type checks, which is exhaustive and prevents missing a new variant.
+Dispatch checks it with a single `downcast_ref::<AgentFlowSignal>()`.
 
 ---
 
@@ -122,22 +119,24 @@ The dispatcher uses a single `downcast_ref::<AgentFlowSignal>()` + `match` inste
 
 Called recursively via `Box::pin` to support async recursion without stack overflow.
 
-For each round (up to `max_tool_rounds`):
+Takes the per-turn `token: &CancellationToken` by value-clone from the caller. For each round (up to `max_tool_rounds`):
 
-1. Check `cancelled` flag — return `Cancelled` immediately if set.
+1. Check `token.is_cancelled()` — return `Cancelled` immediately if set.
 2. `build_openai_messages()` — reconstruct full context from DB.
-3. Call `llm.client.chat_with_tools(messages, tool_defs, options)`.
+3. Call `llm.client.chat_with_tools(...)` wrapped in `tokio::select!` against `token.cancelled()`, so a `/stop` aborts the in-flight request and returns `Cancelled`.
 4. On `LlmTurn::Message` — persist assistant message, return `Final` (with all `tool_calls` accumulated across rounds).
-5. On `LlmTurn::ToolCalls` — for each call:
+5. On `LlmTurn::ToolCalls` — for each call (checking `token.is_cancelled()` before each one):
    - Persist assistant "thinking" message, emit `Thinking` event if non-empty.
    - Record tool call in `chat_llm_tools` (status: `pending`).
    - Emit `ToolStart` event.
    - Run approval gate (see below).
-   - Dispatch tool: `call_agent` → `dispatch_call_agent`; `update_scratchpad` → `db::scratchpad::upsert`; `ask_user_clarification` → emit `AgentQuestion`, await answer; MCP tool → `McpManager`; interface tool → closure in `AgentRunConfig`; otherwise → `ToolRegistry`.
+   - Dispatch tool: sync sub-agent (`execute_task` mode=sync / `run_subtask`) → `dispatch_sub_agent` (recursive, inline); `execute_cmd` → `exec::run_from_args` wrapped in `tokio::select!` against the token (drop kills the shell via `kill_on_drop`); `update_scratchpad` → `db::scratchpad::upsert`; `ask_user_clarification` → emit `AgentQuestion`, await answer; MCP tool → `McpManager`; interface tool → closure in `AgentRunConfig`; otherwise → `ToolRegistry`.
    - On success: `ToolDone` event, status → `done`.
    - On error: `ToolError` event, status → `failed`.
 6. Loop back — next round rebuilds context with tool results included.
 7. If all rounds exhausted: return `Exhausted`.
+
+A sync sub-agent runs via `dispatch_sub_agent`, which awaits `run_agent_turn` recursively in the **same task** (same `processing` lock, same `token` clone) and returns the child's result as the parent tool call's result. Because parent and child share the token, a `/stop` that cancels a running child also stops the parent at its next check — no `WaitingChild` / task-spawn / resume cascade involved.
 
 ---
 
@@ -282,9 +281,8 @@ Only injected when the `session_scratchpad` table has at least one row for the s
 | Variant | Meaning |
 | --- | --- |
 | `Final { content, message_id, input_tokens, output_tokens, truncated, tool_calls }` | LLM produced a final text response; `tool_calls` carries all `ToolCallEvent`s from all rounds |
-| `Cancelled` | `cancelled` flag was set or WS closed during approval |
+| `Cancelled` | The turn's `CancellationToken` was cancelled (`/stop`), or WS closed during approval |
 | `Exhausted` | All `max_tool_rounds` used without a final message |
-| `WaitingChild { child_stack_id }` | A sub-agent was spawned asynchronously; the child task will complete the parent's tool call and resume the parent when done |
 
 ---
 
@@ -292,7 +290,7 @@ Only injected when the `session_scratchpad` table has at least one row for the s
 
 Only one `handle_message` / `resume_turn` call can run per `ChatSessionHandler` at a time. The `processing: Mutex<()>` is held for the entire duration. A second call blocks until the first completes or is cancelled.
 
-Sub-agents run as independent `tokio::spawn` tasks but acquire the **same** `processing` mutex. Since the parent exits (releasing the lock) before the child acquires it, parent and child never run concurrently within the same session.
+Synchronous sub-agents run **inline in the same task** as the parent (plain recursion in `dispatch_sub_agent`), so the single `processing` lock covers the whole parent+child tree — one user message is one logical critical section. (Asynchronous tasks — `execute_task` mode=async — are a separate mechanism: a new ephemeral session driven by the cron runner, whose result is later injected via `inject_async_result` → `resume_turn`.)
 
 ---
 
@@ -329,7 +327,7 @@ This means that calling `show_mcp_tools` in round N makes those tools available 
 
 Derives a child config: inherits `base_tool_defs`, `memory_tools`, and `mcp`; starts with **empty** `active_mcp_grants`; clears `interface_tools`; increments `depth`.
 
-`dispatch_call_agent` then:
+`dispatch_sub_agent` then:
 
 1. Replaces the empty `active_mcp_grants` arc with one pre-populated from `stack_mcp_grants` DB (restart recovery).
 2. Appends `sub_agents_only` tools and `ask_user_clarification` to `base_tool_defs`.

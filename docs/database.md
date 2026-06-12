@@ -40,7 +40,7 @@ Represents one agent call frame. Root frames have `depth=0`; sub-agent frames in
 | `agent_prompt` | TEXT | nullable (the `call_agent` prompt) |
 | `depth` | INTEGER | NOT NULL DEFAULT 0 |
 | `parent_tool_call_id` | INTEGER | nullable (links to `chat_llm_tools.id`) |
-| `terminated_at` | TEXT | nullable; set when `dispatch_call_agent` finishes |
+| `terminated_at` | TEXT | nullable; set when `dispatch_sub_agent` finishes |
 | `created_at` | TEXT | NOT NULL |
 
 ---
@@ -358,8 +358,8 @@ DAO in `src/core/db/session_mcp_grants.rs`: `grant(pool, session_id, mcp_name)`,
 **Sub-agent** record of which MCP servers have been activated by a specific stack frame. Grants are:
 
 - **Isolated** from the parent session — they do not affect `session_mcp_grants`.
-- **Persistent** across restarts — if a sub-agent is interrupted, `dispatch_call_agent` re-loads these grants from DB when execution resumes.
-- **Cleaned up** automatically when the stack frame terminates: `dispatch_call_agent` calls `delete_for_stack(pool, stack_id)` before returning.
+- **Persistent** across restarts — if a sub-agent is interrupted, `dispatch_sub_agent` re-loads these grants from DB when execution resumes.
+- **Cleaned up** automatically when the stack frame terminates: `dispatch_sub_agent` calls `delete_for_stack(pool, stack_id)` before returning.
 
 | Column | Type | Constraints |
 | --- | --- | --- |

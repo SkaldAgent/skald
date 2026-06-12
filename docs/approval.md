@@ -357,7 +357,7 @@ Only `tool_pattern` is considered (path/agent/source filters are ignored for vis
 ### Where it runs
 
 1. **Parent agent** (`src/core/session/handler/config.rs`, `build_agent_config`): rules are loaded once with `list_for_group`, then `base_tool_defs.retain(...)` filters the list before building `AgentRunConfig`.
-2. **Sub-agents** (`src/core/session/handler/agent_dispatch.rs`, `dispatch_call_agent`): same filter applied after sub-agent-only tools are added.
+2. **Sub-agents** (`src/core/session/handler/agent_dispatch.rs`, `dispatch_sub_agent`): same filter applied after sub-agent-only tools are added.
 
 Sub-agents share the parent session's permission group. The execution-time `ApprovalManager.check()` gate remains active as a second enforcement layer.
 

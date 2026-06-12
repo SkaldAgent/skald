@@ -41,12 +41,18 @@ Rust async web app (Tokio + Axum). Runs as a local chat server with LLM tool-cal
 
 ## Sub-agent system
 
-- `call_agent` is **not** a plain `Tool` — it is intercepted in `run_agent_turn` before registry dispatch.
-- `dispatch_call_agent` creates a child `chat_sessions_stack` row, runs `run_agent_turn` recursively, then terminates the frame.
+- Synchronous sub-agents (`execute_task` mode=sync / `run_subtask`) are **not** plain `Tool`s — they are intercepted in `run_agent_turn` before registry dispatch.
+- `dispatch_sub_agent` (in `agent_dispatch.rs`) creates a child `chat_sessions_stack` row and runs `run_agent_turn` **recursively in the same task**, holding the same `processing` lock and sharing the same cancellation token. The child's result string becomes the parent tool call's result (completion lives in one place — the `run_agent_turn` tool-result match); then it terminates the child frame. There is no task-spawn / `WaitingChild` / resume cascade for the sync path.
 - Max recursion depth: `MAX_AGENT_DEPTH = 5`.
 - Client resolution order: `args.client` → `meta.json client` → AUTO selection by scope/strength.
 - **The parent's resolved client is NOT inherited.** Passing a concrete model name to `resolve()` bypasses strength/scope checks; sub-agents always auto-select unless overridden explicitly.
 - `list_agents` is a plain tool; returns JSON excluding `main`.
+- `resume_turn` (+ its cascade) is kept only for: app-restart recovery of an active child stack, async task result injection (`inject_async_result`), and the WS resume message — not for the normal sync dispatch.
+
+## Cancellation (stop)
+
+- Each turn has a `CancellationToken` (`tokio_util`). `handle_message` mints a fresh one per user message and stores it in `current_cancel`; `resume_turn` mints one per resume. A **clone is threaded by value** through the whole (recursive) call tree — never re-read from the field mid-turn — so a `/stop` is **sticky** across sub-agent recursion.
+- `cancel()` cancels the stored token. It is checked at each round boundary and before each tool call, wrapped around the in-flight LLM call (`tokio::select!`, aborting the request), and wrapped around `execute_cmd` (drops the future → `kill_on_drop` kills the shell process). Parent and child share the token, so a cancelled child stops the parent by construction.
 
 ## Approval gate
 

@@ -3,12 +3,13 @@ use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use crate::core::db::{chat_history, chat_llm_tools, chat_sessions_stack, scratchpad, stack_mcp_grants};
 use crate::core::events::ServerEvent;
 
-use super::{ChatSessionHandler, MAX_AGENT_DEPTH};
+use super::{ChatSessionHandler, MAX_AGENT_DEPTH, TurnOutcome};
 use super::interface_tools::{AgentRunConfig, InterfaceTool, ToolFuture};
 use super::config::show_mcp_tools_tool_def;
 
@@ -22,6 +23,7 @@ impl ChatSessionHandler {
         parent_config:       &AgentRunConfig,
         parent_tool_call_id: i64,
         args:                &Value,
+        token:               &CancellationToken,
         tx:                  &mpsc::Sender<ServerEvent>,
     ) -> anyhow::Result<String> {
         let pool = &self.db;
@@ -147,28 +149,66 @@ impl ChatSessionHandler {
             child_stack  = child.id,
             target_agent = target_id,
             client       = %resolved_client,
-            "dispatch_sub_agent: spawning child task"
+            "dispatch_sub_agent: running child inline"
         );
 
-        let self_arc = self.weak_self.get()
-            .and_then(|w| w.upgrade())
-            .ok_or_else(|| anyhow::anyhow!("dispatch_sub_agent: handler Arc no longer alive"))?;
+        // Run the child synchronously in the SAME task, holding the same
+        // `processing` lock and sharing the same cancellation token. The returned
+        // string becomes the parent tool call's result, which `run_agent_turn`
+        // persists and emits as `ToolDone` — so completion lives in one place.
+        let _ = self.resume_pending_tools(child.id, &child_config, tx).await;
+        let outcome = self.run_agent_turn(child.id, &child_config, token, tx).await;
 
-        let tx_child        = tx.clone();
-        let child_stack_id  = child.id;
+        if let Err(e) = stack_mcp_grants::delete_for_stack(pool, child.id).await {
+            tracing::warn!(stack_id = child.id, error = %e, "dispatch_sub_agent: failed to delete stack MCP grants");
+        }
+
         let parent_agent_id = parent_config.agent_id.clone();
+        let emit_agent_done = |result_preview: String| {
+            let tx = tx.clone();
+            let child_agent_id = target_id.to_string();
+            let parent_agent_id = parent_agent_id.clone();
+            let child_stack_id = child.id;
+            async move {
+                tx.send(ServerEvent::AgentDone {
+                    stack_id:        child_stack_id,
+                    agent_id:        child_agent_id,
+                    parent_agent_id,
+                    result_preview,
+                }).await.ok();
+            }
+        };
 
-        tokio::spawn(async move {
-            self_arc.run_child_frame(
-                child_stack_id,
-                parent_tool_call_id,
-                parent_agent_id,
-                child_config,
-                tx_child,
-            ).await;
-        });
+        let preview = |s: &str| if s.len() > 500 { format!("{}…", &s[..500]) } else { s.to_string() };
 
-        Err(anyhow::Error::new(super::AgentFlowSignal::WaitingChild(child_stack_id)))
+        let result = match outcome {
+            Ok(TurnOutcome::Final { content, .. }) => {
+                emit_agent_done(preview(&content)).await;
+                Ok(content)
+            }
+            Ok(TurnOutcome::Cancelled) => {
+                // The parent shares this token: if the cancel came from the user,
+                // its next round check returns Cancelled too. We still record a
+                // tool result so the history stays well-formed.
+                emit_agent_done("⚠️ Cancelled.".to_string()).await;
+                Ok(format!("Sub-agent `{target_id}` was cancelled."))
+            }
+            Ok(TurnOutcome::Exhausted) => {
+                emit_agent_done("⚠️ Exhausted tool-call rounds.".to_string()).await;
+                Ok(format!(
+                    "Sub-agent `{target_id}` exceeded {} tool-call rounds without producing a final answer.",
+                    self.max_tool_rounds
+                ))
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                emit_agent_done(format!("⚠️ Error: {msg}")).await;
+                Err(e)
+            }
+        };
+
+        let _ = chat_sessions_stack::terminate(pool, child.id).await;
+        result
     }
 
     /// Handles the `update_scratchpad` built-in.

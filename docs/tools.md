@@ -23,7 +23,7 @@ pub trait Tool: Send + Sync {
 
 The dispatcher in `llm_loop.rs` always calls `tool.execute_async(args).await`, so sync and async tools are dispatched uniformly.
 
-**`sub_agents_only`**: if a tool returns `true`, it is excluded from the root agent's tool list and only added to sub-agent configs (depth ≥ 1) in `dispatch_call_agent`. Default is `false`.
+**`sub_agents_only`**: if a tool returns `true`, it is excluded from the root agent's tool list and only added to sub-agent configs (depth ≥ 1) in `dispatch_sub_agent`. Default is `false`.
 
 **`root_agent_only`**: if a tool returns `true`, it is included in the root agent's tool list but filtered out from sub-agent configs in `AgentRunConfig::for_sub_agent()`. Default is `false`.
 

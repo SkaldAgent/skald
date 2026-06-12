@@ -79,32 +79,47 @@ impl Tool for ExecuteCmd {
     }
 
     fn execute(&self, args: Value) -> Result<String> {
-        let command = args["command"].as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing required argument: command"))?
-            .to_string();
-
-        let workdir = match args["workdir"].as_str() {
-            Some(p) => {
-                let path = PathBuf::from(p);
-                if !path.is_absolute() {
-                    anyhow::bail!("workdir must be an absolute path, got: {p}");
-                }
-                if !path.is_dir() {
-                    anyhow::bail!("workdir does not exist or is not a directory: {p}");
-                }
-                Some(path)
-            }
-            None => None,
-        };
-
-        let timeout_secs = args["timeout"].as_u64()
-            .unwrap_or(DEFAULT_TIMEOUT_SECS)
-            .clamp(1, MAX_TIMEOUT_SECS);
-
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(run(command, workdir, timeout_secs))
+            tokio::runtime::Handle::current().block_on(run_from_args(&args))
         })
     }
+}
+
+/// Parse + run a shell command from tool arguments, as an awaitable future.
+///
+/// Used by the LLM loop so the call can be wrapped in `tokio::select!` against a
+/// cancellation token: on cancel the future is dropped and `kill_on_drop(true)`
+/// kills the child process. `Tool::execute` runs this synchronously via
+/// `block_in_place` for the non-cancellable resume/registry path.
+pub async fn run_from_args(args: &Value) -> Result<String> {
+    let (command, workdir, timeout_secs) = parse_args(args)?;
+    run(command, workdir, timeout_secs).await
+}
+
+fn parse_args(args: &Value) -> Result<(String, Option<PathBuf>, u64)> {
+    let command = args["command"].as_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing required argument: command"))?
+        .to_string();
+
+    let workdir = match args["workdir"].as_str() {
+        Some(p) => {
+            let path = PathBuf::from(p);
+            if !path.is_absolute() {
+                anyhow::bail!("workdir must be an absolute path, got: {p}");
+            }
+            if !path.is_dir() {
+                anyhow::bail!("workdir does not exist or is not a directory: {p}");
+            }
+            Some(path)
+        }
+        None => None,
+    };
+
+    let timeout_secs = args["timeout"].as_u64()
+        .unwrap_or(DEFAULT_TIMEOUT_SECS)
+        .clamp(1, MAX_TIMEOUT_SECS);
+
+    Ok((command, workdir, timeout_secs))
 }
 
 async fn run(command: String, workdir: Option<PathBuf>, timeout_secs: u64) -> Result<String> {

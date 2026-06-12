@@ -63,49 +63,35 @@ When `allow_tools` is set, only those system tool names are injected into the LL
 
 ---
 
-## call_agent Mechanics
+## Sub-agent Mechanics
 
-`call_agent` is **not** in `ToolRegistry`. It is intercepted in `run_agent_turn` before any registry lookup, then handled by `dispatch_call_agent`:
+A synchronous sub-agent call (`execute_task` mode=sync / `run_subtask`) is **not** in `ToolRegistry`. It is intercepted in `run_agent_turn` before any registry lookup, then handled by `dispatch_sub_agent` (`src/core/session/handler/agent_dispatch.rs`):
 
 1. Validate `agent_id` and `prompt` args.
 2. Reject self-calls and calls to `main`.
-3. Reject calls to system agents (`meta.json` → `is_system_agent: true`) — they are invisible to call_agent.
+3. Reject calls to system agents (`meta.json` → `is_system_agent: true`) — they are invisible as sub-agents.
 4. Load target agent's `meta.json`.
-4. Check depth: `parent_frame.depth + 1 <= MAX_AGENT_DEPTH`.
-5. Resolve target client (see below).
-6. Create child `chat_sessions_stack` row (`depth = parent + 1`, `parent_tool_call_id` set).
-7. Load any existing `stack_mcp_grants` for the child stack (restart recovery) → populate `active_mcp_grants`.
-8. Build child `AgentRunConfig` via `for_sub_agent()`, then:
-   - Replace `active_mcp_grants` with the pre-populated arc from step 7.
+5. Check depth: `parent_frame.depth + 1 <= MAX_AGENT_DEPTH`.
+6. Resolve target client (see below).
+7. Create child `chat_sessions_stack` row (`depth = parent + 1`, `parent_tool_call_id` set).
+8. Load any existing `stack_mcp_grants` for the child stack (restart recovery) → populate `active_mcp_grants`.
+9. Build child `AgentRunConfig` via `for_sub_agent()`, then:
+   - Replace `active_mcp_grants` with the pre-populated arc from step 8.
    - Append `sub_agents_only` tools and `ask_user_clarification`.
    - Inject `show_mcp_tools` (stack-scoped, `stack_id = Some(child.id)`) as interface tool.
-9. Append prompt as `role = agent` message in child stack.
-10. Emit `AgentStart` event.
-11. **Spawn** an independent `tokio::spawn` task running `run_child_frame` (see below).
-12. Return `Err(WaitingChildSentinel(child_stack_id))` — the parent's LLM loop detects this and exits with `TurnOutcome::WaitingChild`, releasing the `processing` mutex.
+10. Append prompt as `role = agent` message in child stack.
+11. Emit `AgentStart` event.
+12. **Run the child inline** — `resume_pending_tools` + `run_agent_turn` on the child stack, awaited recursively **in the same task**, holding the **same** `processing` lock and the **same** `CancellationToken` clone.
+13. Delete `stack_mcp_grants` for the child stack; emit `AgentDone`; terminate the child stack frame.
+14. Map the child `TurnOutcome` to the return value: `Final{content}` → `Ok(content)`; `Cancelled` → `Ok("…cancelled")` (the shared token also stops the parent at its next check); `Exhausted` → `Ok("…exceeded rounds")`; `Err` → `Err`.
 
-The parent's `call_agent` tool call remains in status `running` in the DB until the child task completes it.
+The returned string becomes the parent's tool-call result via the normal `Ok(result)` branch in `run_agent_turn` (which calls `chat_llm_tools::complete` and emits `ToolDone`) — so completion logic lives in exactly one place. There is **no** task spawn, no `WaitingChild` signal, and no resume cascade for the sync path.
 
-### run_child_frame (dispatcher.rs)
+### Mutex / token invariant
 
-The spawned task acquires the `processing` mutex independently (parent has already released it) and:
+One user message = one logical critical section: the `processing` lock is acquired once in `handle_message` and held for the whole parent+child recursion. Parent and child share one `CancellationToken` clone, so a `/stop` that cancels a running child stops the parent by construction (its next round/tool check observes `is_cancelled()`).
 
-1. Calls `resume_pending_tools` + `run_agent_turn` on the child stack.
-2. Deletes `stack_mcp_grants` for the child stack.
-3. On `Final`: emits `AgentDone`, marks parent's tool call `done`, emits `ToolDone`.
-4. On `Cancelled`/`Exhausted`/`Err`: emits `AgentDone`, marks parent's tool call `failed`, emits `ToolError`.
-5. Terminates the child stack frame.
-6. Drops the processing lock.
-7. Calls `resume_turn` so the parent LLM loop continues with the child's result in history.
-
-If the child itself spawns a grandchild (`TurnOutcome::WaitingChild`), `run_child_frame` returns immediately — the grandchild task handles cascading back up.
-
-### Mutex invariant
-
-Parent and child never hold `processing` at the same time. Sequence:
-
-- Parent acquires → runs → exits with `WaitingChild` → **releases**.
-- Child task acquires → runs → **releases** → calls `resume_turn` (re-acquires).
+`resume_turn` and its cascade are retained only for app-restart recovery of an active child stack, async task result injection (`inject_async_result`), and the WS resume message — not for normal sync dispatch.
 
 ---
 

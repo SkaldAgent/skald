@@ -155,7 +155,6 @@ impl ChatSessionManager {
             run_context,
         ));
 
-        handler.weak_self.set(Arc::downgrade(&handler)).ok();
         self.active.lock().await.insert(session_id, handler.clone());
         Ok(handler)
     }

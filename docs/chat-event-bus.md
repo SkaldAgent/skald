@@ -129,7 +129,7 @@ tokio::spawn(async move {
 | ChatHub notification briefing | `true` (injected via `resume_turn`) | ❌ never (uses `resume_turn`, not `handle_message`) |
 | `TurnOutcome::Cancelled` | — | ❌ never |
 | `TurnOutcome::Exhausted` | — | ❌ never |
-| Sub-agent turns (`dispatch_call_agent`) | — | ❌ never (only root turns publish) |
+| Sub-agent turns (`dispatch_sub_agent`) | — | ❌ never (only root turns publish) |
 
 Per each successful turn, **two events** are published in order:
 

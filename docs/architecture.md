@@ -121,7 +121,7 @@ Plugin instances are constructed in `main.rs` as `Vec<Arc<dyn Plugin>>` and inje
    - LLM returns `LlmTurn::ToolCalls` → for each call:
      - Approval check → optionally send `PendingWrite`, wait for user
      - Dispatch tool → send `ToolStart` / `ToolDone` / `ToolError`
-     - `call_agent` → recurse via `dispatch_call_agent`
+     - `call_agent` → recurse via `dispatch_sub_agent`
 8. Main loop sends `Done` event with final content and token counts
 
 ---

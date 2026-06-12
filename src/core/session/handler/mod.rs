@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use serde_json::{Value, json};
 use sqlx::SqlitePool;
 use tokio::sync::{Mutex, mpsc};
+use tokio_util::sync::CancellationToken;
 
 use tracing::{error, info, trace, warn};
 
@@ -26,7 +27,6 @@ use crate::core::tools::ToolRegistry;
 mod approval;
 mod agent_dispatch;
 mod config;
-mod dispatcher;
 mod interface_tools;
 mod llm_loop;
 pub mod message_builder;
@@ -44,10 +44,6 @@ pub(super) const MAX_AGENT_DEPTH: i64 = 5;
 /// `downcast_ref` in `llm_loop` instead of two separate type checks.
 #[derive(Debug)]
 pub(super) enum AgentFlowSignal {
-    /// A sub-agent task was spawned asynchronously. The parent loop should exit
-    /// immediately (returning `TurnOutcome::WaitingChild`) so the child can acquire
-    /// the processing mutex. The `i64` is the child stack id for logging.
-    WaitingChild(i64),
     /// The WS disconnected while `dispatch_ask_user_clarification` was blocking.
     /// The tool stays `'pending'` in DB so `resume_pending_tools` can re-ask on reconnect.
     QuestionChannelClosed,
@@ -56,7 +52,6 @@ pub(super) enum AgentFlowSignal {
 impl std::fmt::Display for AgentFlowSignal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::WaitingChild(id) => write!(f, "sub-agent dispatched asynchronously (child_stack_id={id})"),
             Self::QuestionChannelClosed => write!(f, "question channel closed (WS disconnected)"),
         }
     }
@@ -76,9 +71,6 @@ pub(super) enum TurnOutcome {
     },
     Cancelled,
     Exhausted,
-    /// A sub-agent was spawned asynchronously. The child task will complete
-    /// the parent tool call and resume the parent when done.
-    WaitingChild { child_stack_id: i64 },
 }
 
 pub(super) fn update_scratchpad_tool_def() -> Value {
@@ -164,8 +156,14 @@ pub struct ChatSessionHandler {
     pub(super) image_generator_manager: Arc<ImageGeneratorManager>,
     /// Prevents concurrent handle_message calls on the same session.
     pub(super) processing:       Mutex<()>,
-    /// Set to true by `cancel()` to abort the current tool-call loop early.
-    pub(super) cancelled:        Arc<AtomicBool>,
+    /// Cancellation scope for the in-flight turn. A fresh token is minted per
+    /// user message (`handle_message`) and per resume (`resume_turn`), then a
+    /// clone is threaded by value through the whole (possibly recursive) call
+    /// tree. `cancel()` cancels whatever token is currently stored, which the
+    /// running chain observes because it holds its own clone of that same token.
+    /// Replacing the field only affects the *next* turn — that is what makes a
+    /// stop sticky across sub-agent recursion (it is never reset mid-turn).
+    pub(super) current_cancel:   std::sync::Mutex<CancellationToken>,
     /// When true, any tool call that would require human approval is automatically
     /// denied instead of blocking. Used by TicManager and other headless runners
     /// that cannot process approval requests.
@@ -178,11 +176,6 @@ pub struct ChatSessionHandler {
     /// compact before processing the new message.  Zero means unknown
     /// (provider did not report usage on the first turn).
     pub(super) last_input_tokens: AtomicU32,
-    /// Weak back-reference to the owning `Arc<Self>`.
-    /// Weak back-reference to the owning `Arc<Self>`.
-    /// Set by `ChatSessionManager::get_or_create_handler` immediately after creation.
-    /// Used by `dispatch_sub_agent` to spawn child tasks that need `Arc<Self>`.
-    pub(super) weak_self: std::sync::OnceLock<std::sync::Weak<ChatSessionHandler>>,
     /// Active RunContext for this session. `None` means the "default" run_context
     /// is used implicitly (global rules only).
     pub(super) run_context: tokio::sync::RwLock<Option<RunContextRow>>,
@@ -236,10 +229,9 @@ impl ChatSessionHandler {
             compactor,
             context_label:          std::sync::RwLock::new(None),
             processing:             Mutex::new(()),
-            cancelled:              Arc::new(AtomicBool::new(false)),
+            current_cancel:         std::sync::Mutex::new(CancellationToken::new()),
             auto_deny_approvals:    AtomicBool::new(false),
             last_input_tokens:      AtomicU32::new(0),
-            weak_self:              std::sync::OnceLock::new(),
             run_context:            tokio::sync::RwLock::new(run_context),
             scratchpad_session_id:  std::sync::OnceLock::new(),
         }
@@ -281,9 +273,12 @@ impl ChatSessionHandler {
             .and_then(|rc| rc.tool_group_id.clone())
     }
 
-    /// Signals the current tool-call loop to stop after the current round.
+    /// Cancels the in-flight turn. The running call tree holds its own clone of
+    /// the same token, so it stops at the next round boundary, on the in-flight
+    /// LLM call, and on cancellable tools (e.g. `execute_cmd`). Sticky across
+    /// sub-agent recursion: the token is never reset mid-turn.
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Relaxed);
+        self.current_cancel.lock().unwrap().cancel();
     }
 
     /// When set, any tool call that would require human approval is automatically
@@ -351,7 +346,11 @@ impl ChatSessionHandler {
         is_synthetic:                 bool,
     ) -> anyhow::Result<()> {
         let _guard = self.processing.lock().await;
-        self.cancelled.store(false, Ordering::Relaxed);
+        // Fresh cancellation scope for this user message. Stored so `cancel()`
+        // can reach it, and cloned-by-value into the call tree so a /stop during
+        // the turn is sticky across sub-agent recursion (never reset mid-turn).
+        let token = CancellationToken::new();
+        *self.current_cancel.lock().unwrap() = token.clone();
         let pool   = &self.db;
 
         // Retrieve memory context (Honcho or other backend) for this turn.
@@ -439,7 +438,7 @@ impl ChatSessionHandler {
         // They are re-gated (rules may have changed) and executed before the LLM runs.
         self.resume_pending_tools(stack.id, &config, &tx).await?;
 
-        let outcome = self.run_agent_turn(stack.id, &config, &tx).await?;
+        let outcome = self.run_agent_turn(stack.id, &config, &token, &tx).await?;
 
         match outcome {
             TurnOutcome::Final { content, message_id, input_tokens, output_tokens, truncated, tool_calls } => {
@@ -502,13 +501,6 @@ impl ChatSessionHandler {
                 tx.send(ServerEvent::Error {
                     message: format!("Exceeded {} tool-call rounds without a final answer.", self.max_tool_rounds),
                 }).await.ok();
-                Ok(())
-            }
-            TurnOutcome::WaitingChild { child_stack_id } => {
-                // A sub-agent was spawned asynchronously. The child task holds no
-                // processing lock — it will acquire it after this method returns and
-                // drops `_guard`. Done/Error will be emitted by the child task.
-                info!(session_id = self.session_id, child_stack_id, "handle_message: sub-agent dispatched asynchronously");
                 Ok(())
             }
         }

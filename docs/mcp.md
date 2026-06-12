@@ -241,7 +241,7 @@ show_mcp_tools(mcp_names: ["server_name", ...])
 - Returns a confirmation string listing which servers were activated and their scope (`session` or `stack <id>`).
 
 **Root agents**: injected in `build_agent_config` as an `InterfaceTool`.
-**Sub-agents**: injected in `dispatch_call_agent` — sub-agents always start with zero grants and activate what they need.
+**Sub-agents**: injected in `dispatch_sub_agent` — sub-agents always start with zero grants and activate what they need.
 
 ### Sub-Agent MCP Isolation
 
@@ -251,7 +251,7 @@ Sub-agents have a fully isolated MCP grant state:
 | --- | --- | --- |
 | Initial grants | Loaded from `session_mcp_grants` DB | Empty (starts from zero) |
 | `show_mcp_tools` persists to | `session_mcp_grants` | `stack_mcp_grants` |
-| Grants survive restart? | Yes | Yes (re-loaded by `dispatch_call_agent`) |
+| Grants survive restart? | Yes | Yes (re-loaded by `dispatch_sub_agent`) |
 | Grants cleaned up? | No (session lifetime) | Yes (on frame termination) |
 | Session contamination? | N/A | None |
 
@@ -279,5 +279,5 @@ Sub-agents that don't include `<!-- MCP_LIST -->` in their `AGENT.md` receive no
 - `register_mcp` tool parameters change (schema, required fields, description, friendly_name)
 - `list_mcp` return format changes (McpServerInfo fields)
 - A new notification source is implemented
-- Lazy loading logic changes (`build_agent_config`, `dispatch_call_agent`, `show_mcp_tools`, grant tables)
+- Lazy loading logic changes (`build_agent_config`, `dispatch_sub_agent`, `show_mcp_tools`, grant tables)
 - `ClientMessage` loses or gains fields relevant to MCP

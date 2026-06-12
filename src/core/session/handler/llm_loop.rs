@@ -1,5 +1,6 @@
 use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::core::approval::GateResult;
@@ -22,6 +23,7 @@ impl ChatSessionHandler {
         &'a self,
         stack_id: i64,
         config:   &'a AgentRunConfig,
+        token:    &'a CancellationToken,
         tx:       &'a mpsc::Sender<ServerEvent>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<TurnOutcome>> + Send + 'a>> {
         Box::pin(async move {
@@ -42,7 +44,7 @@ impl ChatSessionHandler {
         let mut all_tool_calls: Vec<ToolCallEvent> = Vec::new();
 
         for round in 0..self.max_tool_rounds {
-            if self.cancelled.load(Ordering::Relaxed) {
+            if token.is_cancelled() {
                 return Ok(TurnOutcome::Cancelled);
             }
             trace!(session_id = self.session_id, stack_id, agent_id = config.agent_id, round, "starting round");
@@ -73,7 +75,15 @@ impl ChatSessionHandler {
                     stack_id:    Some(stack_id),
                 };
 
-                match cur_llm.client.chat_with_tools(&messages, &tool_defs, &options).await {
+                // Clone the Arc so the in-flight future does not borrow `cur_llm`
+                // across the fallback reassignment below. On cancel we drop the
+                // future (aborting the request) and return immediately.
+                let client = cur_llm.client.clone();
+                let call_result = tokio::select! {
+                    _ = token.cancelled() => return Ok(TurnOutcome::Cancelled),
+                    r = client.chat_with_tools(&messages, &tool_defs, &options) => r,
+                };
+                match call_result {
                     Ok(t) => {
                         self.llm_manager.mark_success(&cur_name).await;
                         break Ok(t);
@@ -159,6 +169,11 @@ impl ChatSessionHandler {
                     }
 
                     for call in &calls {
+                        // Stop before each call so a /stop (or a cancelled sub-agent,
+                        // which shares this token) aborts the rest of the round.
+                        if token.is_cancelled() {
+                            return Ok(TurnOutcome::Cancelled);
+                        }
                         let args_str = serde_json::to_string(&call.arguments)
                             .unwrap_or_else(|_| "{}".to_string());
                         let tool_call_id = chat_llm_tools::append(
@@ -252,7 +267,14 @@ impl ChatSessionHandler {
                             (call.name == "execute_task" && call.arguments["mode"].as_str() == Some("sync") && call.arguments.get("agent_id").is_some())
                             || call.name == tn::RUN_SUBTASK
                         {
-                            self.dispatch_sub_agent(stack_id, config, tool_call_id, &call.arguments, tx).await
+                            self.dispatch_sub_agent(stack_id, config, tool_call_id, &call.arguments, token, tx).await
+                        } else if call.name == tn::EXECUTE_CMD {
+                            // Cancellable path: a /stop drops this future, and
+                            // `kill_on_drop(true)` kills the spawned shell process.
+                            tokio::select! {
+                                _ = token.cancelled() => Err(anyhow::anyhow!("execute_cmd interrotto dall'utente")),
+                                r = crate::core::tools::exec::run_from_args(&call.arguments) => r,
+                            }
                         } else if call.name == tn::UPDATE_SCRATCHPAD {
                             self.dispatch_update_scratchpad(&call.arguments).await
                         } else if call.name == tn::ASK_USER_CLARIFICATION {
@@ -291,18 +313,11 @@ impl ChatSessionHandler {
                                 });
                             }
                             Err(err) => {
-                                if let Some(signal) = err.downcast_ref::<super::AgentFlowSignal>() {
-                                    match signal {
-                                        super::AgentFlowSignal::WaitingChild(child_stack_id) => {
-                                            return Ok(TurnOutcome::WaitingChild { child_stack_id: *child_stack_id });
-                                        }
-                                        // WS disconnected while waiting for clarification answer.
-                                        // Tool stays 'pending' in DB — resume_pending_tools re-dispatches on reconnect.
-                                        super::AgentFlowSignal::QuestionChannelClosed => {
-                                            warn!(session_id = self.session_id, tool_call_id, "clarification channel closed — aborting turn (tool stays pending)");
-                                            return Ok(TurnOutcome::Cancelled);
-                                        }
-                                    }
+                                // WS disconnected while waiting for a clarification answer.
+                                // Tool stays 'pending' in DB — resume_pending_tools re-dispatches on reconnect.
+                                if matches!(err.downcast_ref::<super::AgentFlowSignal>(), Some(super::AgentFlowSignal::QuestionChannelClosed)) {
+                                    warn!(session_id = self.session_id, tool_call_id, "clarification channel closed — aborting turn (tool stays pending)");
+                                    return Ok(TurnOutcome::Cancelled);
                                 }
                                 let msg = err.to_string();
                                 warn!(session_id = self.session_id, tool = %call.name, tool_call_id, error = %msg, "tool failed");

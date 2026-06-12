@@ -1,5 +1,6 @@
 use serde_json::Value;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::core::approval::GateResult;
@@ -33,8 +34,11 @@ impl ChatSessionHandler {
         tx:                   mpsc::Sender<ServerEvent>,
     ) -> anyhow::Result<()> {
         let _guard = self.processing.lock().await;
-        use std::sync::atomic::Ordering;
-        self.cancelled.store(false, Ordering::Relaxed);
+        // A resume is a fresh unit of work (async result injection, app-restart
+        // recovery, WS resume): mint a new token so it does not inherit a stale
+        // cancellation, while a /stop *during* the resume still cancels this token.
+        let token = CancellationToken::new();
+        *self.current_cancel.lock().unwrap() = token.clone();
 
         let pool = &self.db;
         let mut config = self.build_agent_config(
@@ -74,16 +78,11 @@ impl ChatSessionHandler {
             }
         }
 
-        let mut current_outcome = self.run_agent_turn(stack.id, &config, &tx).await?;
+        let mut current_outcome = self.run_agent_turn(stack.id, &config, &token, &tx).await?;
         let mut current_stack = stack;
 
         // Cascade completion upward through parent stacks (handles app-restart recovery
         // when a sub-agent was running — child completes, then parent continues).
-        if matches!(current_outcome, TurnOutcome::WaitingChild { .. }) {
-            info!(session_id = self.session_id, "resume_turn: sub-agent dispatched asynchronously — deferring to child task");
-            return Ok(());
-        }
-
         loop {
             let Some(parent_tool_call_id) = current_stack.parent_tool_call_id else { break };
 
@@ -92,7 +91,6 @@ impl ChatSessionHandler {
                 TurnOutcome::Final { content, .. } => (content.clone(), false),
                 TurnOutcome::Cancelled  => (format!("Sub-agent `{}` was cancelled.", current_stack.agent_id), true),
                 TurnOutcome::Exhausted  => (format!("Sub-agent `{}` exhausted tool-call rounds.", current_stack.agent_id), true),
-                TurnOutcome::WaitingChild { .. } => unreachable!("WaitingChild handled above"),
             };
             let result_preview = if result_str.len() > 500 {
                 format!("{}…", &result_str[..500])
@@ -148,18 +146,12 @@ impl ChatSessionHandler {
             );
 
             self.resume_pending_tools(parent_stack.id, &config, &tx).await?;
-            current_outcome = self.run_agent_turn(parent_stack.id, &config, &tx).await?;
+            current_outcome = self.run_agent_turn(parent_stack.id, &config, &token, &tx).await?;
             current_stack = parent_stack;
 
         }
 
-        if matches!(current_outcome, TurnOutcome::WaitingChild { .. }) {
-            info!(session_id = self.session_id, "resume_turn cascade: sub-agent dispatched asynchronously — deferring to child task");
-            return Ok(());
-        }
-
         // current_stack is now the root (depth=0); emit the final event.
-        // WaitingChild is handled above — it never reaches here.
         match current_outcome {
             TurnOutcome::Final { content, message_id, input_tokens, output_tokens, truncated, .. } => {
                 info!(session_id = self.session_id, "resume_turn done");
@@ -184,9 +176,6 @@ impl ChatSessionHandler {
                 tx.send(ServerEvent::Error {
                     message: "Exceeded tool-call rounds without a final answer.".to_string(),
                 }).await.ok();
-            }
-            TurnOutcome::WaitingChild { .. } => {
-                // Handled above before the cascade loop — unreachable here.
             }
         }
         Ok(())
