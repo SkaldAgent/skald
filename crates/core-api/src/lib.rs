@@ -18,3 +18,5 @@ pub mod tool;
 pub mod secrets;
 pub mod transcribe;
 pub mod tts;
+pub mod config_property;
+pub use config_property::{ConfigProperty, ConfigSet, PropertyType};

@@ -39,6 +39,7 @@ use core_api::plugin::Plugin;
 pub struct Skald {
     pub(crate) db:               Arc<SqlitePool>,
     pub config:                  Arc<GlobalConfigManager>,
+    pub config_properties:       Vec<core_api::ConfigSet>,
     pub(crate) system_bus:       Arc<SystemEventBus>,
     pub provider_registry:       Arc<ProviderRegistry>,
     pub llm_manager:             Arc<LlmManager>,
@@ -338,6 +339,9 @@ impl Skald {
             Arc::clone(&manager),
             Arc::clone(&chat_hub),
             config.tic.clone(),
+            Arc::clone(&config_store),
+            Arc::clone(&run_context_manager),
+            Arc::clone(&system_bus),
         );
 
         // Start background schedulers and collect their handles for graceful shutdown.
@@ -350,6 +354,7 @@ impl Skald {
         let skald = Arc::new(Skald {
             db: pool,
             config: config_store,
+            config_properties: vec![super::tic::config_set()],
             system_bus,
             provider_registry,
             llm_manager,

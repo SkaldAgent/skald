@@ -66,6 +66,12 @@ export class ApprovalRulesPage extends LightElement {
 
   connectedCallback() {
     super.connectedCallback();
+    window.addEventListener('llm-page-change', (e) => {
+      if (e.detail.page !== 'approval') {
+        this._open = false;
+        this.style.display = 'none';
+      }
+    });
     window.addEventListener('approval-navigate', async (e) => {
       if (e.detail.group === null) {
         this._open = false;

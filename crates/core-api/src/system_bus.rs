@@ -38,6 +38,8 @@ pub enum SystemEvent {
     ApiProviderRegistered { type_id: String },
     /// A plugin unregistered an `ApiProvider` (e.g. on plugin stop/disable).
     ApiProviderUnregistered { type_id: String },
+    /// A config key was changed via the API (only fires when the value actually changes).
+    ConfigKeyUpdated { key: String, old_value: Option<String>, new_value: String },
 }
 
 // ── Bus ───────────────────────────────────────────────────────────────────────

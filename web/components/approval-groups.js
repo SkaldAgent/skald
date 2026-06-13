@@ -349,7 +349,7 @@ export class ApprovalGroupsPage extends LightElement {
       <div class="apr-page">
         <div class="apr-header">
           <h2 class="apr-title">
-            <i class="bi bi-shield-check me-2"></i>Approval Rules
+            <i class="bi bi-shield-check me-2"></i>Security
           </h2>
           <div class="apr-header-right">
             <span class="apr-header-count">${this._groups.length} group${this._groups.length === 1 ? '' : 's'}</span>

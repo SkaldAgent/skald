@@ -88,6 +88,7 @@ impl TranscribeManager {
                                 None    => break,
                             }
                         }
+                        Ok(_) => {}
                         Err(core_api::system_bus::RecvError::Lagged(n)) => warn!(n, "transcribe_manager: system_bus lagged"),
                         Err(core_api::system_bus::RecvError::Closed)    => break,
                     }

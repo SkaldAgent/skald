@@ -135,7 +135,7 @@ export class AppSidebar extends LightElement {
         <a href="#" class="sidebar-link ${this._activePage === 'approval' ? 'active' : ''}"
            @click=${(e) => this._togglePage('approval', e)}>
           <i class="bi bi-shield-check"></i>
-          <span class="sidebar-link-name">Approval Rules</span>
+          <span class="sidebar-link-name">Security</span>
         </a>
         <a href="#" class="sidebar-link ${this._activePage === 'agent-profiles' ? 'active' : ''}"
            @click=${(e) => this._togglePage('agent-profiles', e)}>

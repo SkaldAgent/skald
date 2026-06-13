@@ -117,7 +117,7 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 | Cron scheduler tick | **30 s** | `src/core/cron/mod.rs` |
 | Cron fire-check window | **90 s** | `src/core/cron/mod.rs` |
 | MCP startup timeout | **120 s** | `src/core/mcp/mod.rs` |
-| TIC tick interval | **900 s** default | `config.yml` → `tic.interval_secs` |
+| TIC tick interval | **900 s** default | `config.yml` → `tic.interval_secs`; overridable at runtime via `tic.interval_minutes` DB key |
 | TIC batch size | **50 events** default | `config.yml` → `tic.batch_size` |
 | Notification batch window | **200 ms** | `src/core/chat_hub/mod.rs` |
 

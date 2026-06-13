@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod config;
 pub mod approval;
 pub mod cron;
 pub mod dev;
@@ -95,6 +96,9 @@ pub fn router() -> Router<Arc<Skald>> {
         .route("/dev/llm-requests/{id}",        get(dev::get_llm_request))
 
         .route("/stats/llm",                    get(stats::llm_stats))
+        // Config properties
+        .route("/config",                       get(config::list_properties))
+        .route("/config/{key}",                 put(config::set_property))
         // TIC
         .route("/tic/trigger",                  post(tic_trigger))
         // Plugins

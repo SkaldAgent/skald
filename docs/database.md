@@ -311,6 +311,10 @@ Currently used keys:
 | Key | Owner | Description |
 | --- | --- | --- |
 | `source_home` | `ChatHub` | Source ID that receives background agent notifications. Default: `"web"` |
+| `tic.run_context` | `TicManager` | Run context ID applied to each TIC session tick. Empty = no run context. |
+| `tic.interval_minutes` | `TicManager` | Override tick interval in minutes. Empty = use `tic.interval_secs` from `config.yml`. |
+
+Keys are managed via `GET /api/config` + `PUT /api/config/:key`. Registered properties are declared by each subsystem via `core_api::ConfigProperty` and collected in `Skald::config_properties`.
 
 ---
 

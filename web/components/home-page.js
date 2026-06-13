@@ -41,7 +41,7 @@ const GUIDE = [
   },
   {
     icon:  'bi-shield-check',
-    title: 'Approval Rules',
+    title: 'Security',
     desc:  'Define rules to auto-approve or auto-reject tool calls — skip repetitive confirmation prompts.',
     color: '#ef4444',
   },
