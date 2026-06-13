@@ -19,24 +19,24 @@ agents/
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `name` | string | yes | — | Display name |
-| `description` | string | yes | — | Used in `list_agents` output and `AGENTS_LIST` directive |
+| `description` | string | yes | — | Used in `list_items` (type=agents) output and `AGENTS_LIST` directive |
 | `inject_memory` | `string[]` | no | `[]` | Paths to files injected into the system prompt as `<memory_file>` blocks |
 | `client` | string \| null | no | null | Pin to a specific named LLM model (must exist in DB) |
 | `scope` | string \| null | no | null | Task domain for AUTO client selection |
 | `strength` | LlmStrength \| null | no | null | Minimum LLM capability for AUTO selection |
-| `allow_tools` | `string[]` \| null | no | null | Whitelist of system tool names visible to this agent. `null` = all tools. MCP tools always pass through regardless. |
-| `is_system_agent` | bool | no | `false` | When `true`, excluded from `list_agents` output and `AGENTS_LIST` injection. The main agent cannot see or call it. Use for background/system agents (e.g. TIC). |
+| `is_system_agent` | bool | no | `false` | When `true`, excluded from `list_items` (type=agents) output and `AGENTS_LIST` injection. The main agent cannot see or call it. Use for background/system agents (e.g. TIC). |
 
-### `allow_tools` filtering
+### Tool restriction
 
-When `allow_tools` is set, only those system tool names are injected into the LLM's tool list. The filter runs in `src/core/session/handler/config.rs` before the LLM call. MCP tools are excluded from filtering — the Approval gate governs them.
+Tool restriction is **not** declared in the agent file (the per-agent `allow_tools` whitelist and the `run_context` default were both removed). Tool visibility and execution-time approval are governed uniformly by **permission groups** bound to **run contexts** (see [approval.md](approval.md)).
 
-```json
-{
-  "name": "TIC",
-  "allow_tools": ["read_file", "list_files", "list_agents", "list_mcp"]
-}
-```
+A run context is assigned to a **session** at runtime, never in `meta.json`:
+
+- explicitly via the UI / API (`set_session_run_context`),
+- via a dedicated config property for system sessions (e.g. TIC's `tic.run_context`),
+- per cron job (`run_context_id`).
+
+When a session has no run context it uses the built-in **"default"** group. The visibility filter (hide tools whose effective action for the session's group is `Deny`) runs in `src/core/session/handler/config.rs` (depth 0) and `agent_dispatch.rs` (sub-agents). MCP tools are excluded from this filter — the Approval gate governs them.
 
 ---
 
@@ -59,7 +59,7 @@ When `allow_tools` is set, only those system tool names are injected into the LL
 | `engineer` | Engineer | `coding` | `high` | | Writes and modifies source files across any file type |
 | `researcher` | Researcher | `general` | `average` | | Multi-step web research; returns a structured summary and saves findings to the scratchpad |
 | `worker` | Worker | — | — | ✓ | Autonomous background task executor for scheduled jobs. Uses sub-agents for complex work. Ephemeral per run. Not conversational — produces a final response captured as completion notification. |
-| `tic` | TIC | — | — | ✓ | Background event processor; calls `notify` when something is worth surfacing. Ephemeral. `notify` is injected as an `InterfaceTool` by `TicManager` — not in `allow_tools`. |
+| `tic` | TIC | — | — | ✓ | Background event processor; calls `notify` when something is worth surfacing. Ephemeral. `notify` is injected as an `InterfaceTool` by `TicManager`. Tool access is restricted via the run context set from the `tic.run_context` property. |
 
 ---
 
@@ -125,7 +125,7 @@ An agent cannot call itself or the `main` agent.
 
 1. Create `agents/<id>/meta.json` with at minimum `name` and `description`.
 2. Create `agents/<id>/AGENT.md` with the system prompt.
-3. Optionally add `allow_tools` to limit visible system tools.
+3. Optionally restrict tools by assigning the agent's sessions a run context (permission group) at runtime — see [approval.md](approval.md).
 4. **No restart required** — agents are discovered on every request.
 
 ---

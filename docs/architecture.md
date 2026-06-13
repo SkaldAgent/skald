@@ -115,7 +115,7 @@ Plugin instances are constructed in `main.rs` as `Vec<Arc<dyn Plugin>>` and inje
 6. `handle_message` acquires `processing: Mutex<()>` (one at a time per session)
 7. `run_agent_turn` loop starts (up to `max_tool_rounds` rounds):
    - Build context: `build_openai_messages()` → system prompt + history + tool results
-   - Apply `allow_tools` filter (if agent has whitelist in `meta.json`)
+   - Apply permission-group visibility filter (hide tools `Deny`d for the session's run-context group)
    - Call LLM: `llm.client.chat_with_tools()`
    - LLM returns `LlmTurn::Message` → send `Done` event, exit loop
    - LLM returns `LlmTurn::ToolCalls` → for each call:

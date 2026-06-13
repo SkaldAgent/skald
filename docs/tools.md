@@ -40,8 +40,8 @@ Every tool declares a `ToolCategory`, used for access-control filtering and audi
 | `Filesystem` | File read/write tools (`read_file`, `write_file`, `edit_file`, …) |
 | `Shell` | `execute_cmd`, `restart` |
 | `Subagent` | `call_agent` (synthetic — not in registry) |
-| `Introspection` | `list_agents`, `list_mcp`, `list_plugins`, `list_cron_jobs`, `image_generate_providers_list` |
-| `Config` | `register_mcp`, `toggle_mcp`, `execute_task` (InterfaceTool, interactive only), `delete_cron_job`, `toggle_cron_job`, `toggle_plugin`, `configure_plugin`, `image_generate`, `set_secret`, `list_secrets` |
+| `Introspection` | `list_items`, `image_generate_providers_list` |
+| `Config` | `register_mcp`, `toggle_item`, `execute_task` (InterfaceTool, interactive only), `delete_cron_job`, `configure_plugin`, `image_generate`, `set_secret`, `list_secrets` |
 
 ---
 
@@ -114,13 +114,13 @@ All tools are registered in `src/main.rs` before `ChatSessionManager` is built.
 
 ---
 
-## Per-Agent Tool Filtering (`allow_tools`)
+## Tool Visibility Filtering (permission groups)
 
-An agent's `meta.json` can declare `allow_tools: ["tool_a", "tool_b"]`. When present, only those system tools are injected into the LLM's tool list for that agent's turn. Absent or `null` means all tools are available.
+Tools are filtered out of the LLM's tool list when the effective approval rule for the session's **permission group** marks them `Deny`. The group comes from the session's run context (or the built-in `"default"` group). This replaces the removed per-agent `allow_tools` whitelist — see [approval.md](approval.md).
 
-**MCP tools are never filtered** — they pass through regardless of `allow_tools`. The Approval gate governs MCP tool execution.
+**MCP tools are never filtered here** — they pass through regardless of the group. The Approval gate governs MCP tool execution.
 
-Filtering happens in `src/core/session/handler/config.rs` after assembling `base_tool_defs` (registry + synthetic tools), before extending with MCP tools.
+Filtering happens in `src/core/session/handler/config.rs` (depth 0) and `agent_dispatch.rs` (sub-agents) after assembling `base_tool_defs` (registry + synthetic tools), before extending with MCP tools.
 
 ---
 
@@ -139,18 +139,13 @@ Filtering happens in `src/core/session/handler/config.rs` after assembling `base
 | `get_ast_outline` | `tools::ast_outline` | Filesystem | No | No |
 | `execute_cmd` | `tools::exec` | Shell | **Always** | No |
 | `restart` | `tools::restart` | Shell | **Always** | No |
-| `list_agents` | `tools::list_agents` | Introspection | No | No |
-| `list_mcp` | `tools::list_mcp` | Introspection | No | No |
-| `list_plugins` | `tools::list_plugins` | Introspection | No | No |
-| `list_cron_jobs` | `tools::cron_jobs` | Introspection | No | No |
+| `list_items` | `tools::list_items` | Introspection | No | Merged listing for `type` ∈ {mcp, plugins, cron, agents} |
 | `register_mcp` | `tools::register_mcp` | Config | No | No |
-| `toggle_mcp` | `tools::toggle_mcp` | Config | No | No |
+| `toggle_item` | `tools::toggle_item` | Config | No | Merged enable/disable for `kind` ∈ {mcp, plugin, cron} |
 | `execute_task` | InterfaceTool (not in registry) | Config | No | Interactive sessions only; `session_id` and `run_context_id` captured in closure at tool-build time; tasks inherit the parent RunContext |
 | `run_subtask` | InterfaceTool (injected in run_job) | — | No | Background sessions only (sync sub-tasks); inherits `run_context_id` from the parent job |
 | `read_agent_result` | synthetic | — | No | Interactive only; always returns not_ready; real delivery is async synthetic message |
 | `delete_cron_job` | `tools::cron_jobs` | Config | No | No |
-| `toggle_cron_job` | `tools::cron_jobs` | Config | No | No |
-| `toggle_plugin` | `tools::toggle_plugin` | Config | No | No |
 | `configure_plugin` | `tools::configure_plugin` | Config | No | No |
 | `set_secret` | `tools::set_secret` | Config | No | No |
 | `list_secrets` | `tools::list_secrets` | Config | No | No |
@@ -222,4 +217,4 @@ Paths starting with `memory/` bypass the approval gate for write tools.
 - The approval rules for a tool change
 - The `Tool` trait gains or loses a method
 - `ToolCategory` gains a new variant
-- The `allow_tools` filtering logic changes
+- The tool visibility (permission-group) filtering logic changes

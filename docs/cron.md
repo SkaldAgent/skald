@@ -85,7 +85,7 @@ Rather than a sliding look-back window, the scheduler uses a **pre-computed `nex
 - Set at job creation (first upcoming fire time after now, in the configured timezone)
 - Advanced to the next fire time after each successful run
 - Cleared when a job is disabled
-- Recalculated from the cron expression when `toggle_cron_job` re-enables a job
+- Recalculated from the cron expression when `toggle_item` (kind=cron) re-enables a job
 
 This means: a tick simply does `WHERE next_run_at <= now` — no expression evaluation in the hot path. A missed tick is automatically covered because `next_run_at` stays in the past until the job actually runs.
 
@@ -215,7 +215,7 @@ Each run always creates a **new ephemeral session**:
 | `is_interactive` | `0` |
 | `is_ephemeral` | `1` |
 | `agent_id` | job's `agent_id` (default `"worker"`) |
-| `run_context_id` | inherited from `scheduled_jobs.run_context_id` (may be null → falls back to agent `meta.json` default) |
+| `run_context_id` | inherited from `scheduled_jobs.run_context_id` (may be null → falls back to the implicit `"default"` group) |
 
 Sessions are not reused across runs. Each run gets a fresh context.
 
@@ -227,10 +227,10 @@ Every task inherits the RunContext of the session that created it. This controls
 
 **Inheritance chain:**
 
-1. The parent interactive session has a `run_context_id` (set by the user, or resolved from the agent's `meta.json` at handler load time)
+1. The parent interactive session has a `run_context_id` (set by the user via the API; `None` otherwise)
 2. `ChatHub::send_message` reads `handler.run_context_id()` **before** building the `execute_task` InterfaceTool and captures the value in the closure
 3. `execute_with_session()` passes `run_context_id` to `add_job / add_job_sync / add_job_async`, which store it in `scheduled_jobs.run_context_id`
-4. `run_job()` stamps the value onto the ephemeral child session via `set_run_context_for_session()` before `get_or_create_handler()` loads the session — the manager's existing resolution path (`session.run_context_id` → `meta.json` → `None`) picks it up automatically
+4. `run_job()` stamps the value onto the ephemeral child session via `set_run_context_for_session()` before `get_or_create_handler()` loads the session — the manager's existing resolution path (`session.run_context_id` → `None`) picks it up automatically
 5. `run_subtask` also captures `run_context_id`, so nested synchronous sub-tasks inherit it transitively
 
 **Override via Tasks UI:** the `PATCH /api/cron/jobs/{id}/run-context` endpoint allows overriding `scheduled_jobs.run_context_id` after creation. The dropdown in the Tasks page calls this endpoint.
@@ -261,9 +261,9 @@ Every execution is recorded in `db::job_runs`. Schema: see [database.md](databas
 | `execute_task` | Interactive sessions (web, telegram) | Create and run a task — cron/sync/async modes; validates cron expression; auto-detects single_run |
 | `run_subtask` | Background sessions only | Run a sync sub-task; blocks until complete; returns result inline |
 | `read_agent_result` | Interactive sessions | Poll stub — always returns `not_ready`; real delivery is via synthetic message |
-| `list_cron_jobs` | All sessions | Returns JSON array of all tasks (id, title, cron, enabled, kind, next_run_at, single_run, last_run_at) |
+| `list_items` (type=cron) | All sessions | Returns JSON array of all tasks (id, title, cron, enabled, kind, next_run_at, single_run, last_run_at) |
 | `delete_cron_job` | All sessions | Permanently deletes task by id |
-| `toggle_cron_job` | All sessions | Enables or disables a task; recalculates next_run_at when re-enabling |
+| `toggle_item` (kind=cron) | All sessions | Enables or disables a task; recalculates next_run_at when re-enabling |
 
 ---
 

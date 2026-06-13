@@ -188,14 +188,14 @@ mcp__whatsapp__whatsapp_send_message(
 ### Disabilita (quando non serve)
 
 ```
-toggle_mcp(name="whatsapp", enabled=false)
+toggle_item(kind="mcp", id="whatsapp", enabled=false)
 restart
 ```
 
 ### Riabilita
 
 ```
-toggle_mcp(name="whatsapp", enabled=true)
+toggle_item(kind="mcp", id="whatsapp", enabled=true)
 restart
 ```
 

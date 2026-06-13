@@ -237,7 +237,7 @@ The Python server (`kokoro_server.py`) is embedded in the crate via `include_str
 ### Setup
 
 ```text
-toggle_plugin("kokoro_tts", true)
+toggle_item(kind="plugin", id="kokoro_tts", enabled=true)
 ```
 
 Optional config:
@@ -274,7 +274,7 @@ Local, on-device TTS using the Orpheus 3B model. Runs a Python subprocess for in
 ```text
 set_secret("HUGGINGFACE_TOKEN", "hf_...")
 configure_plugin("orpheus_tts_3b", {"quantization": "int8", "voice": "tara"})
-toggle_plugin("orpheus_tts_3b", true)
+toggle_item(kind="plugin", id="orpheus_tts_3b", enabled=true)
 ```
 
 **Config:**

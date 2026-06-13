@@ -115,14 +115,14 @@ mcp__gcal__get_event(
 ### Disable (when not needed)
 
 ```bash
-toggle_mcp(name="gcal", enabled=false)
+toggle_item(kind="mcp", id="gcal", enabled=false)
 restart  # required for change to take effect
 ```
 
 ### Re-enable
 
 ```bash
-toggle_mcp(name="gcal", enabled=true)
+toggle_item(kind="mcp", id="gcal", enabled=true)
 restart  # required for change to take effect
 ```
 

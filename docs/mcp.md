@@ -77,7 +77,7 @@ All MCP servers are stored in the **`mcp_servers` table** in SQLite. There is no
 | `env` | stdio only | object | Extra environment variables |
 | `url` | http/sse only | string | Base URL of the remote server |
 | `api_key` | http/sse only | string | API key (sent as `Authorization: Bearer <key>`) |
-| `description` | no | string | Short description of what the server provides (shown in `list_mcp`) |
+| `description` | no | string | Short description of what the server provides (shown in `list_items` type=mcp) |
 | `friendly_name` | no | string | Human-readable display name for UI (e.g. "Google Calendar") |
 
 **Startup timeout**: **`SERVER_START_TIMEOUT_SECS = 120`**. Servers that don't respond within 120 s are recorded as errors.
@@ -86,16 +86,16 @@ All MCP servers are stored in the **`mcp_servers` table** in SQLite. There is no
 
 ## Enabling / Disabling Servers
 
-Use the built-in tool **`toggle_mcp`** to enable or disable an MCP server by name:
+Use the built-in tool **`toggle_item`** (kind=mcp) to enable or disable an MCP server by name:
 
 ```text
-toggle_mcp(name="gcal", enabled=false)  # disable
-toggle_mcp(name="gcal", enabled=true)   # enable
+toggle_item(kind="mcp", id="gcal", enabled=false)  # disable
+toggle_item(kind="mcp", id="gcal", enabled=true)   # enable
 ```
 
 **Important:** Toggling updates the `enabled` flag in the database, but **a restart is required** for the change to take effect on running servers. Disabled servers won't connect on next restart.
 
-Use `list_mcp` to see current server names and statuses.
+Use `list_items` (type=mcp) to see current server names and statuses.
 
 ---
 
@@ -124,7 +124,7 @@ register_mcp(name="gcal", transport="stdio", command="python3", args=["scripts/g
 **Disable when not needed:**
 
 ```text
-toggle_mcp(name="gcal", enabled=false)
+toggle_item(kind="mcp", id="gcal", enabled=false)
 restart
 ```
 
@@ -277,7 +277,7 @@ Sub-agents that don't include `<!-- MCP_LIST -->` in their `AGENT.md` receive no
 - The tool naming convention changes
 - `SERVER_START_TIMEOUT_SECS` changes
 - `register_mcp` tool parameters change (schema, required fields, description, friendly_name)
-- `list_mcp` return format changes (McpServerInfo fields)
+- `list_items` (type=mcp) return format changes (McpServerInfo fields)
 - A new notification source is implemented
 - Lazy loading logic changes (`build_agent_config`, `dispatch_sub_agent`, `show_mcp_tools`, grant tables)
 - `ClientMessage` loses or gains fields relevant to MCP

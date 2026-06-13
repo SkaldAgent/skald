@@ -160,14 +160,14 @@ Both `in_reply_to` and `thread_id` are optional and independent — use either o
 ### Disable (when not needed)
 
 ```bash
-toggle_mcp(name="gmail", enabled=false)
+toggle_item(kind="mcp", id="gmail", enabled=false)
 restart  # required for change to take effect
 ```
 
 ### Re-enable
 
 ```bash
-toggle_mcp(name="gmail", enabled=true)
+toggle_item(kind="mcp", id="gmail", enabled=true)
 restart  # required for change to take effect
 ```
 

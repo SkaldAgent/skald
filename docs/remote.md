@@ -74,7 +74,7 @@ Config is persisted automatically and survives restarts.
 Requires Tailscale already installed and logged in on the host machine.
 
 ```
-1. toggle_plugin "remote_connectivity" true
+1. toggle_item(kind="plugin", id="remote_connectivity", enabled=true)
 2. restart
 → On next boot: plugin reads IP from tailscale ip -4, mesh server starts, app reachable at <ts-ip>:3000
 ```
@@ -85,14 +85,14 @@ No auth key needed — the system daemon is already authenticated.
 
 ```
 1. configure_plugin "remote_connectivity" {"provider":"tailscale","auth_key":"tskey-auth-...","hostname":"personal-agent"}
-2. toggle_plugin "remote_connectivity" true
+2. toggle_item(kind="plugin", id="remote_connectivity", enabled=true)
 3. restart
 → On next boot: embedded tailscale connects, mesh server starts, app reachable at <ts-ip>:3000
 ```
 
 After first setup, the plugin auto-starts on every boot (persisted `enabled=true` in DB).
 
-To check status: `list_plugins` → look for `remote_connectivity`, check `running` and `runtime_status.ip`.
+To check status: `list_items` (type=plugins) → look for `remote_connectivity`, check `running` and `runtime_status.ip`.
 
 ---
 

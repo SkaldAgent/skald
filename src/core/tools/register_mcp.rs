@@ -64,7 +64,7 @@ impl Tool for RegisterMcp {
                 },
                 "description": {
                     "type": "string",
-                    "description": "A short description of what this MCP server provides (shown in list_mcp)."
+                    "description": "A short description of what this MCP server provides (shown in list_items type=mcp)."
                 },
                 "friendly_name": {
                     "type": "string",

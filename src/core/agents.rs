@@ -19,13 +19,9 @@ struct RawMeta {
     #[serde(default)]
     strength:      Option<LlmStrength>,
     #[serde(default)]
-    allow_tools:   Option<Vec<String>>,
-    #[serde(default)]
     is_system_agent: bool,
     #[serde(default)]
     icon:          Option<String>,
-    #[serde(default)]
-    run_context:   Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,13 +43,8 @@ pub struct AgentMeta {
     /// AUTO selection skips clients weaker than this threshold.
     #[serde(default)]
     pub strength:      Option<LlmStrength>,
-    /// Whitelist of system tool names this agent may use.
-    /// When present, only these tools (plus all MCP tools) are passed to the LLM.
-    /// When absent, all tools are available (default behaviour).
-    #[serde(default)]
-    pub allow_tools:   Option<Vec<String>>,
     /// When true, this is a background system agent (e.g. TIC).
-    /// It is excluded from `list_agents` output and the AGENTS_LIST injection,
+    /// It is excluded from `list_items` (type=agents) output and the AGENTS_LIST injection,
     /// so the main agent cannot see or call it.
     #[serde(default)]
     pub is_system_agent: bool,
@@ -61,10 +52,6 @@ pub struct AgentMeta {
     /// Defaults to None if no icon is configured.
     #[serde(default)]
     pub icon: Option<String>,
-    /// Default RunContext id for sessions started with this agent.
-    /// When `None`, the session uses the built-in "default" run_context.
-    #[serde(default)]
-    pub run_context: Option<String>,
 }
 
 /// Scan `agents/` and return metadata for every agent that has both
@@ -106,10 +93,8 @@ pub fn discover() -> Result<Vec<AgentMeta>> {
             client:          raw.client,
             scope:           raw.scope,
             strength:        raw.strength,
-            allow_tools:     raw.allow_tools,
             is_system_agent: raw.is_system_agent,
             icon:            raw.icon,
-            run_context:     raw.run_context,
         };
         trace!(agent_id = %meta.id, client = ?meta.client, scope = ?meta.scope, strength = ?meta.strength, "agent meta loaded");
         debug!(agent_id = %meta.id, name = %meta.name, "agent discovered");
@@ -137,10 +122,8 @@ pub fn load_meta(agent_id: &str) -> Result<AgentMeta> {
         client:          raw.client,
         scope:           raw.scope,
         strength:        raw.strength,
-        allow_tools:     raw.allow_tools,
         is_system_agent: raw.is_system_agent,
         icon:            raw.icon,
-        run_context:     raw.run_context,
     })
 }
 

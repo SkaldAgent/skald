@@ -14,7 +14,7 @@ impl Tool for ConfigurePlugin {
 
     fn description(&self) -> &str {
         "Update the configuration of a plugin and restart it immediately. \
-         Use `list_plugins` to see available plugin ids and their config schemas. \
+         Use `list_items` (type=plugins) to see available plugin ids and their config schemas. \
          The config object must match the plugin's schema — extra keys are ignored."
     }
 

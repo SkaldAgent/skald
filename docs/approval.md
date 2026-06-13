@@ -417,7 +417,7 @@ The endpoint returns `AllTools`:
 | `src/core/run_context/mod.rs` | `RunContextManager`: CRUD for run contexts and permission groups; `duplicate_group` (atomic); `check_tool_visibility` (delegates to ApprovalManager with group resolution). Takes `Arc<ApprovalManager>` in constructor. |
 | `src/core/db/approval_rules.rs` | SQLite queries: list, insert, update, delete |
 | `src/core/db/mod.rs` | `approval_rules` table creation |
-| `src/core/session/handler/config.rs` | After `allow_tools` filter: loads rules once with `list_for_group`, calls `approval.is_tool_visible` to filter `base_tool_defs` for the parent agent |
+| `src/core/session/handler/config.rs` | Loads rules once with `list_for_group`, calls `approval.is_tool_visible` to filter `base_tool_defs` for the parent agent |
 | `src/core/session/handler/agent_dispatch.rs` | Same visibility filter applied to sub-agent `base_tool_defs` after sub-agent-only tools are added |
 | `src/core/session/handler/llm_loop.rs` | Resolves `category` via `ToolRegistry::category_of`, calls `approval.check(session_id, category, ...)` + `approval.register()` |
 | `src/core/session/handler/resume.rs` | Same `check()` call as `llm_loop.rs` for pending tool re-gating |

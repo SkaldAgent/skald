@@ -193,20 +193,18 @@ impl Skald {
         tool_registry.register(super::tools::exec::ExecuteCmd);
         tool_registry.register(super::tools::read_notification::ReadNotification);
         tool_registry.register(super::tools::restart::Restart);
-        tool_registry.register(super::tools::list_agents::ListAgents);
-        tool_registry.register(super::tools::list_mcp::ListMcp::new(Arc::clone(&mcp)));
+        // Unified listing / toggling across mcp, plugins, cron (+ agents for list).
+        tool_registry.register(super::tools::list_items::ListItems::new(
+            Arc::clone(&mcp), Arc::clone(&plugin_manager), Arc::clone(&cron)));
+        tool_registry.register(super::tools::toggle_item::ToggleItem::new(
+            Arc::clone(&mcp), Arc::clone(&plugin_manager), Arc::clone(&cron)));
         tool_registry.register(super::tools::register_mcp::RegisterMcp::new(Arc::clone(&mcp)));
-        tool_registry.register(super::tools::toggle_mcp::ToggleMcp::new(Arc::clone(&mcp)));
-        tool_registry.register(super::tools::cron_jobs::ListCronJobs(Arc::clone(&cron)));
         // execute_task is NOT in the global registry — it is injected as an
         // InterfaceTool per interactive session by ChatHub::send_message so that
         // the session_id is available in the closure for async result delivery.
         tool_registry.register(super::tools::cron_jobs::DeleteCronJob(Arc::clone(&cron)));
-        tool_registry.register(super::tools::cron_jobs::ToggleCronJob(Arc::clone(&cron)));
-        tool_registry.register(super::tools::list_plugins::ListPlugins(Arc::clone(&plugin_manager)));
         tool_registry.register(super::tools::set_secret::SetSecret(Arc::clone(&secrets)));
         tool_registry.register(super::tools::list_secrets::ListSecrets(Arc::clone(&secrets)));
-        tool_registry.register(super::tools::toggle_plugin::TogglePlugin(Arc::clone(&plugin_manager)));
         tool_registry.register(super::tools::configure_plugin::ConfigurePlugin(Arc::clone(&plugin_manager)));
         debug!("tool registry built");
 

@@ -79,14 +79,6 @@ impl ChatSessionHandler {
             }));
         }
 
-        // Per-agent allow_tools whitelist (from agent meta.json).
-        if let Some(allowed) = meta.as_ref().and_then(|m| m.allow_tools.as_ref()) {
-            base_tool_defs.retain(|def| {
-                let name = def["function"]["name"].as_str().unwrap_or("");
-                allowed.iter().any(|a| a == name)
-            });
-        }
-
         // Approval-rules visibility filter: hide tools whose effective action for
         // this session's permission group is Deny. Rules are loaded once and applied
         // synchronously; the execution-time gate in ApprovalManager remains as a

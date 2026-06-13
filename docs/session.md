@@ -6,9 +6,8 @@ Each session can have an active **RunContext** that controls which permission gr
 
 Resolution order at handler creation (`get_or_create_handler`):
 
-1. `chat_sessions.run_context_id` — explicit assignment persisted in DB
-2. `agent_meta.run_context` — default from the agent's `meta.json` (e.g. `"run_context": "cron_default"`)
-3. `None` — falls back to the implicit `"default"` group
+1. `chat_sessions.run_context_id` — explicit per-session assignment persisted in DB (set via API, per cron job, or by a run-context config property like TIC's `tic.run_context`)
+2. `None` — falls back to the implicit `"default"` group
 
 The resolved `RunContextRow` is stored in `ChatSessionHandler::run_context` (`RwLock<Option<RunContextRow>>`). Its `tool_group_id` is extracted on every tool call and passed to `ApprovalManager::check()`.
 

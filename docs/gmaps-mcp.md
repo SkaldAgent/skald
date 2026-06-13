@@ -141,8 +141,8 @@ mcp__gmaps__maps_distance_matrix(
 ## Enable / Disable
 
 ```
-toggle_mcp(name="gmaps", enabled=false)   # disable
-toggle_mcp(name="gmaps", enabled=true)    # re-enable
+toggle_item(kind="mcp", id="gmaps", enabled=false)   # disable
+toggle_item(kind="mcp", id="gmaps", enabled=true)    # re-enable
 restart                                    # required for changes to take effect
 ```
 

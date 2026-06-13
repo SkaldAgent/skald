@@ -273,8 +273,8 @@ export class AgentProfilesPage extends LightElement {
               that group's rules are evaluated first — the <strong>Default</strong> group is always the fallback.
             </p>
             <p class="mb-0">
-              To assign a default profile to an agent, set <code>"run_context": "&lt;profile-id&gt;"</code>
-              in the agent's <code>meta.json</code>.
+              A profile is assigned to a <strong>session</strong> at runtime — per scheduled job
+              (in <strong>Cron Jobs</strong>), or via a run-context config property for system agents (e.g. TIC).
               Sessions without a profile always use the <strong>Default</strong> group rules.
             </p>
           </div>

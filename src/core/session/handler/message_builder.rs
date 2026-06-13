@@ -419,8 +419,16 @@ fn summarize_tool_result(tool_name: &str, arguments: Option<&str>, result: &str)
             format!("[{tool_name}] {path} ({char_count} chars)")
         }
 
-        "list_agents" => {
-            format!("[list_agents] listed agents ({char_count} chars)")
+        "list_items" => {
+            let kind = arg_str(&args, "type");
+            format!("[list_items] {kind} ({char_count} chars)")
+        }
+
+        "toggle_item" => {
+            let kind    = arg_str(&args, "kind");
+            let id      = arg_str(&args, "id");
+            let enabled = args["enabled"].as_bool().unwrap_or(false);
+            format!("[toggle_item] {kind} '{id}' → {}", if enabled { "enabled" } else { "disabled" })
         }
 
         tn::READ_NOTIFICATION => {

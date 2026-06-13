@@ -22,7 +22,7 @@ use tracing::{error, info, warn};
 use crate::core::db::plugins as db;
 use crate::core::skald::Skald;
 
-// ── Public plugin info (returned by list_plugins tool and REST API) ───────────
+// ── Public plugin info (returned by list_items tool and REST API) ─────────────
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PluginInfo {

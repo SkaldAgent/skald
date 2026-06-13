@@ -4,7 +4,6 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 use tokio::sync::Mutex;
 
-use crate::core::agents;
 use crate::core::approval::ApprovalManager;
 use crate::core::chat_event_bus::ChatEventBus;
 use crate::core::clarification::ClarificationManager;
@@ -121,11 +120,9 @@ impl ChatSessionManager {
             .await?
             .ok_or_else(|| anyhow::anyhow!("session {session_id} not found"))?;
 
-        // Resolve run_context: session row > agent meta.json default > None (falls back to "default" implicitly)
-        let run_context_id: Option<String> = session.run_context_id.clone().or_else(|| {
-            agents::load_meta(&session.agent_id).ok()
-                .and_then(|m| m.run_context)
-        });
+        // Resolve run_context: explicit per-session assignment only
+        // (None falls back to the "default" group implicitly).
+        let run_context_id: Option<String> = session.run_context_id.clone();
         let run_context = if let Some(ref rc_id) = run_context_id {
             self.run_context_manager.get_context(rc_id).await.unwrap_or(None)
         } else {

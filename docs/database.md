@@ -253,7 +253,7 @@ See [tts-providers.md](tts-providers.md).
 | `run_context_id` | TEXT | nullable; the RunContext profile inherited from the creating session (or overridden via the Tasks UI); applied to the ephemeral child session at run time |
 | `created_at` | TEXT | NOT NULL |
 
-**`next_run_at`** is set at job creation (first upcoming fire time after now), advanced after each successful run, cleared on disable, and recalculated by `toggle_cron_job` when re-enabling. `list_due(pool, now)` queries `WHERE kind='cron' AND enabled=1 AND next_run_at <= now AND running_session_id IS NULL`. Sync and async tasks run immediately on creation and are never picked up by the scheduler tick.
+**`next_run_at`** is set at job creation (first upcoming fire time after now), advanced after each successful run, cleared on disable, and recalculated by `toggle_item` (kind=cron) when re-enabling. `list_due(pool, now)` queries `WHERE kind='cron' AND enabled=1 AND next_run_at <= now AND running_session_id IS NULL`. Sync and async tasks run immediately on creation and are never picked up by the scheduler tick.
 
 **`running_session_id`** is set by `set_running()` before `handle_message()` starts and cleared by `finish_run()` after the run completes. At startup, `recover_interrupted()` queries `list_interrupted()` and re-spawns any jobs still in-flight from a crash.
 

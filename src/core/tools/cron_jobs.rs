@@ -6,45 +6,6 @@ use serde_json::{Value, json};
 use crate::core::cron::TaskManager;
 use crate::core::tools::Tool;
 
-// ── list_cron_jobs ────────────────────────────────────────────────────────────
-
-pub struct ListCronJobs(pub Arc<TaskManager>);
-
-impl Tool for ListCronJobs {
-    fn name(&self) -> &str { "list_cron_jobs" }
-    fn category(&self) -> crate::core::tools::ToolCategory { crate::core::tools::ToolCategory::Introspection }
-
-    fn description(&self) -> &str {
-        "List all scheduled tasks and cron jobs. Returns id, title, description, cron expression, \
-         agent_id, enabled status, single_run flag, kind (cron, sync, or async), last_run_at, and next_run_at for each."
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({ "type": "object", "properties": {} })
-    }
-
-    fn execute(&self, _args: Value) -> Result<String> {
-        let jobs = self.0.list_jobs()?;
-        if jobs.is_empty() {
-            return Ok("No tasks configured.".into());
-        }
-        let arr: Vec<Value> = jobs.iter().map(|j| json!({
-            "id":          j.id,
-            "title":       j.title,
-            "description": j.description,
-            "cron":        j.cron,
-            "agent_id":    j.agent_id,
-            "enabled":     j.enabled,
-            "single_run":  j.single_run,
-            "kind":        j.kind,
-            "last_run_at": j.last_run_at,
-            "next_run_at": j.next_run_at,
-            "created_at":  j.created_at,
-        })).collect();
-        Ok(serde_json::to_string_pretty(&arr)?)
-    }
-}
-
 // ── execute_task ──────────────────────────────────────────────────────────────
 //
 // This struct is NOT registered in the global ToolRegistry. Instead it is
@@ -186,7 +147,7 @@ impl Tool for DeleteCronJob {
             "type": "object",
             "required": ["id"],
             "properties": {
-                "id": { "type": "integer", "description": "Task id from list_cron_jobs" }
+                "id": { "type": "integer", "description": "Task id from list_items (type=cron)" }
             }
         })
     }
@@ -195,41 +156,6 @@ impl Tool for DeleteCronJob {
         let id = args["id"].as_i64().ok_or_else(|| anyhow::anyhow!("id must be an integer"))?;
         if self.0.delete_job(id)? {
             Ok(format!("Task {id} deleted."))
-        } else {
-            Ok(format!("No task with id {id}."))
-        }
-    }
-}
-
-// ── toggle_cron_job ───────────────────────────────────────────────────────────
-
-pub struct ToggleCronJob(pub Arc<TaskManager>);
-
-impl Tool for ToggleCronJob {
-    fn name(&self) -> &str { "toggle_cron_job" }
-    fn category(&self) -> crate::core::tools::ToolCategory { crate::core::tools::ToolCategory::Config }
-
-    fn description(&self) -> &str {
-        "Enable or disable a cron job without deleting it. \
-         Re-enabling recalculates next_run_at from the cron expression."
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "required": ["id", "enabled"],
-            "properties": {
-                "id":      { "type": "integer", "description": "Task id from list_cron_jobs" },
-                "enabled": { "type": "boolean", "description": "true to enable, false to disable" }
-            }
-        })
-    }
-
-    fn execute(&self, args: Value) -> Result<String> {
-        let id      = args["id"].as_i64().ok_or_else(|| anyhow::anyhow!("id must be an integer"))?;
-        let enabled = args["enabled"].as_bool().ok_or_else(|| anyhow::anyhow!("enabled must be boolean"))?;
-        if self.0.toggle_job(id, enabled)? {
-            Ok(format!("Task {id} {}.", if enabled { "enabled" } else { "disabled" }))
         } else {
             Ok(format!("No task with id {id}."))
         }

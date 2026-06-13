@@ -48,7 +48,7 @@ main.rs:
 
 Skald::new(core_cfg, plugins):
   PluginManager::new(pool) → register_arc(plugin) for each plugin → Arc::new(plugin_manager)
-  → build tool_registry (list_plugins / toggle_plugin reference Arc<PluginManager>)
+  → build tool_registry (list_items / toggle_item reference Arc<PluginManager>)
   → Arc::new(Skald { … })
   → plugin_manager.set_skald(Arc::clone(&skald))
 
@@ -60,7 +60,7 @@ WebFrontend::start():
 
 ### Enabled/disabled persistence
 
-Plugin state and configuration are stored exclusively in the `plugins` SQLite table (`id TEXT PK, enabled INTEGER, config TEXT`). `config.yml` has no plugin section — plugins are configured at runtime via the REST API (`PUT /api/plugins/{id}`) or by asking the agent to use `toggle_plugin`.
+Plugin state and configuration are stored exclusively in the `plugins` SQLite table (`id TEXT PK, enabled INTEGER, config TEXT`). `config.yml` has no plugin section — plugins are configured at runtime via the REST API (`PUT /api/plugins/{id}`) or by asking the agent to use `toggle_item` (kind=plugin).
 
 ---
 
@@ -80,8 +80,8 @@ Plugins live in independent workspace crates (see [workspace-crates.md](workspac
 
 | Tool | Description |
 |---|---|
-| `list_plugins` | All plugins with enabled + running status |
-| `toggle_plugin` | Enable/disable a plugin by id (immediate + persisted) |
+| `list_items` (type=plugins) | All plugins with enabled + running status |
+| `toggle_item` (kind=plugin) | Enable/disable a plugin by id (immediate + persisted) |
 | `configure_plugin` | Update a plugin's config JSON and restart it immediately |
 
 ---
