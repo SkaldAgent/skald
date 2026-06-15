@@ -147,6 +147,7 @@ Cancel message (abort current turn): `{"type":"cancel"}`
 | `web/components/approval-rules.js` | `<approval-rules-page>` | Per-group rules view: rule matrix, override/low-priority panels, default action bar; shows when `approval-navigate` fires with a non-null group |
 | `web/components/llm-requests.js` | `<llm-requests-page>` | LLM request log viewer with filterable table, pagination, clickable rows that drill into detail view (`#llm-requests/<id>`) |
 | `web/components/llm-request-detail.js` | `<llm-request-detail>` | LLM request detail: stat bar, system prompt, conversation messages, tool definitions, response — with collapsible sections |
+| `web/components/session-detail.js` | `<session-detail-page>` | Read-only debug view of any session. Navigate to `#session/{id}` to load. Shows full message tree with tool calls, sub-agent frames, synthetic user messages, and collapsible reasoning blocks. Not linked from the sidebar — accessed by typing the hash directly. |
 
 All components extend `LightElement` from `web/lib/base.js` (Lit-based).
 

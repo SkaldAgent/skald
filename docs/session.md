@@ -14,6 +14,7 @@ The resolved `RunContextRow` is stored in `ChatSessionHandler::run_context` (`Rw
 ### Runtime Update
 
 `PUT /api/sessions/:id/run-context` with body `{ "run_context_id": "cron_restrictive" | null }`:
+
 - Updates `chat_sessions.run_context_id` in DB
 - If the handler is live in memory, calls `handler.set_run_context()` immediately (no restart needed)
 
@@ -69,6 +70,50 @@ Private helper called by both `handle_message` and `resume_turn` to avoid duplic
 12. On `Exhausted`: send `Error` event (tool round limit exceeded). No event bus publication.
 
 `is_synthetic` is a parameter of `handle_message`. It is `true` for TicManager ticks (system-generated messages injected as user turns), `false` for all real user input. Additionally, `ChatHub::notification_consumer` injects synthetic **Assistant** messages with `is_synthetic = true` containing the `read_notification` tool call and reasoning trace — these are not user turns, but share the same flag for UI filtering. The flag is **persisted** to `chat_history.is_synthetic` so that the UI history API (`GET /api/sessions/:id`) can filter those rows out on page reload — synthetic messages never appear in the conversation visible to the user. They are still included in the LLM context (via `build_openai_messages`) so the assistant can see what it previously said in response to a notification.
+
+### Session detail debug view
+
+`GET /api/sessions/:id` returns the full session tree in a debug-friendly format. Unlike the live message API, this endpoint:
+
+- **Includes** synthetic user messages (marked `is_synthetic: true` in the JSON)
+- **Includes** `reasoning_content` on assistant / thinking messages
+- Returns session metadata (`source`, `agent_id`, `is_interactive`, `is_ephemeral`, `created_at`)
+
+Response shape:
+
+```json
+{
+  "session": { "id": 42, "source": "tic", "agent_id": "main", "is_interactive": false, "is_ephemeral": true, "created_at": "…" },
+  "messages": [
+    { "kind": "user",      "content": "…", "is_synthetic": true,  "created_at": "…" },
+    { "kind": "thinking",  "content": "…", "reasoning": "…|null", "created_at": "…", "input_tokens": N, "output_tokens": N },
+    { "kind": "assistant", "content": "…", "reasoning": "…|null", "created_at": "…", "input_tokens": N, "output_tokens": N },
+    { "kind": "tool",      "name": "…", "arguments": {}, "status": "done|error|pending", "result": "…" },
+    { "kind": "agent",     "agent_id": "…", "depth": N },
+    { "kind": "agent_end", "agent_id": "…", "depth": N }
+  ]
+}
+```
+
+The frontend `<session-detail-page>` renders this at hash `#session/{id}`. The detail page includes a **Back** button that calls `history.back()`. The page is not linked directly in the sidebar but is fully functional when the hash is set directly, or when navigated to from the TIC Sessions page.
+
+### Session list API
+
+`GET /api/sessions?source=tic&page=1&per_page=20` — paginated list of sessions, optionally filtered by source.
+
+Response shape:
+
+```json
+{
+  "items": [
+    { "id": 42, "source": "tic", "agent_id": "main", "is_ephemeral": true, "is_interactive": false,
+      "created_at": "…", "message_count": 7, "last_message_at": "…" }
+  ],
+  "total": 100, "page": 1, "per_page": 20
+}
+```
+
+The `<tic-sessions-page>` component renders this at hash `#tic` (linked from the sidebar under **TIC Sessions**). Each row is clickable and navigates to `#session/{id}`.
 
 ---
 

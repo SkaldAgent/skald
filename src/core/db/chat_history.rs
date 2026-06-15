@@ -42,6 +42,7 @@ pub struct ChatMessage {
     /// Chain-of-thought from reasoning models (e.g. DeepSeek thinking mode).
     /// Null for all other providers.
     pub reasoning_content: Option<String>,
+    pub created_at:        Option<String>,
 }
 
 pub async fn append(
@@ -101,8 +102,8 @@ pub async fn for_stack(
     pool:             &SqlitePool,
     session_stack_id: i64,
 ) -> anyhow::Result<Vec<ChatMessage>> {
-    let rows = sqlx::query_as::<_, (i64, String, String, String, Option<i64>, Option<i64>, bool, Option<String>)>(
-        "SELECT id, role, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content
+    let rows = sqlx::query_as::<_, (i64, String, String, String, Option<i64>, Option<i64>, bool, Option<String>, Option<String>)>(
+        "SELECT id, role, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content, created_at
          FROM   chat_history
          WHERE  session_stack_id = ? AND status = 'ok'
          ORDER  BY id ASC",
@@ -112,8 +113,8 @@ pub async fn for_stack(
     .await?;
 
     rows.into_iter()
-        .map(|(id, role, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content)| {
-            Ok(ChatMessage { id, role: Role::from_str(&role)?, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content })
+        .map(|(id, role, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content, created_at)| {
+            Ok(ChatMessage { id, role: Role::from_str(&role)?, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content, created_at })
         })
         .collect()
 }
@@ -124,8 +125,8 @@ pub async fn for_stack_all(
     pool:             &SqlitePool,
     session_stack_id: i64,
 ) -> anyhow::Result<Vec<ChatMessage>> {
-    let rows = sqlx::query_as::<_, (i64, String, String, String, Option<i64>, Option<i64>, bool, Option<String>)>(
-        "SELECT id, role, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content
+    let rows = sqlx::query_as::<_, (i64, String, String, String, Option<i64>, Option<i64>, bool, Option<String>, Option<String>)>(
+        "SELECT id, role, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content, created_at
          FROM   chat_history
          WHERE  session_stack_id = ?
          ORDER  BY id ASC",
@@ -135,8 +136,8 @@ pub async fn for_stack_all(
     .await?;
 
     rows.into_iter()
-        .map(|(id, role, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content)| {
-            Ok(ChatMessage { id, role: Role::from_str(&role)?, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content })
+        .map(|(id, role, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content, created_at)| {
+            Ok(ChatMessage { id, role: Role::from_str(&role)?, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content, created_at })
         })
         .collect()
 }
@@ -158,8 +159,8 @@ pub async fn for_stack_since(
     session_stack_id: i64,
     after_id:         i64,
 ) -> anyhow::Result<Vec<ChatMessage>> {
-    let rows = sqlx::query_as::<_, (i64, String, String, String, Option<i64>, Option<i64>, bool, Option<String>)>(
-        "SELECT id, role, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content
+    let rows = sqlx::query_as::<_, (i64, String, String, String, Option<i64>, Option<i64>, bool, Option<String>, Option<String>)>(
+        "SELECT id, role, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content, created_at
          FROM   chat_history
          WHERE  session_stack_id = ? AND status = 'ok' AND id > ?
          ORDER  BY id ASC",
@@ -170,8 +171,8 @@ pub async fn for_stack_since(
     .await?;
 
     rows.into_iter()
-        .map(|(id, role, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content)| {
-            Ok(ChatMessage { id, role: Role::from_str(&role)?, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content })
+        .map(|(id, role, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content, created_at)| {
+            Ok(ChatMessage { id, role: Role::from_str(&role)?, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content, created_at })
         })
         .collect()
 }
@@ -182,8 +183,8 @@ pub async fn last_message_for_stack(
     pool:             &SqlitePool,
     session_stack_id: i64,
 ) -> anyhow::Result<Option<ChatMessage>> {
-    let row = sqlx::query_as::<_, (i64, String, String, String, Option<i64>, Option<i64>, bool, Option<String>)>(
-        "SELECT id, role, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content
+    let row = sqlx::query_as::<_, (i64, String, String, String, Option<i64>, Option<i64>, bool, Option<String>, Option<String>)>(
+        "SELECT id, role, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content, created_at
          FROM   chat_history
          WHERE  session_stack_id = ? AND status = 'ok'
          ORDER  BY id DESC
@@ -193,8 +194,8 @@ pub async fn last_message_for_stack(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|(id, role, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content)| {
-        ChatMessage { id, role: Role::from_str(&role).unwrap_or(Role::User), content, status, input_tokens, output_tokens, is_synthetic, reasoning_content }
+    Ok(row.map(|(id, role, content, status, input_tokens, output_tokens, is_synthetic, reasoning_content, created_at)| {
+        ChatMessage { id, role: Role::from_str(&role).unwrap_or(Role::User), content, status, input_tokens, output_tokens, is_synthetic, reasoning_content, created_at }
     }))
 }
 
