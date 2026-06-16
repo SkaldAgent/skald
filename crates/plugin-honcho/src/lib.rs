@@ -51,8 +51,8 @@ use core_api::plugin::PluginContext;
 use core_api::tool::{Tool, ToolCategory};
 use honcho_client::HonchoClient;
 use honcho_client::models::{
-    MessageCreate, PeerCreate, PeerRepresentationGet, SessionCreate, SessionPeerConfig,
-    WorkspaceCreate,
+    ConclusionCreate, MessageCreate, PeerCreate, PeerRepresentationGet,
+    SessionCreate, SessionPeerConfig, WorkspaceCreate,
 };
 
 const PLUGIN_ID: &str = "honcho";
@@ -243,9 +243,25 @@ impl Memory for HonchoMemory {
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         match self.inner() {
-            Some(HonchoInner { client, workspace_id }) => {
-                vec![Arc::new(MemoryQueryTool { client, workspace_id })]
-            }
+            Some(HonchoInner { client, workspace_id }) => vec![
+                Arc::new(MemoryQueryTool {
+                    client:       Arc::clone(&client),
+                    workspace_id: workspace_id.clone(),
+                }),
+                Arc::new(HonchoProfileTool {
+                    client:       Arc::clone(&client),
+                    workspace_id: workspace_id.clone(),
+                }),
+                Arc::new(HonchoSearchTool {
+                    client:       Arc::clone(&client),
+                    workspace_id: workspace_id.clone(),
+                }),
+                Arc::new(HonchoContextTool {
+                    client:       Arc::clone(&client),
+                    workspace_id: workspace_id.clone(),
+                }),
+                Arc::new(HonchoConcludeTool { client, workspace_id }),
+            ],
             None => vec![],
         }
     }
@@ -336,6 +352,300 @@ impl Tool for MemoryQueryTool {
 
                 Ok(text)
             })
+        })
+    }
+}
+
+/// Bridge a synchronous `Tool::execute` to an async Honcho call.
+///
+/// `block_in_place` yields the worker thread back to the Tokio scheduler while
+/// the nested `block_on` drives the future to completion — safe inside the
+/// existing multi-thread runtime without spawning a new thread. Shared by all
+/// Honcho tools.
+fn run_blocking<F, T>(fut: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+}
+
+// ── HonchoProfileTool ─────────────────────────────────────────────────────────
+
+/// Reads or overwrites the user's *peer card* — a curated list of key facts
+/// (name, role, preferences, communication style) maintained by Honcho.
+struct HonchoProfileTool {
+    client:       Arc<HonchoClient>,
+    workspace_id: String,
+}
+
+impl Tool for HonchoProfileTool {
+    fn name(&self) -> &str { "honcho_profile" }
+
+    fn description(&self) -> &str {
+        "Read or update the peer card for the user in Honcho — a curated list of \
+         key facts (name, role, preferences, communication style). Omit `card` to \
+         read the current card; pass `card` as a list of fact strings to overwrite it."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "card": {
+                    "type":        "array",
+                    "items":       { "type": "string" },
+                    "description": "New peer card as a list of fact strings. \
+                                    Omit to read the current card."
+                }
+            }
+        })
+    }
+
+    fn category(&self) -> ToolCategory { ToolCategory::Introspection }
+
+    fn execute(&self, args: Value) -> anyhow::Result<String> {
+        let client       = Arc::clone(&self.client);
+        let workspace_id = self.workspace_id.clone();
+        let card_update  = args.get("card").and_then(|v| v.as_array()).cloned();
+
+        run_blocking(async move {
+            match card_update {
+                Some(facts) => {
+                    client
+                        .set_peer_card(&workspace_id, PEER_USER, None, json!(facts))
+                        .await
+                        .map_err(|e| anyhow::anyhow!("honcho_profile: {e}"))?;
+                    Ok(format!("Peer card updated ({} facts).", facts.len()))
+                }
+                None => {
+                    let card = client
+                        .get_peer_card(&workspace_id, PEER_USER, None)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("honcho_profile: {e}"))?;
+                    Ok(serde_json::to_string_pretty(&card)
+                        .unwrap_or_else(|_| card.to_string()))
+                }
+            }
+        })
+    }
+}
+
+// ── HonchoSearchTool ──────────────────────────────────────────────────────────
+
+/// Semantic search over the conclusions Honcho has derived about the user.
+/// Returns raw ranked excerpts — no LLM synthesis — including their IDs so the
+/// model can later delete a specific one via `honcho_conclude`.
+struct HonchoSearchTool {
+    client:       Arc<HonchoClient>,
+    workspace_id: String,
+}
+
+impl Tool for HonchoSearchTool {
+    fn name(&self) -> &str { "honcho_search" }
+
+    fn description(&self) -> &str {
+        "Semantic search over facts Honcho has derived about the user. Returns raw \
+         excerpts ranked by relevance to `query` — no LLM synthesis. Faster and \
+         cheaper than memory_query. Each fact includes its id (usable with \
+         honcho_conclude) when available."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type":        "string",
+                    "description": "What to search for in Honcho's memory about the user."
+                }
+            },
+            "required": ["query"]
+        })
+    }
+
+    fn category(&self) -> ToolCategory { ToolCategory::Introspection }
+
+    fn execute(&self, args: Value) -> anyhow::Result<String> {
+        let query = args["query"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("honcho_search: missing 'query' argument"))?
+            .to_string();
+
+        let client       = Arc::clone(&self.client);
+        let workspace_id = self.workspace_id.clone();
+
+        // Honcho's `conclusions/query` endpoint requires observer/observed
+        // filters; the proven path (shared with the read-path) is `peer_context`
+        // with a `search_query`, which ranks the user's conclusions by relevance.
+        run_blocking(async move {
+            let ctx = client
+                .peer_context(
+                    &workspace_id,
+                    PEER_USER,
+                    &PeerRepresentationGet {
+                        search_query:  Some(query),
+                        search_top_k:  Some(10),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("honcho_search: {e}"))?;
+
+            Ok(format_conclusions(&ctx)
+                .unwrap_or_else(|| "No relevant context found.".to_string()))
+        })
+    }
+}
+
+/// Formats the `conclusions` array of a Honcho `peer_context` response as a
+/// ranked bullet list, prefixing each fact with its `id` when present so the
+/// model can target it via `honcho_conclude`. Returns `None` when empty.
+fn format_conclusions(ctx: &Value) -> Option<String> {
+    let conclusions = ctx.get("conclusions")?.as_array()?;
+    let lines: Vec<String> = conclusions
+        .iter()
+        .filter_map(|c| {
+            let content = c.get("content").and_then(|v| v.as_str())?;
+            match c.get("id").and_then(|v| v.as_str()) {
+                Some(id) => Some(format!("- [{id}] {content}")),
+                None     => Some(format!("- {content}")),
+            }
+        })
+        .collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+// ── HonchoContextTool ─────────────────────────────────────────────────────────
+
+/// Retrieves a full context snapshot for the user (conclusions, card, summary)
+/// from Honcho's `peer_context` endpoint. No LLM synthesis.
+struct HonchoContextTool {
+    client:       Arc<HonchoClient>,
+    workspace_id: String,
+}
+
+impl Tool for HonchoContextTool {
+    fn name(&self) -> &str { "honcho_context" }
+
+    fn description(&self) -> &str {
+        "Retrieve a full context snapshot for the user from Honcho — conclusions, \
+         peer card, and conversation summary. No LLM synthesis (cheaper than \
+         memory_query). Pass an optional `query` to focus the semantic search."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type":        "string",
+                    "description": "Optional focus query to filter context. \
+                                    Omit for a full context snapshot."
+                }
+            }
+        })
+    }
+
+    fn category(&self) -> ToolCategory { ToolCategory::Introspection }
+
+    fn execute(&self, args: Value) -> anyhow::Result<String> {
+        let client       = Arc::clone(&self.client);
+        let workspace_id = self.workspace_id.clone();
+        let search_query = args.get("query").and_then(|v| v.as_str()).map(str::to_string);
+
+        run_blocking(async move {
+            let ctx = client
+                .peer_context(
+                    &workspace_id,
+                    PEER_USER,
+                    &PeerRepresentationGet { search_query, ..Default::default() },
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("honcho_context: {e}"))?;
+
+            Ok(format_context(ctx).unwrap_or_else(|| "No context available yet.".to_string()))
+        })
+    }
+}
+
+// ── HonchoConcludeTool ────────────────────────────────────────────────────────
+
+/// Writes or deletes a persistent fact (conclusion) about the user in Honcho's
+/// memory. Exactly one of `conclusion` or `delete_id` must be supplied.
+///
+/// Written as `observer = user`, `observed = user` — matching this plugin's peer
+/// model, where the `user` peer has `observe_me = true` and therefore holds the
+/// self-knowledge that the read-path (`peer_context("user")`) reads back. Using
+/// any other observer slot would store facts the read-path never sees.
+struct HonchoConcludeTool {
+    client:       Arc<HonchoClient>,
+    workspace_id: String,
+}
+
+impl Tool for HonchoConcludeTool {
+    fn name(&self) -> &str { "honcho_conclude" }
+
+    fn description(&self) -> &str {
+        "Write or delete a persistent fact about the user in Honcho's memory. \
+         Pass `conclusion` to create a new fact; pass `delete_id` (from \
+         honcho_search) to remove one. Exactly one field is required."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "conclusion": {
+                    "type":        "string",
+                    "description": "A factual statement about the user to persist."
+                },
+                "delete_id": {
+                    "type":        "string",
+                    "description": "Conclusion id to delete (e.g. for PII removal)."
+                }
+            }
+        })
+    }
+
+    fn category(&self) -> ToolCategory { ToolCategory::Introspection }
+
+    fn execute(&self, args: Value) -> anyhow::Result<String> {
+        let conclusion = args.get("conclusion").and_then(|v| v.as_str())
+            .map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        let delete_id = args.get("delete_id").and_then(|v| v.as_str())
+            .map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+
+        // Exactly one must be present (XOR).
+        if conclusion.is_some() == delete_id.is_some() {
+            anyhow::bail!("honcho_conclude: provide exactly one of 'conclusion' or 'delete_id'");
+        }
+
+        let client       = Arc::clone(&self.client);
+        let workspace_id = self.workspace_id.clone();
+
+        run_blocking(async move {
+            if let Some(id) = delete_id {
+                client
+                    .delete_conclusion(&workspace_id, &id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("honcho_conclude: {e}"))?;
+                Ok(format!("Conclusion {id} deleted."))
+            } else {
+                let content = conclusion.unwrap();
+                client
+                    .add_conclusion(
+                        &workspace_id,
+                        ConclusionCreate {
+                            content:     content.clone(),
+                            observer_id: PEER_USER.to_string(),
+                            observed_id: PEER_USER.to_string(),
+                            session_id:  None,
+                        },
+                    )
+                    .await
+                    .map_err(|e| anyhow::anyhow!("honcho_conclude: {e}"))?;
+                Ok(format!("Conclusion saved: {content}"))
+            }
         })
     }
 }

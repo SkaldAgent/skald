@@ -143,28 +143,47 @@ The result is wrapped in `--- Honcho memory context --- / --- end ---` markers.
 
 ---
 
-## `memory_query` Tool
+## LLM-callable Tools
 
-`HonchoMemory::tools()` returns a `MemoryQueryTool` whenever the plugin is active.
+`HonchoMemory::tools()` returns **five** tools whenever the plugin is active
+(`is_available()` true). They give the LLM direct, on-demand access to every
+layer of Honcho's API, complementing the automatic pre-turn `query_context`
+injection. All operate on the `user` peer and are inherited by sub-agents via
+`AgentRunConfig::memory_tools`.
 
-The [official Honcho documentation](https://honcho.dev/docs/v3/documentation/features/chat) explicitly recommends exposing `peer.chat()` as an LLM-callable tool so the agent decides on its own when to query memory, rather than only relying on the automatic pre-turn injection.
+The [official Honcho documentation](https://honcho.dev/docs/v3/documentation/features/chat) recommends exposing these as tools so the agent decides on its own when to read or write memory, rather than only relying on automatic injection.
 
-| Field | Value |
-| --- | --- |
-| Tool name | `memory_query` |
-| Endpoint | `POST /v3/workspaces/{id}/peers/user/chat` |
-| Reasoning level | `low` (fast, single-pass synthesis) |
-| Available to | All sessions and sub-agents (inherited via `AgentRunConfig::memory_tools`) |
-| When active | Only when `HonchoMemory::is_available()` is true (plugin running) |
+| Tool | Endpoint | Cost | What it does |
+| --- | --- | --- | --- |
+| `memory_query` | `POST .../peers/user/chat` | High (LLM synthesis) | Natural-language question → synthesized answer (dialectic reasoning, `reasoning_level=low`) |
+| `honcho_search` | `GET .../peers/user/context?search_query=…` | Low | Semantic search over derived facts; returns raw ranked excerpts (with ids when present) |
+| `honcho_context` | `GET .../peers/user/context` | Low | Full context snapshot (conclusions + summary), no synthesis; optional focus `query` |
+| `honcho_profile` | `GET`/`PUT .../peers/user/card` | Low | Read the peer card, or overwrite it with a list of fact strings (`card`) |
+| `honcho_conclude` | `POST .../conclusions` / `DELETE .../conclusions/{id}` | Low | Write a new fact (`conclusion`) or delete one by id (`delete_id`); exactly one required |
+
+**Peer model — all tools operate on the `user` peer as both observer and observed.**
+This plugin configures the `user` peer with `observe_me = true`, so the user's
+self-knowledge lives in the `observer = user / observed = user` slot. Therefore
+`honcho_conclude` writes with `observer_id = observed_id = user`, and `honcho_search`
+uses `peer_context` (not the `conclusions/query` endpoint, which requires explicit
+observer/observed filters) — the same proven path as the automatic read-path
+injection. This differs from setups where the assistant observes the user
+(`observer = assistant`); keeping observer = user is what lets the read-path see
+facts written by `honcho_conclude`.
 
 **When to use vs. the automatic injection:**
 
 | Mechanism | When it fires | Best for |
 | --- | --- | --- |
 | `query_context` (auto) | Before every LLM turn | Background context, cold-start facts |
-| `memory_query` (tool) | When the LLM calls it explicitly | On-demand deep queries mid-conversation |
+| `memory_query` (tool) | LLM calls it explicitly | On-demand deep reasoning mid-conversation |
+| `honcho_search` / `honcho_context` (tools) | LLM calls them explicitly | Cheap raw recall without LLM synthesis |
+| `honcho_profile` / `honcho_conclude` (tools) | LLM calls them explicitly | Actively curating long-term memory |
 
-**Implementation note:** `Tool::execute` is synchronous but `peer_chat` is async. The bridge uses `tokio::task::block_in_place` + `Handle::current().block_on(...)` to drive the future from within the Tokio multi-thread scheduler without spawning a new thread.
+**Implementation note:** `Tool::execute` is synchronous but the Honcho calls are
+async. All five tools share the `run_blocking` helper, which uses
+`tokio::task::block_in_place` + `Handle::current().block_on(...)` to drive the
+future from within the Tokio multi-thread scheduler without spawning a new thread.
 
 ---
 
