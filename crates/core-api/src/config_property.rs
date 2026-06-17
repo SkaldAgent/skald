@@ -6,7 +6,7 @@ pub enum PropertyType {
     String,
     Int,
     Bool,
-    RunContext,
+    SecurityGroup,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

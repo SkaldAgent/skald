@@ -103,6 +103,18 @@ export class ConfigPage extends LightElement {
                @input=${e => this._setValue(prop.key, e.target.value)} />`;
     }
 
+    if (prop.property_type === 'security_group') {
+      const groups = prop.options ?? [];
+      return html`
+        <select class="form-select form-select-sm config-input"
+                .value=${val}
+                @change=${e => this._setValue(prop.key, e.target.value)}>
+          <option value="">— default —</option>
+          ${groups.map(g => html`
+            <option value=${g.id} ?selected=${val === g.id}>${g.name}</option>`)}
+        </select>`;
+    }
+
     return html`
       <input type="text"
              class="form-control form-control-sm config-input"

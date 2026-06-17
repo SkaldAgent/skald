@@ -19,9 +19,9 @@ use crate::core::session::manager::ChatSessionManager;
 const TIC_SOURCE: &str = "tic";
 const TIC_AGENT:  &str = "tic";
 
-pub const TIC_ENABLED_KEY:          &str = "tic.enabled";
-pub const TIC_RUN_CONTEXT_KEY:      &str = "tic.run_context";
-pub const TIC_INTERVAL_MINUTES_KEY: &str = "tic.interval_minutes";
+pub const TIC_ENABLED_KEY:            &str = "tic.enabled";
+pub const TIC_SECURITY_GROUP_KEY:     &str = "tic.security_group";
+pub const TIC_INTERVAL_MINUTES_KEY:   &str = "tic.interval_minutes";
 
 pub fn config_set() -> ConfigSet {
     ConfigSet {
@@ -36,10 +36,10 @@ pub fn config_set() -> ConfigSet {
                 default_value: Some("true".into()),
             },
             ConfigProperty {
-                key:           TIC_RUN_CONTEXT_KEY.into(),
-                name:          "Permission Group".into(),
-                description:   "Tool permission group ID applied to each TIC agent session. Leave empty to use the default group.".into(),
-                property_type: PropertyType::String,
+                key:           TIC_SECURITY_GROUP_KEY.into(),
+                name:          "Security Group".into(),
+                description:   "Tool permission group applied to each TIC agent session. Leave empty to use the default group.".into(),
+                property_type: PropertyType::SecurityGroup,
                 default_value: None,
             },
             ConfigProperty {
@@ -197,7 +197,7 @@ impl TicManager {
         handler.set_auto_deny_approvals();
 
         // 5. Apply run context if configured in DB.
-        if let Ok(Some(rc_id)) = self.config_store.get(TIC_RUN_CONTEXT_KEY).await {
+        if let Ok(Some(rc_id)) = self.config_store.get(TIC_SECURITY_GROUP_KEY).await {
             if !rc_id.is_empty() {
                 let rc = RunContext::with_security_group(Some(rc_id.clone()));
                 if let Err(e) = self.run_context_manager.set_session_run_context(session_id, Some(&rc)).await {

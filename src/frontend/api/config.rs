@@ -16,6 +16,12 @@ use super::ApiError;
 
 // ── Response types ─────────────────────────────────────────────────────────────
 
+#[derive(Serialize, Clone)]
+struct SecurityGroupOption {
+    id:   String,
+    name: String,
+}
+
 #[derive(Serialize)]
 struct PropertyView {
     key:           String,
@@ -24,6 +30,8 @@ struct PropertyView {
     property_type: String,
     value:         Option<String>,
     default_value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options:       Option<Vec<SecurityGroupOption>>,
 }
 
 #[derive(Serialize)]
@@ -38,16 +46,22 @@ struct ConfigSetView {
 pub async fn list_properties(
     State(skald): State<Arc<Skald>>,
 ) -> Result<Json<Value>, ApiError> {
+    let security_groups = skald.run_context_manager.list_groups().await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|g| SecurityGroupOption { id: g.id, name: g.name })
+        .collect::<Vec<_>>();
+
     let mut sets = Vec::with_capacity(skald.config_properties.len());
     for set in &skald.config_properties {
         let mut props = Vec::with_capacity(set.properties.len());
         for prop in &set.properties {
             let value = skald.config.get(&prop.key).await?;
-            let type_str = match prop.property_type {
-                PropertyType::Int    => "int",
-                PropertyType::Bool   => "bool",
-                PropertyType::String => "string",
-                PropertyType::RunContext => "string", // legacy alias, treated as plain string
+            let (type_str, options) = match prop.property_type {
+                PropertyType::Int           => ("int", None),
+                PropertyType::Bool          => ("bool", None),
+                PropertyType::String        => ("string", None),
+                PropertyType::SecurityGroup => ("security_group", Some(security_groups.clone())),
             };
             props.push(PropertyView {
                 key:           prop.key.clone(),
@@ -56,6 +70,7 @@ pub async fn list_properties(
                 property_type: type_str.into(),
                 value,
                 default_value: prop.default_value.clone(),
+                options,
             });
         }
         sets.push(ConfigSetView {
