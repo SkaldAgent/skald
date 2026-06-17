@@ -23,6 +23,9 @@ pub struct MessageBuilder {
     pub max_history_messages:  usize,
     pub max_tool_result_chars: Option<usize>,
     pub compactor:             Option<Arc<ContextCompactor>>,
+    /// Effective working directory for this session. When set (e.g. from a project
+    /// RunContext), it overrides the process cwd in the date/time/OS/WD tail block.
+    pub working_directory:     Option<std::path::PathBuf>,
 }
 
 impl MessageBuilder {
@@ -173,7 +176,10 @@ impl MessageBuilder {
                     if tool_calls.is_empty() {
                         let mut msg = json!({ "role": "assistant", "content": entry.content });
                         if let Some(rc) = &entry.reasoning_content {
+                            // Echo under both names: DeepSeek expects "reasoning_content",
+                            // MiniMax M3 and others expect "reasoning".
                             msg["reasoning_content"] = rc.clone().into();
+                            msg["reasoning"]         = rc.clone().into();
                         }
                         out.push(msg);
                     } else {
@@ -195,7 +201,10 @@ impl MessageBuilder {
                             "tool_calls": tc_array,
                         });
                         if let Some(rc) = &entry.reasoning_content {
+                            // Echo under both names: DeepSeek expects "reasoning_content",
+                            // MiniMax M3 and others expect "reasoning".
                             msg["reasoning_content"] = rc.clone().into();
+                            msg["reasoning"]         = rc.clone().into();
                         }
                         out.push(msg);
 
@@ -258,9 +267,10 @@ impl MessageBuilder {
                     }
                 };
 
-                let cwd = std::env::current_dir()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| "(unknown)".to_string());
+                let cwd = self.working_directory.clone()
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+                    .display()
+                    .to_string();
                 let os = std::env::consts::OS;
                 Some(format!("Current date and time: {formatted}\nOperating system: {os}\nWorking directory: {cwd}"))
             } else {

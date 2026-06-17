@@ -10,9 +10,9 @@ pub struct ChatSession {
     /// True for short-lived task sessions (cron, tic) with no long-term
     /// conversational value. May be used to skip memory / analytics sinks.
     pub is_ephemeral:    bool,
-    /// Optional RunContext profile assigned to this session.
+    /// Optional RunContext JSON blob assigned to this session.
     /// `None` resolves to the implicit "default" run_context at runtime.
-    pub run_context_id:  Option<String>,
+    pub run_context:     Option<String>,
 }
 
 pub async fn create(
@@ -39,25 +39,38 @@ pub async fn create(
         agent_id:       agent_id.to_string(),
         is_interactive,
         is_ephemeral,
-        run_context_id: None,
+        run_context: None,
     })
+}
+
+pub async fn set_run_context(
+    pool:        &SqlitePool,
+    id:          i64,
+    run_context: Option<&str>,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE chat_sessions SET run_context = ? WHERE id = ?")
+        .bind(run_context)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 pub async fn find_by_id(pool: &SqlitePool, id: i64) -> anyhow::Result<Option<ChatSession>> {
     let row = sqlx::query_as::<_, (i64, String, String, bool, bool, Option<String>)>(
-        "SELECT id, source, agent_id, is_interactive, is_ephemeral, run_context_id
+        "SELECT id, source, agent_id, is_interactive, is_ephemeral, run_context
          FROM chat_sessions WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|(id, source, agent_id, is_interactive, is_ephemeral, run_context_id)| ChatSession {
+    Ok(row.map(|(id, source, agent_id, is_interactive, is_ephemeral, run_context)| ChatSession {
         id,
         source,
         agent_id,
         is_interactive,
         is_ephemeral,
-        run_context_id,
+        run_context,
     }))
 }

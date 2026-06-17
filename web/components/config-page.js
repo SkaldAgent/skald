@@ -94,17 +94,6 @@ export class ConfigPage extends LightElement {
         </div>`;
     }
 
-    if (prop.property_type === 'run_context') {
-      return html`
-        <select class="form-select form-select-sm config-input"
-                @change=${e => this._setValue(prop.key, e.target.value)}>
-          <option value="">— None —</option>
-          ${(prop.options ?? []).map(o => html`
-            <option value=${o.id} ?selected=${o.id === val}>${o.name}</option>
-          `)}
-        </select>`;
-    }
-
     if (prop.property_type === 'int') {
       return html`
         <input type="number" step="1" min="1"

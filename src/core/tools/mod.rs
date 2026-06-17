@@ -81,6 +81,14 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// Returns the names of all tools marked `interactive_only`.
+    pub fn interactive_only_names(&self) -> Vec<String> {
+        self.tools.values()
+            .filter(|t| t.interactive_only())
+            .map(|t| t.name().to_string())
+            .collect()
+    }
+
     /// Returns `(name, description)` for every registered tool.
     pub fn list_all(&self) -> Vec<(String, String)> {
         let mut v: Vec<(String, String)> = self.tools.values()

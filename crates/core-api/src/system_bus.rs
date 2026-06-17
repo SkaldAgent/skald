@@ -40,6 +40,20 @@ pub enum SystemEvent {
     ApiProviderUnregistered { type_id: String },
     /// A config key was changed via the API (only fires when the value actually changes).
     ConfigKeyUpdated { key: String, old_value: Option<String>, new_value: String },
+    /// A scheduled job finished (success or failure). `origin_ref` is the opaque
+    /// string stored in `scheduled_jobs.origin_ref` (e.g. `"PROJECT_TASK:42"`).
+    JobCompleted {
+        job_id:     i64,
+        origin_ref: Option<String>,
+        result:     Option<String>,
+        error:      Option<String>,
+    },
+    /// A session was forcibly cancelled (e.g. via the kill-task API).
+    /// Subscribers should cancel any in-flight LLM turn, pending approvals,
+    /// and pending clarifications for that session.
+    SessionCancelled {
+        session_id: i64,
+    },
 }
 
 // ── Bus ───────────────────────────────────────────────────────────────────────

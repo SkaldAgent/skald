@@ -40,6 +40,25 @@ models-image-section {
   min-width: 0;
 }
 
+projects-page {
+  display: none; /* toggled by JS */
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--toolbar-border, #e5e9f0);
+}
+
+project-list-section,
+project-board-section {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
 session-detail-page,
 tic-sessions-page {
   display: none; /* toggled by JS */

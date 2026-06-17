@@ -1,4 +1,6 @@
 pub mod approval_rules;
+pub mod project_tickets;
+pub mod projects;
 pub mod chat_history;
 pub mod chat_llm_tools;
 pub mod chat_sessions;
@@ -10,7 +12,6 @@ pub mod llm_requests;
 pub mod mcp_events;
 pub mod mcp_servers;
 pub mod plugins;
-pub mod run_contexts;
 pub mod scheduled_jobs;
 pub mod scratchpad;
 pub mod session_mcp_grants;
@@ -40,7 +41,7 @@ async fn create_tables(pool: &SqlitePool) -> Result<()> {
             agent_id         TEXT    NOT NULL DEFAULT 'main',
             is_interactive   INTEGER NOT NULL DEFAULT 1,
             is_ephemeral     INTEGER NOT NULL DEFAULT 0,
-            run_context_id   TEXT    REFERENCES run_contexts(id),
+            run_context_id   TEXT,
             created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
         )",
     )
@@ -222,18 +223,6 @@ async fn create_tables(pool: &SqlitePool) -> Result<()> {
             name        TEXT NOT NULL,
             description TEXT,
             created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-        )",
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS run_contexts (
-            id            TEXT PRIMARY KEY,
-            name          TEXT NOT NULL,
-            description   TEXT,
-            tool_group_id TEXT REFERENCES tool_permission_groups(id),
-            created_at    TEXT NOT NULL DEFAULT (datetime('now'))
         )",
     )
     .execute(pool)
@@ -453,6 +442,41 @@ async fn create_tables(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS projects (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT    NOT NULL,
+            path        TEXT    NOT NULL,
+            description TEXT    NOT NULL DEFAULT '',
+            run_context TEXT,
+            created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+            updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS project_tickets (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id   INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            title        TEXT    NOT NULL,
+            description  TEXT    NOT NULL DEFAULT '',
+            status       TEXT    NOT NULL DEFAULT 'todo'
+                             CHECK(status IN ('todo','pending','in_progress','done','failed')),
+            agent_id     TEXT    NOT NULL DEFAULT 'main',
+            run_context  TEXT,
+            job_id       INTEGER REFERENCES scheduled_jobs(id),
+            result       TEXT,
+            error        TEXT,
+            created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+            started_at   TEXT,
+            completed_at TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }
 
@@ -570,6 +594,90 @@ async fn migrate_tables(pool: &SqlitePool) -> Result<()> {
         sqlx::query(
             "INSERT OR REPLACE INTO config(key, value, updated_at)
              VALUES('schema_version', '8', datetime('now'))",
+        )
+        .execute(pool)
+        .await?;
+    }
+
+    if version < 9 {
+        // Flatten run_context_id: copy tool_group_id from run_contexts into the
+        // referencing columns, then drop the now-obsolete run_contexts table.
+        // run_context_id now stores a tool_permission_groups id directly.
+        sqlx::query(
+            "UPDATE chat_sessions
+             SET run_context_id = (
+                 SELECT tool_group_id FROM run_contexts
+                 WHERE  id = chat_sessions.run_context_id
+             )
+             WHERE run_context_id IS NOT NULL",
+        )
+        .execute(pool)
+        .await
+        .ok();
+
+        sqlx::query(
+            "UPDATE scheduled_jobs
+             SET run_context_id = (
+                 SELECT tool_group_id FROM run_contexts
+                 WHERE  id = scheduled_jobs.run_context_id
+             )
+             WHERE run_context_id IS NOT NULL",
+        )
+        .execute(pool)
+        .await
+        .ok();
+
+        sqlx::query("DROP TABLE IF EXISTS run_contexts")
+            .execute(pool)
+            .await
+            .ok();
+
+        sqlx::query(
+            "INSERT OR REPLACE INTO config(key, value, updated_at)
+             VALUES('schema_version', '9', datetime('now'))",
+        )
+        .execute(pool)
+        .await?;
+    }
+
+    if version < 10 {
+        // Rename run_context_id → run_context on both tables and convert
+        // the column to a JSON blob (RunContext struct). Existing values are
+        // cleared because the old plain group-id string is not valid JSON.
+        sqlx::query("ALTER TABLE chat_sessions  RENAME COLUMN run_context_id TO run_context")
+            .execute(pool).await.ok();
+        sqlx::query("ALTER TABLE scheduled_jobs RENAME COLUMN run_context_id TO run_context")
+            .execute(pool).await.ok();
+        sqlx::query("UPDATE chat_sessions  SET run_context = NULL")
+            .execute(pool).await.ok();
+        sqlx::query("UPDATE scheduled_jobs SET run_context = NULL")
+            .execute(pool).await.ok();
+
+        sqlx::query(
+            "INSERT OR REPLACE INTO config(key, value, updated_at)
+             VALUES('schema_version', '10', datetime('now'))",
+        )
+        .execute(pool)
+        .await?;
+    }
+
+    if version < 11 {
+        sqlx::query("ALTER TABLE scheduled_jobs ADD COLUMN origin_ref TEXT")
+            .execute(pool).await.ok();
+        sqlx::query(
+            "INSERT OR REPLACE INTO config(key, value, updated_at)
+             VALUES('schema_version', '11', datetime('now'))",
+        )
+        .execute(pool)
+        .await?;
+    }
+
+    if version < 12 {
+        sqlx::query("ALTER TABLE projects DROP COLUMN agent_id")
+            .execute(pool).await.ok();
+        sqlx::query(
+            "INSERT OR REPLACE INTO config(key, value, updated_at)
+             VALUES('schema_version', '12', datetime('now'))",
         )
         .execute(pool)
         .await?;

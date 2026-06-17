@@ -11,7 +11,6 @@ import { TasksPage }         from './components/tasks/index.js';
 import { AgentsPage }         from './components/agents.js';
 import { ApprovalGroupsPage } from './components/approval-groups.js';
 import { ApprovalRulesPage }  from './components/approval-rules.js';
-import { AgentProfilesPage }  from './components/agent-profiles.js';
 import { ConfigPage }         from './components/config-page.js';
 import { AgentInboxPage }     from './components/agent-inbox.js';
 import { HomePage }           from './components/home-page.js';
@@ -19,6 +18,7 @@ import { LlmRequestsPage }   from './components/llm-requests.js';
 import { LlmRequestDetail }  from './components/llm-request-detail.js';
 import { SessionDetailPage } from './components/session-detail.js';
 import { TicSessionsPage }  from './components/tic-sessions.js';
+import { ProjectsPage }     from './components/projects/index.js';
 
 customElements.define('app-topbar',           AppTopbar);
 customElements.define('app-sidebar',          AppSidebar);
@@ -33,7 +33,6 @@ customElements.define('tasks-page',            TasksPage);
 customElements.define('agents-page',          AgentsPage);
 customElements.define('approval-groups-page', ApprovalGroupsPage);
 customElements.define('approval-rules-page',  ApprovalRulesPage);
-customElements.define('agent-profiles-page',  AgentProfilesPage);
 customElements.define('config-page',          ConfigPage);
 customElements.define('agent-inbox-page',     AgentInboxPage);
 customElements.define('home-page',            HomePage);
@@ -41,6 +40,7 @@ customElements.define('llm-requests-page',   LlmRequestsPage);
 customElements.define('llm-request-detail',  LlmRequestDetail);
 customElements.define('session-detail-page', SessionDetailPage);
 customElements.define('tic-sessions-page',   TicSessionsPage);
+customElements.define('projects-page',       ProjectsPage);
 
 // Toggle the workspace placeholder when an LLM page opens/closes.
 const workspace = document.getElementById('app-workspace');

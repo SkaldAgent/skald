@@ -14,7 +14,7 @@ use crate::core::llm::LlmManager;
 use crate::core::mcp::McpManager;
 use crate::core::image_generate::ImageGeneratorManager;
 use crate::core::memory::MemoryManager;
-use crate::core::run_context::RunContextManager;
+use crate::core::run_context::{RunContext, RunContextManager};
 use crate::core::tools::ToolRegistry;
 
 use super::handler::ChatSessionHandler;
@@ -105,6 +105,18 @@ impl ChatSessionManager {
         Ok((session.id, stack.id))
     }
 
+    /// Cancel the in-flight turn for `session_id` and clean up any pending
+    /// approvals and clarifications so their blocking awaits unblock immediately.
+    /// No-op if no handler is active for the session.
+    pub async fn cancel_session(&self, session_id: i64) {
+        let handler = self.active.lock().await.get(&session_id).cloned();
+        if let Some(h) = handler {
+            h.cancel();
+            h.cancel_pending_approvals().await;
+            h.cancel_pending_questions().await;
+        }
+    }
+
     pub async fn get_or_create_handler(
         &self,
         session_id: i64,
@@ -120,14 +132,7 @@ impl ChatSessionManager {
             .await?
             .ok_or_else(|| anyhow::anyhow!("session {session_id} not found"))?;
 
-        // Resolve run_context: explicit per-session assignment only
-        // (None falls back to the "default" group implicitly).
-        let run_context_id: Option<String> = session.run_context_id.clone();
-        let run_context = if let Some(ref rc_id) = run_context_id {
-            self.run_context_manager.get_context(rc_id).await.unwrap_or(None)
-        } else {
-            None
-        };
+        let run_context = session.run_context.as_deref().and_then(RunContext::from_db);
 
         let handler = Arc::new(ChatSessionHandler::new(
             session_id,

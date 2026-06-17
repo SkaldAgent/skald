@@ -10,8 +10,11 @@
 | `ChatHub` | `set_hub()` | Sending completion/failure notifications; injecting `execute_task` InterfaceTool |
 | `Arc<TaskManager>` (self) | `set_self_arc()` | Passing self-reference into `run_job` for sub-task tools |
 
+`TaskManager` also holds an `Arc<SystemEventBus>` (passed at construction time, not via OnceLock) used to publish `SystemEvent::JobCompleted` when a job finishes. `ProjectTicketManager` subscribes independently; `TaskManager` has no direct reference to it.
+
 In `main.rs`:
-1. `TaskManager::new(pool)` — created first, OnceLocks empty
+
+1. `TaskManager::new(pool, tz, system_bus)` — created first, OnceLocks empty
 2. `ChatSessionManager::new(...)` — created second
 3. `cron.set_session(Arc::clone(&manager))` — fills first OnceLock
 4. `cron.start()` — background tasks begin (tick every 30 s)
@@ -134,7 +137,7 @@ For `sync` and `async` modes, `single_run` is always `true` (they run once and a
 ### `async` mode
 
 1. LLM calls `execute_task(mode="async", title, prompt, agent_id?)` → returns `task_id` immediately
-2. `add_job_async()` creates DB record with `parent_session_id` set to the calling session and `run_context_id` inherited from the parent
+2. `add_job_async()` creates DB record with `parent_session_id` set to the calling session and `run_context` (JSON blob) inherited from the parent
 3. Agent spawned in background; LLM continues
 4. On completion: `inject_async_result()` sends a synthetic message to the parent session
 
@@ -146,14 +149,15 @@ For `sync` and `async` modes, `single_run` is always `true` (they run once and a
 
 1. New ephemeral session created (`is_ephemeral=1, is_interactive=0, source="cron"`)
 2. `set_running(pool, job.id, session_id)` — marks job in-flight
-3. If `job.run_context_id` is `Some`, calls `db::run_contexts::set_run_context_for_session(pool, session_id, rc_id)` to stamp the RunContext onto the new session **before** `get_or_create_handler()` loads it
+3. If `job.run_context` is `Some`, stamps the RunContext JSON blob onto the new `chat_sessions` row directly before `get_or_create_handler()` loads it
 4. `handler.set_context_label("CronJob: <title>")` — used for Agent Inbox labels
 5. Job context injected via `extra_system_dynamic_override`
-6. `run_subtask` InterfaceTool injected, carrying the same `run_context_id` so nested subtasks also inherit it (see [Background Tool Restrictions](#background-tool-restrictions))
+6. `run_subtask` InterfaceTool injected, carrying the same `run_context` so nested subtasks also inherit it (see [Background Tool Restrictions](#background-tool-restrictions))
 7. `tokio::spawn(handler.handle_message(...))` + concurrent drain of the event channel (prevents deadlock when the buffer fills)
 8. After completion: delivery branch on `job.kind` (notify / return inline / inject_async_result)
 9. `record_job_run()` writes to `job_runs` audit trail
 10. `finish_run()` advances `next_run_at` for cron jobs; disables single-run jobs
+11. Publishes `SystemEvent::JobCompleted { job_id, origin_ref, result, error }` on `system_bus`; `ProjectTicketManager` receives this event via its `start_listener()` background task and updates the ticket state when `origin_ref` starts with `"PROJECT_TASK:"`
 
 On failure: error logged, job_runs row recorded with status `"failed"`, `hub.notify(...)` sends an error notification.
 
@@ -185,8 +189,8 @@ Background sessions (`kind="cron"` or `kind="async"`) **cannot** call `execute_t
 
 | Tool | Available in | Notes |
 | ---- | ------------ | ----- |
-| `execute_task` | Interactive sessions only | Injected as InterfaceTool by `ChatHub::send_message`; `session_id` and `run_context_id` captured in closure at tool-build time |
-| `run_subtask` | Background sessions only | Sync-only; no `mode` field; calls `add_job_sync()` internally; `run_context_id` propagated from the parent job |
+| `execute_task` | Interactive sessions only | Injected as InterfaceTool by `ChatHub::send_message`; `session_id` and `run_context` (JSON blob) captured in closure at tool-build time |
+| `run_subtask` | Background sessions only | Sync-only; no `mode` field; calls `add_job_sync()` internally; `run_context` propagated from the parent job |
 
 This rule eliminates the complexity of tracking nested async/cron task lifecycles. Background tasks can spawn synchronous sub-work (via `run_subtask` or via `call_agent`) but cannot launch new fire-and-forget or cron tasks.
 
@@ -215,7 +219,7 @@ Each run always creates a **new ephemeral session**:
 | `is_interactive` | `0` |
 | `is_ephemeral` | `1` |
 | `agent_id` | job's `agent_id` (default `"worker"`) |
-| `run_context_id` | inherited from `scheduled_jobs.run_context_id` (may be null → falls back to the implicit `"default"` group) |
+| `run_context` | inherited from `scheduled_jobs.run_context` JSON blob (may be null → falls back to the implicit `"default"` group) |
 
 Sessions are not reused across runs. Each run gets a fresh context.
 
@@ -227,13 +231,15 @@ Every task inherits the RunContext of the session that created it. This controls
 
 **Inheritance chain:**
 
-1. The parent interactive session has a `run_context_id` (set by the user via the API; `None` otherwise)
-2. `ChatHub::send_message` reads `handler.run_context_id()` **before** building the `execute_task` InterfaceTool and captures the value in the closure
-3. `execute_with_session()` passes `run_context_id` to `add_job / add_job_sync / add_job_async`, which store it in `scheduled_jobs.run_context_id`
-4. `run_job()` stamps the value onto the ephemeral child session via `set_run_context_for_session()` before `get_or_create_handler()` loads the session — the manager's existing resolution path (`session.run_context_id` → `None`) picks it up automatically
-5. `run_subtask` also captures `run_context_id`, so nested synchronous sub-tasks inherit it transitively
+1. The parent interactive session has a `run_context` JSON blob (set by the user via the API; `None` otherwise)
+2. `ChatHub::send_message` reads `handler.run_context_json()` **before** building the `execute_task` InterfaceTool and captures the value in the closure
+3. `execute_with_session()` passes `run_context` to `add_job / add_job_sync / add_job_async`, which store it in `scheduled_jobs.run_context`
+4. `run_job()` stamps the JSON blob onto the ephemeral child session before `get_or_create_handler()` loads the session — the manager's resolution path (`session.run_context` → `RunContext::from_db`) picks it up automatically
+5. `run_subtask` also captures `run_context`, so nested synchronous sub-tasks inherit it transitively
 
-**Override via Tasks UI:** the `PATCH /api/cron/jobs/{id}/run-context` endpoint allows overriding `scheduled_jobs.run_context_id` after creation. The dropdown in the Tasks page calls this endpoint.
+For **project tickets**, `ProjectTicketManager.start()` resolves the `run_context` itself (ticket override → project default) and passes it to `TaskManager.spawn_async_job()`.
+
+**Override via Tasks UI:** the `PATCH /api/cron/jobs/{id}/run-context` endpoint allows overriding `scheduled_jobs.run_context` after creation. The dropdown in the Tasks page calls this endpoint.
 
 ---
 

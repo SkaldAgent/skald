@@ -24,6 +24,7 @@ use super::location::LocationManager;
 use super::memory::MemoryManager;
 use super::mcp::McpManager;
 use super::plugin::PluginManager;
+use super::projects::{ProjectManager, tickets::ProjectTicketManager};
 use super::provider::ProviderRegistry;
 use super::run_context::RunContextManager;
 use super::secrets::SecretsStore;
@@ -50,6 +51,8 @@ pub struct Skald {
     pub tools:                   Arc<ToolRegistry>,
     pub approval:                Arc<ApprovalManager>,
     pub run_context_manager:     Arc<RunContextManager>,
+    pub projects:                Arc<ProjectManager>,
+    pub ticket_manager:          Arc<ProjectTicketManager>,
     pub image_generator_manager: Arc<ImageGeneratorManager>,
     pub inbox:                   Inbox,
     pub(crate) event_bus:        Arc<ChatEventBus>,
@@ -176,7 +179,7 @@ impl Skald {
                 Err(_)  => { warn!("timezone: unknown value '{s}', falling back to local time"); None }
             }
         });
-        let cron = TaskManager::new(Arc::clone(&pool), cron_tz);
+        let cron = TaskManager::new(Arc::clone(&pool), cron_tz, Arc::clone(&system_bus));
 
         // Build PluginManager — plugins are injected by the caller (main.rs).
         // start_enabled() is called later by WebFrontend, after the router factory is wired.
@@ -223,9 +226,13 @@ impl Skald {
 
         let run_context_manager = Arc::new(RunContextManager::new(Arc::clone(&pool), Arc::clone(&approval)));
         if let Err(e) = run_context_manager.seed_defaults().await {
-            warn!(error = %e, "failed to seed default run_context (non-fatal)");
+            warn!(error = %e, "failed to seed default permission group (non-fatal)");
         }
         info!("run_context manager ready");
+
+        let ticket_manager = ProjectTicketManager::new(Arc::clone(&pool));
+        let projects       = Arc::new(ProjectManager::new(Arc::clone(&pool)));
+        info!("project manager ready");
 
         let tools = Arc::new(tool_registry);
 
@@ -319,6 +326,7 @@ impl Skald {
         chat_hub.register("talk").await;
         cron.set_hub(Arc::clone(&chat_hub));
         cron.set_self_arc(Arc::clone(&cron));
+        ticket_manager.set_task_manager(Arc::clone(&cron));
         chat_hub.set_task_mgr(Arc::clone(&cron));
         info!("ChatHub initialised");
 
@@ -344,8 +352,33 @@ impl Skald {
 
         // Start background schedulers and collect their handles for graceful shutdown.
         let mut handles: Vec<JoinHandle<()>> = Vec::new();
+
+        // Session cancellation subscriber: listens for SessionCancelled events on the
+        // system bus and calls cancel_session() on the affected handler so that any
+        // in-flight LLM turn, pending approval, and pending clarification all unblock.
+        {
+            let manager_ref = Arc::clone(&manager);
+            let mut rx = system_bus.subscribe();
+            let sd = shutdown_token.clone();
+            handles.push(tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = sd.cancelled() => break,
+                        event = rx.recv() => match event {
+                            Ok(core_api::system_bus::SystemEvent::SessionCancelled { session_id }) => {
+                                manager_ref.cancel_session(session_id).await;
+                            }
+                            Ok(_) => {}
+                            Err(_) => break,
+                        }
+                    }
+                }
+            }));
+        }
+
         handles.extend(Arc::clone(&cron).start(shutdown_token.clone()));
         info!("cron scheduler started");
+        handles.push(Arc::clone(&ticket_manager).start_listener(Arc::clone(&system_bus), shutdown_token.clone()));
         handles.push(Arc::clone(&tic_manager).start(shutdown_token.clone()));
         info!("TicManager started");
 
@@ -363,6 +396,8 @@ impl Skald {
             tools,
             approval,
             run_context_manager,
+            projects,
+            ticket_manager,
             image_generator_manager,
             inbox,
             catalog,

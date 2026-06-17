@@ -586,3 +586,36 @@ llm-requests-page {
   max-height: 400px;
   overflow-y: auto;
 }
+
+/* ── Reasoning block ─────────────────────────────────────────────────────────── */
+
+.llmr-reasoning-block {
+  border: 1px solid #7c3aed44;
+  border-left: 3px solid #7c3aed;
+  border-radius: 5px;
+  overflow: hidden;
+  font-size: 0.8rem;
+}
+
+.llmr-reasoning-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 4px 8px;
+  background: color-mix(in srgb, #7c3aed 8%, var(--bs-tertiary-bg));
+  cursor: pointer;
+  user-select: none;
+  color: #7c3aed;
+  font-family: var(--bs-font-monospace);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.llmr-reasoning-header:hover {
+  background: color-mix(in srgb, #7c3aed 15%, var(--bs-tertiary-bg));
+}
+
+.llmr-reasoning-body {
+  border-top: 1px solid #7c3aed44;
+  color: var(--bs-secondary-color);
+}

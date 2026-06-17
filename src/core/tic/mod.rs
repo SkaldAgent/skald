@@ -13,7 +13,7 @@ use crate::core::chat_hub::ChatHub;
 use crate::core::config::TicConfig;
 use crate::core::config_store::GlobalConfigManager;
 use crate::core::db::mcp_events;
-use crate::core::run_context::RunContextManager;
+use crate::core::run_context::{RunContext, RunContextManager};
 use crate::core::session::manager::ChatSessionManager;
 
 const TIC_SOURCE: &str = "tic";
@@ -37,9 +37,9 @@ pub fn config_set() -> ConfigSet {
             },
             ConfigProperty {
                 key:           TIC_RUN_CONTEXT_KEY.into(),
-                name:          "Run Context".into(),
-                description:   "Run context applied to each TIC agent session. Leave empty to run without a run context.".into(),
-                property_type: PropertyType::RunContext,
+                name:          "Permission Group".into(),
+                description:   "Tool permission group ID applied to each TIC agent session. Leave empty to use the default group.".into(),
+                property_type: PropertyType::String,
                 default_value: None,
             },
             ConfigProperty {
@@ -199,7 +199,8 @@ impl TicManager {
         // 5. Apply run context if configured in DB.
         if let Ok(Some(rc_id)) = self.config_store.get(TIC_RUN_CONTEXT_KEY).await {
             if !rc_id.is_empty() {
-                if let Err(e) = self.run_context_manager.set_session_run_context(session_id, Some(rc_id.as_str())).await {
+                let rc = RunContext::with_security_group(Some(rc_id.clone()));
+                if let Err(e) = self.run_context_manager.set_session_run_context(session_id, Some(&rc)).await {
                     warn!(error = %e, rc_id, "TicManager: failed to set run context");
                 }
             }

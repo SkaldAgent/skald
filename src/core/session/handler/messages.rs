@@ -23,6 +23,9 @@ impl ChatSessionHandler {
         system_substitutions: &HashMap<String, String>,
         cache_hints:          bool,
     ) -> anyhow::Result<Vec<Value>> {
+        let effective_wd = self.run_context.read().await
+            .as_ref()
+            .map(|rc| rc.effective_working_dir());
         let builder = MessageBuilder {
             pool:                  Arc::clone(&self.db),
             session_id:            self.scratchpad_sid(),
@@ -31,6 +34,7 @@ impl ChatSessionHandler {
             max_history_messages:  self.max_history_messages,
             max_tool_result_chars: self.max_tool_result_chars,
             compactor:             self.compactor.clone(),
+            working_directory:     effective_wd,
         };
         // `pool` is passed in from the caller (always `&self.db`) but we take
         // ownership via Arc::clone above so the signature stays backward-compatible.

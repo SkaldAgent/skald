@@ -333,3 +333,33 @@
   opacity: 0.7;
   margin-left: auto;
 }
+
+/* ── Kill button ── */
+
+.task-kill-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid rgba(220, 53, 69, 0.35);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--bs-danger, #dc3545);
+  cursor: pointer;
+  font-size: 0.75rem;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+  line-height: 1;
+}
+
+.task-kill-btn:hover:not(:disabled) {
+  background: rgba(220, 53, 69, 0.1);
+  border-color: var(--bs-danger, #dc3545);
+}
+
+.task-kill-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

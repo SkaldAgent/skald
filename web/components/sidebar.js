@@ -75,7 +75,7 @@ export class AppSidebar extends LightElement {
     const hash = location.hash.slice(1);
     if (!hash) return 'home';
     const segment = hash.split('/')[0];
-    return ['inbox', 'tasks', 'models', 'providers', 'approval', 'agent-profiles', 'agents', 'config', 'llm-requests', 'session', 'tic'].includes(segment) ? segment : 'home';
+    return ['inbox', 'tasks', 'projects', 'models', 'providers', 'approval', 'agents', 'config', 'llm-requests', 'session', 'tic'].includes(segment) ? segment : 'home';
   }
 
   _tasksSectionFromHash() {
@@ -196,6 +196,13 @@ export class AppSidebar extends LightElement {
 
         ${this._renderTasksMenu()}
 
+        <a href="#projects"
+           class="sidebar-link ${this._activePage === 'projects' ? 'active' : ''}"
+           @click=${(e) => this._togglePage('projects', e)}>
+          <i class="bi bi-kanban"></i>
+          <span class="sidebar-link-name">Projects</span>
+        </a>
+
         <a href="#" class="sidebar-link ${this._activePage === 'models' ? 'active' : ''}"
            @click=${(e) => this._togglePage('models', e)}>
           <i class="bi bi-cpu"></i>
@@ -210,11 +217,6 @@ export class AppSidebar extends LightElement {
            @click=${(e) => this._togglePage('approval', e)}>
           <i class="bi bi-shield-check"></i>
           <span class="sidebar-link-name">Security</span>
-        </a>
-        <a href="#" class="sidebar-link ${this._activePage === 'agent-profiles' ? 'active' : ''}"
-           @click=${(e) => this._togglePage('agent-profiles', e)}>
-          <i class="bi bi-person-gear"></i>
-          <span class="sidebar-link-name">Agent Profiles</span>
         </a>
         <a href="#" class="sidebar-link ${this._activePage === 'agents' ? 'active' : ''}"
            @click=${(e) => this._togglePage('agents', e)}>

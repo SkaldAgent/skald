@@ -10,13 +10,13 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, trace, warn};
 
 use crate::core::approval::ApprovalManager;
+use crate::core::run_context::RunContext;
 use crate::core::tools::tool_names as tn;
 use crate::core::chat_event_bus::{ChatEvent, ChatEventBus, ChatEventRole};
 use crate::core::clarification::ClarificationManager;
 use crate::core::compactor::ContextCompactor;
 use crate::core::config::DatetimeConfig;
 use crate::core::db::{chat_history, chat_sessions_stack};
-use crate::core::db::run_contexts::RunContextRow;
 use crate::core::events::ServerEvent;
 use crate::core::llm::LlmManager;
 use crate::core::mcp::McpManager;
@@ -176,9 +176,8 @@ pub struct ChatSessionHandler {
     /// compact before processing the new message.  Zero means unknown
     /// (provider did not report usage on the first turn).
     pub(super) last_input_tokens: AtomicU32,
-    /// Active RunContext for this session. `None` means the "default" run_context
-    /// is used implicitly (global rules only).
-    pub(super) run_context: tokio::sync::RwLock<Option<RunContextRow>>,
+    /// Active RunContext for this session. `None` means the "default" group is used implicitly.
+    pub(super) run_context: tokio::sync::RwLock<Option<RunContext>>,
     /// When set, scratchpad reads/writes use this session_id instead of `self.session_id`.
     /// Used by async sub-tasks to share the parent's scratchpad.
     pub(super) scratchpad_session_id: std::sync::OnceLock<i64>,
@@ -205,7 +204,7 @@ impl ChatSessionHandler {
         memory_manager:           Arc<MemoryManager>,
         image_generator_manager:  Arc<ImageGeneratorManager>,
         compactor:                Option<Arc<ContextCompactor>>,
-        run_context:              Option<RunContextRow>,
+        run_context:              Option<RunContext>,
     ) -> Self {
         Self {
             session_id,
@@ -256,21 +255,19 @@ impl ChatSessionHandler {
         *self.scratchpad_session_id.get().unwrap_or(&self.session_id)
     }
 
-    /// Updates the RunContext for this session at runtime.
-    pub async fn set_run_context(&self, ctx: Option<RunContextRow>) {
+    /// Updates the active RunContext for this session at runtime.
+    pub async fn set_run_context(&self, ctx: Option<RunContext>) {
         *self.run_context.write().await = ctx;
     }
 
-    /// Returns the id of the active RunContext, if any.
-    pub async fn run_context_id(&self) -> Option<String> {
-        self.run_context.read().await.as_ref().map(|rc| rc.id.clone())
+    /// Returns the serialised JSON blob of the active RunContext (for storing on child tasks).
+    pub async fn run_context_json(&self) -> Option<String> {
+        self.run_context.read().await.as_ref().map(|rc| rc.to_db())
     }
 
-    /// Returns the active tool_group_id for this session (derived from the run_context).
+    /// Returns the active tool_permission_groups id for approval checks.
     pub(super) async fn tool_group_id(&self) -> Option<String> {
-        self.run_context.read().await
-            .as_ref()
-            .and_then(|rc| rc.tool_group_id.clone())
+        self.run_context.read().await.as_ref().and_then(|rc| rc.tool_group_id().map(str::to_owned))
     }
 
     /// Cancels the in-flight turn. The running call tree holds its own clone of
@@ -501,14 +498,14 @@ impl ChatSessionHandler {
                 tx.send(ServerEvent::Error {
                     message: "Interrotto dall'utente.".to_string(),
                 }).await.ok();
-                Ok(())
+                Err(anyhow::anyhow!("Turn cancelled by user"))
             }
             TurnOutcome::Exhausted => {
                 error!(session_id = self.session_id, max_rounds = self.max_tool_rounds, "tool-call loop exhausted without final answer");
                 tx.send(ServerEvent::Error {
                     message: format!("Exceeded {} tool-call rounds without a final answer.", self.max_tool_rounds),
                 }).await.ok();
-                Ok(())
+                Err(anyhow::anyhow!("tool-call loop exhausted after {} rounds without a final answer", self.max_tool_rounds))
             }
         }
     }

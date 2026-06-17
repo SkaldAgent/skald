@@ -204,10 +204,12 @@ impl ChatbotClient for OpenAiClient {
             warn!(model = %options.model, ?output_tokens, "openai: response truncated (max_tokens reached)");
         }
 
-        // DeepSeek thinking mode: reasoning_content must be echoed back on subsequent turns.
-        // Preserve even empty strings — DeepSeek API requires the field to be present
-        // when a previous response included it (even as "").
+        // Thinking/reasoning content varies by provider:
+        //   - DeepSeek:  "reasoning_content" (must be echoed back on subsequent turns, even as "")
+        //   - MiniMax M3 and others: "reasoning"
+        // We normalize to a single field and echo under both names in message_builder.
         let reasoning_content = message["reasoning_content"].as_str()
+            .or_else(|| message["reasoning"].as_str())
             .map(str::to_string);
 
         let tool_calls_array = message["tool_calls"].as_array().filter(|a| !a.is_empty());

@@ -1,0 +1,7 @@
+{
+  "name": "Tech Lead",
+  "description": "Reads project documentation or high-level requirements, breaks them into implementation tasks, sequences them by dependency, and orchestrates architect/engineer sub-agents to build the project end-to-end.",
+  "scope": "reasoning",
+  "strength": "very_high",
+  "icon": "icon.png"
+}

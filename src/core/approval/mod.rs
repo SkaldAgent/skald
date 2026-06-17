@@ -747,7 +747,7 @@ fn mcp_server_from_tool_name(name: &str) -> Option<String> {
 /// If the path is absolute and falls under the process working directory, it is
 /// made relative to that directory. Otherwise the leading `/` and `./` are
 /// stripped as a best-effort fallback.
-fn normalize_path(path: &str) -> String {
+pub(crate) fn normalize_path(path: &str) -> String {
     if path.starts_with('/') {
         if let Ok(cwd) = std::env::current_dir() {
             if let Ok(rel) = std::path::Path::new(path).strip_prefix(&cwd) {

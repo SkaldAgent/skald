@@ -187,14 +187,55 @@ impl ChatSessionHandler {
                             label_full:  self.tools.describe_call(&call.name, &call.arguments, ToolDescriptionLength::Full),
                         }).await.ok();
 
+                        // ── Working directory injection ─────────────────────────────────
+                        // Resolve relative paths and inject workdir using the RunContext
+                        // effective_working_dir. Original call.arguments are preserved for
+                        // ToolStart event / DB logging above; effective_args is used below.
+                        let mut effective_args = call.arguments.clone();
+                        {
+                            let wd = self.run_context.read().await
+                                .as_ref()
+                                .map(|rc| rc.effective_working_dir());
+                            if let Some(wd) = wd {
+                                if let Some(path) = effective_args["path"].as_str() {
+                                    if !std::path::Path::new(path).is_absolute() {
+                                        effective_args["path"] = serde_json::Value::String(
+                                            wd.join(path).to_string_lossy().into_owned()
+                                        );
+                                    }
+                                }
+                                if call.name == tn::EXECUTE_CMD && effective_args.get("workdir").is_none() {
+                                    effective_args["workdir"] = serde_json::Value::String(
+                                        wd.to_string_lossy().into_owned()
+                                    );
+                                }
+                            }
+                        }
+
                         // ── Approval gate ──────────────────────────────────────────────
                         let category = self.tools.category_of(&call.name);
                         let group_id = self.tool_group_id().await;
-                        let gate = self.approval.check(
-                            self.session_id, category,
-                            &config.agent_id, &self.source, &call.name, &call.arguments,
-                            group_id.as_deref(),
-                        ).await;
+                        let gate = if is_file_write_tool(&call.name) {
+                            let path = effective_args["path"].as_str().unwrap_or("");
+                            let pre_allowed = self.run_context.read().await
+                                .as_ref()
+                                .map(|rc| rc.is_write_allowed(path))
+                                .unwrap_or(false);
+                            if pre_allowed { GateResult::Allow }
+                            else {
+                                self.approval.check(
+                                    self.session_id, category,
+                                    &config.agent_id, &self.source, &call.name, &effective_args,
+                                    group_id.as_deref(),
+                                ).await
+                            }
+                        } else {
+                            self.approval.check(
+                                self.session_id, category,
+                                &config.agent_id, &self.source, &call.name, &effective_args,
+                                group_id.as_deref(),
+                            ).await
+                        };
                         match gate {
                             GateResult::Deny => {
                                 let msg = "Tool call denied by approval policy.".to_string();
@@ -220,11 +261,11 @@ impl ChatSessionHandler {
                                     .and_then(|g| g.clone());
                                 let (request_id, approve_rx) = self.approval.register(
                                     self.session_id, tool_call_id, &call.name,
-                                    call.arguments.clone(), &config.agent_id, &self.source,
+                                    effective_args.clone(), &config.agent_id, &self.source,
                                     ctx_label.as_deref(), category,
                                 ).await;
                                 info!(session_id = self.session_id, tool = %call.name, tool_call_id, request_id, "approval: waiting for human");
-                                self.emit_approval_event(tx, request_id, tool_call_id, &call.name, &call.arguments).await;
+                                self.emit_approval_event(tx, request_id, tool_call_id, &call.name, &effective_args).await;
 
                                 match approve_rx.await {
                                     Ok(ApprovalDecision::Approved) => {
@@ -264,34 +305,34 @@ impl ChatSessionHandler {
                         }
 
                         let dispatch_result: anyhow::Result<String> = if
-                            (call.name == "execute_task" && call.arguments["mode"].as_str() == Some("sync") && call.arguments.get("agent_id").is_some())
+                            (call.name == "execute_task" && effective_args["mode"].as_str() == Some("sync") && effective_args.get("agent_id").is_some())
                             || call.name == tn::RUN_SUBTASK
                         {
-                            self.dispatch_sub_agent(stack_id, config, tool_call_id, &call.arguments, token, tx).await
+                            self.dispatch_sub_agent(stack_id, config, tool_call_id, &effective_args, token, tx).await
                         } else if call.name == tn::EXECUTE_CMD {
                             // Cancellable path: a /stop drops this future, and
                             // `kill_on_drop(true)` kills the spawned shell process.
                             tokio::select! {
                                 _ = token.cancelled() => Err(anyhow::anyhow!("execute_cmd interrotto dall'utente")),
-                                r = crate::core::tools::exec::run_from_args(&call.arguments) => r,
+                                r = crate::core::tools::exec::run_from_args(&effective_args) => r,
                             }
                         } else if call.name == tn::UPDATE_SCRATCHPAD {
-                            self.dispatch_update_scratchpad(&call.arguments).await
+                            self.dispatch_update_scratchpad(&effective_args).await
                         } else if call.name == tn::ASK_USER_CLARIFICATION {
-                            self.dispatch_ask_user_clarification(tool_call_id, &call.arguments, tx).await
+                            self.dispatch_ask_user_clarification(tool_call_id, &effective_args, tx).await
                         } else if call.name == "task_completed" {
                             // Defensive stub: if the LLM somehow calls this itself, return a hint.
                             // Real delivery is via inject_async_result (synthetic message from the system).
-                            let task_id = call.arguments["task_id"].as_i64().unwrap_or(0);
+                            let task_id = effective_args["task_id"].as_i64().unwrap_or(0);
                             Ok(format!(r#"{{"status":"not_ready","task_id":{task_id},"message":"This tool is invoked by the system, not by you. Do not call it again — the result will arrive automatically as a new message in this conversation."}}"#))
                         } else if let Some(tool) = config.interface_tools.iter().find(|t| t.name() == call.name) {
-                            (tool.handler)(call.arguments.clone()).await
+                            (tool.handler)(effective_args.clone()).await
                         } else if let Some(tool) = config.memory_tools.iter().find(|t| t.name() == call.name) {
-                            tool.execute_async(call.arguments.clone()).await
+                            tool.execute_async(effective_args.clone()).await
                         } else if let Some(tool) = config.image_tools.iter().find(|t| t.name() == call.name) {
-                            tool.execute_async(call.arguments.clone()).await
+                            tool.execute_async(effective_args.clone()).await
                         } else {
-                            self.execute_tool(&call.name, call.arguments.clone()).await
+                            self.execute_tool(&call.name, effective_args.clone()).await
                         };
 
                         match dispatch_result {
@@ -299,15 +340,15 @@ impl ChatSessionHandler {
                                 debug!(session_id = self.session_id, tool = %call.name, tool_call_id, result_len = result.len(), "tool done");
                                 chat_llm_tools::complete(pool, tool_call_id, &result).await?;
                                 if is_file_write_tool(&call.name) {
-                                    if let Some(p) = call.arguments["path"].as_str() {
-                                        let path = p.trim_start_matches('/').trim_start_matches("./").to_string();
+                                    if let Some(p) = effective_args["path"].as_str() {
+                                        let path = crate::core::approval::normalize_path(p);
                                         tx.send(ServerEvent::FileChanged { path }).await.ok();
                                     }
                                 }
                                 tx.send(ServerEvent::ToolDone { tool_call_id, result: result.clone() }).await.ok();
                                 all_tool_calls.push(ToolCallEvent {
                                     name:      call.name.clone(),
-                                    arguments: Some(serde_json::to_string(&call.arguments).unwrap_or_default()),
+                                    arguments: Some(serde_json::to_string(&effective_args).unwrap_or_default()),
                                     result:    Some(result),
                                     status:    "done".to_string(),
                                 });
@@ -325,7 +366,7 @@ impl ChatSessionHandler {
                                 tx.send(ServerEvent::ToolError { tool_call_id, error: msg.clone() }).await.ok();
                                 all_tool_calls.push(ToolCallEvent {
                                     name:      call.name.clone(),
-                                    arguments: Some(serde_json::to_string(&call.arguments).unwrap_or_default()),
+                                    arguments: Some(serde_json::to_string(&effective_args).unwrap_or_default()),
                                     result:    Some(msg),
                                     status:    "failed".to_string(),
                                 });

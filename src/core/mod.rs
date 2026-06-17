@@ -18,6 +18,7 @@ pub mod location;
 pub mod memory;
 pub mod mcp;
 pub mod plugin;
+pub mod projects;
 pub mod provider;
 pub mod run_context;
 pub mod secrets;

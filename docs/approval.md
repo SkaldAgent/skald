@@ -33,21 +33,45 @@ llm_loop.rs
 
 ## Permission Groups and RunContext
 
-Rules are scoped to **permission groups** (`tool_permission_groups` table). A session's active **RunContext** (`run_contexts` table) references a group; rules in that group take precedence over rules in the `"default"` group.
+Rules are scoped to **permission groups** (`tool_permission_groups` table). A session's active **RunContext** references a group via its `security_group` field; rules in that group take precedence over rules in the `"default"` group.
+
+### RunContext Fields
+
+`RunContext` is a JSON blob stored in `chat_sessions.run_context`, `scheduled_jobs.run_context`, `projects.run_context`, and `project_tickets.run_context`.
+
+| Field | Type | Default | Purpose |
+|-------|------|---------|---------|
+| `security_group` | `Option<String>` | `null` | Permission group ID for approval rule lookup |
+| `system_prompt` | `Vec<String>` | `[]` | Prompt fragments injected as dynamic system context every turn |
+| `allow_fs_writes` | `Vec<String>` | `[]` | Paths pre-authorized for file writes (bypasses approval gate entirely) |
+| `working_directory` | `Option<String>` | `null` | Effective WD for tool calls; `null` = Skald's process cwd |
+
+`RunContext` exposes these as applicative methods (the handler is agnostic to its internal fields):
+
+```rust
+rc.tool_group_id()         -> Option<&str>   // for approval rule lookup
+rc.extra_system_prompt()   -> Option<String>  // joins system_prompt with "\n\n"
+rc.effective_working_dir() -> PathBuf         // configured path or process cwd
+rc.is_write_allowed(path)  -> bool            // pre-auth check for file writes
+```
 
 ### Evaluation Chain
 
 ```
-chat_session.run_context_id
-  └─► run_contexts.tool_group_id  (e.g. "cron_restrictive")
+chat_session.run_context  (JSON blob)
+  └─► RunContext.tool_group_id()  → e.g. "cron_restrictive"
         │
         ├─ rules WHERE group_id = "cron_restrictive"  ← evaluated first
         └─ rules WHERE group_id = "default"           ← fallback
 ```
 
-If a session has no `run_context_id` (or the run_context has no `tool_group_id`), only the `"default"` group rules apply.
+The handler exposes two views: `run_context_json()` (full blob, for propagating to child tasks) and `tool_group_id()` (delegates to `rc.tool_group_id()`, for approval checks).
 
-The `"default"` group and run_context are seeded automatically at startup and **cannot be deleted**. Their rules can be freely edited.
+If a session has no `run_context` or the blob has no `security_group`, only the `"default"` group rules apply.
+
+The `"default"` group is seeded automatically at startup and **cannot be deleted**. Its rules can be freely edited.
+
+The session `run_context` is set via `POST /api/sessions/{id}/run_context` with body containing the full `RunContext` JSON (or `null` to clear it). At runtime the in-memory handler is updated immediately.
 
 See [session.md](session.md) for how RunContext is resolved at session creation.
 
@@ -86,26 +110,40 @@ The `path_pattern` field uses the same glob logic, applied to the normalised pat
 
 ### Evaluation Order
 
-1. Hardcoded exception: file-write targeting `memory/` → always `Allow`
-2. DB rules for the session's group, then `"default"` group as fallback — sorted by `priority ASC, id ASC` within each tier — first matching rule wins
-3. **Session bypass** (in-memory): if the result would be `Require` and an active bypass matches `session_id` + `category`, convert to `Allow`. `Deny` is never bypassed.
-4. No matching rule → `Require` (default-closed)
+1. **RunContext `allow_fs_writes` pre-check** (in `llm_loop.rs`, before `ApprovalManager`): if the tool is a file-write tool and the path matches any entry in `RunContext.allow_fs_writes`, the call is immediately allowed — `ApprovalManager.check()` is not called at all.
+2. Hardcoded exception: file-write targeting `memory/` → always `Allow`
+3. DB rules for the session's group, then `"default"` group as fallback — sorted by `priority ASC, id ASC` within each tier — first matching rule wins
+4. **Session bypass** (in-memory): if the result would be `Require` and an active bypass matches `session_id` + `category`, convert to `Allow`. `Deny` is never bypassed.
+5. No matching rule → `Require` (default-closed)
 
-### Path Whitelist (e.g. `data/`)
+### Path Whitelist
 
-To let the LLM write freely to a folder without requiring approval, add an `allow` rule at a low priority (e.g. 5, before the generic `require` at priority 10):
+There are two ways to pre-authorize writes to a directory:
+
+**Option A — RunContext `allow_fs_writes`** (session-scoped, no DB rule needed):
+
+Set `allow_fs_writes` on the session's `RunContext`. The pre-check fires in `llm_loop.rs` before `ApprovalManager`, so no approval event is emitted at all.
+
+```json
+{
+  "security_group": "cron_restrictive",
+  "allow_fs_writes": ["data/output", "/abs/path/to/dir"]
+}
+```
+
+Matching semantics: exact file OR recursive directory prefix (no wildcards). `"data/output"` matches `data/output/foo.txt`, `data/output/sub/bar.txt`, etc. Entries can be absolute or relative to the session's `working_directory`.
+
+**Option B — approval_rules DB** (persistent, applies to all sessions in the group):
+
+Add an `allow` rule at a low priority (e.g. 5, before the generic `require` at priority 10):
 
 ```sql
--- Allow free writes to data/ for all file-write tools
 INSERT INTO approval_rules (tool_pattern, path_pattern, action, note, priority)
 VALUES ('write_file',     'data/*', 'allow', 'auto-allow data/ writes', 5);
-
 INSERT INTO approval_rules (tool_pattern, path_pattern, action, note, priority)
 VALUES ('edit_file',      'data/*', 'allow', 'auto-allow data/ writes', 5);
-
 INSERT INTO approval_rules (tool_pattern, path_pattern, action, note, priority)
 VALUES ('insert_at_line', 'data/*', 'allow', 'auto-allow data/ writes', 5);
-
 INSERT INTO approval_rules (tool_pattern, path_pattern, action, note, priority)
 VALUES ('replace_lines',  'data/*', 'allow', 'auto-allow data/ writes', 5);
 ```
@@ -414,7 +452,7 @@ The endpoint returns `AllTools`:
 | `src/core/approval/mod.rs` | `ApprovalManager`, `GateResult`, `ApprovalRule`, `PendingApprovalInfo`, `CategoryBypass`, session bypass methods; `is_tool_visible` (sync); `check_tool_visibility` (async); `impl ApprovalApi` |
 | `src/core/clarification/mod.rs` | `ClarificationManager`, `PendingClarificationInfo` |
 | `src/core/inbox.rs` | `Inbox`: unified façade for pending approvals + clarifications (wraps ApprovalManager, ClarificationManager, ChatHub) |
-| `src/core/run_context/mod.rs` | `RunContextManager`: CRUD for run contexts and permission groups; `duplicate_group` (atomic); `check_tool_visibility` (delegates to ApprovalManager with group resolution). Takes `Arc<ApprovalManager>` in constructor. |
+| `src/core/run_context/mod.rs` | `RunContext` domain object: fields `security_group`, `system_prompt`, `allow_fs_writes`, `working_directory` + applicative methods `tool_group_id()`, `extra_system_prompt()`, `effective_working_dir()`, `is_write_allowed()`. `RunContextManager`: CRUD for permission groups; `duplicate_group` (atomic); `check_tool_visibility`. |
 | `src/core/db/approval_rules.rs` | SQLite queries: list, insert, update, delete |
 | `src/core/db/mod.rs` | `approval_rules` table creation |
 | `src/core/session/handler/config.rs` | Loads rules once with `list_for_group`, calls `approval.is_tool_visible` to filter `base_tool_defs` for the parent agent |

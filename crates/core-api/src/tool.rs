@@ -65,6 +65,10 @@ pub trait Tool: Send + Sync {
     /// If true, this tool is only included in the tool list for the root agent (depth == 0).
     fn root_agent_only(&self) -> bool { false }
 
+    /// If true, this tool is only available to interactive sessions (web, telegram, mobile, voice).
+    /// Non-interactive background sessions (cron, tic) will not receive this tool definition.
+    fn interactive_only(&self) -> bool { false }
+
     /// Full OpenAI-format tool definition ready to be sent to the LLM.
     fn openai_definition(&self) -> Value {
         serde_json::json!({

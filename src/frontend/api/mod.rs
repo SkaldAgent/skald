@@ -11,6 +11,7 @@ pub mod inbox;
 pub mod llm;
 pub mod mcp;
 pub mod plugins;
+pub mod projects;
 pub mod run_context;
 pub mod sessions;
 pub mod transcribe_audio;
@@ -64,9 +65,17 @@ pub fn router() -> Router<Arc<Skald>> {
         .route("/tts/models",                   get(tts_models::list_models).post(tts_models::create_model))
         .route("/tts/models/{id}",              get(tts_models::get_model).put(tts_models::update_model).delete(tts_models::delete_model))
         .route("/tts/providers/{id}/models",    get(tts_models::provider_models))
+        // Projects
+        .route("/projects",                              get(projects::list).post(projects::create))
+        .route("/projects/{id}",                         get(projects::get_project).put(projects::update).delete(projects::delete))
+        .route("/projects/{id}/tickets",                 get(projects::list_tickets).post(projects::create_ticket))
+        .route("/projects/{id}/tickets/{tid}",           delete(projects::delete_ticket))
+        .route("/projects/{id}/tickets/{tid}/start",     post(projects::start_ticket))
+        .route("/projects/{id}/tickets/{tid}/reset",     post(projects::reset_ticket))
         // Cron jobs
         .route("/cron/jobs",                    get(cron::list))
         .route("/cron/jobs/{id}",               delete(cron::delete_job))
+        .route("/cron/jobs/{id}/kill",          post(cron::kill_job))
         .route("/cron/jobs/{id}/toggle",        post(cron::toggle))
         .route("/cron/jobs/{id}/run-context",   patch(cron::set_run_context))
         .route("/cron/runs",                    get(cron::list_runs))
@@ -85,10 +94,7 @@ pub fn router() -> Router<Arc<Skald>> {
         .route("/tool-permission-groups",                    get(run_context::list_groups).post(run_context::create_group))
         .route("/tool-permission-groups/{id}",               put(run_context::update_group).delete(run_context::delete_group))
         .route("/tool-permission-groups/{id}/duplicate",     post(run_context::duplicate_group))
-        // Run contexts
-        .route("/run-contexts",                 get(run_context::list_contexts).post(run_context::create_context))
-        .route("/run-contexts/{id}",            put(run_context::update_context).delete(run_context::delete_context))
-        // Session run_context assignment (runtime)
+        // Session tool_group assignment (runtime)
         .route("/sessions/{session_id}/run-context", put(run_context::set_session_run_context))
         // MCP
         .route("/mcp/servers",                  get(mcp::list_servers))

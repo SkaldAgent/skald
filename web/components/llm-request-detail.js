@@ -72,6 +72,36 @@ function extractTools(req) {
   return req?.tools ?? [];
 }
 
+function extractRespBlocks(resp) {
+  if (!resp) return [];
+  if (Array.isArray(resp.content)) return resp.content; // Anthropic
+  const msg = resp?.choices?.[0]?.message;
+  if (msg) return contentBlocks(msg); // OpenAI — reuse helper (handles reasoning_content, tool_calls)
+  return [];
+}
+
+function extractRespMeta(resp) {
+  if (!resp) return [];
+  const pairs = [];
+  const skip = new Set(['content', 'choices', 'type', 'role', 'object', 'usage']);
+  for (const [k, v] of Object.entries(resp)) {
+    if (skip.has(k)) continue;
+    pairs.push([k, typeof v === 'object' ? JSON.stringify(v) : String(v)]);
+  }
+  // OpenAI: finish_reason lives inside choices
+  const choice = resp?.choices?.[0];
+  if (choice?.finish_reason && !resp.stop_reason) {
+    pairs.push(['finish_reason', choice.finish_reason]);
+  }
+  // usage — flatten sub-keys
+  if (resp.usage && typeof resp.usage === 'object') {
+    for (const [k, v] of Object.entries(resp.usage)) {
+      if (v != null) pairs.push([`usage.${k}`, typeof v === 'object' ? JSON.stringify(v) : String(v)]);
+    }
+  }
+  return pairs;
+}
+
 function paramsPreview(input) {
   if (!input || Object.keys(input).length === 0) return '';
   const str = JSON.stringify(input);
@@ -110,6 +140,9 @@ function buildToolResultMap(msgs) {
 
 function contentBlocks(msg) {
   const blocks = [];
+  if (typeof msg.reasoning_content === 'string' && msg.reasoning_content) {
+    blocks.push({ type: 'reasoning', text: msg.reasoning_content });
+  }
   if (msg.content) {
     if (typeof msg.content === 'string') blocks.push({ type: 'text', text: msg.content });
     else if (Array.isArray(msg.content)) blocks.push(...msg.content);
@@ -143,7 +176,7 @@ export class LlmRequestDetail extends LightElement {
     this._detail        = null;
     this._loading       = false;
     this._error         = null;
-    this._openSections  = new Set(['system', 'conversation', 'response']);
+    this._openSections  = new Set(['response']);
     this._expandedTools = new Set();
   }
 
@@ -151,7 +184,7 @@ export class LlmRequestDetail extends LightElement {
     if (changed.has('detailId') && this.detailId != null) {
       this._detail        = null;
       this._error         = null;
-      this._openSections  = new Set(['system', 'conversation', 'response']);
+      this._openSections  = new Set(['response']);
       this._expandedTools = new Set();
       this._fetch(this.detailId);
     }
@@ -271,6 +304,24 @@ export class LlmRequestDetail extends LightElement {
     if (!block) return nothing;
     const type = block.type;
 
+    if (type === 'reasoning') {
+      const key  = `${keyPrefix}-reasoning`;
+      const open = this._expandedTools.has(key);
+      const text = block.text ?? '';
+      return html`
+        <div class="llmr-reasoning-block">
+          <div class="llmr-reasoning-header" @click=${() => this._toggleToolExpand(key)}>
+            <i class="bi bi-lightbulb"></i>
+            <span>reasoning</span>
+            <span class="llmr-tool-toggle ms-auto">
+              <i class="bi bi-${open ? 'dash' : 'plus'}-circle"></i>
+            </span>
+          </div>
+          ${open ? html`<pre class="llmr-text-block llmr-reasoning-body">${text}</pre>` : nothing}
+        </div>
+      `;
+    }
+
     if (type === 'text') {
       const text = block.text ?? '';
       if (!text) return nothing;
@@ -372,28 +423,8 @@ export class LlmRequestDetail extends LightElement {
 
   _renderResponseBlock(block, idx) {
     if (!block) return nothing;
-    if (block.type === 'text') {
-      return html`<pre class="llmr-text-block">${block.text ?? ''}</pre>`;
-    }
-    if (block.type === 'tool_use') {
-      const key  = `resp-use-${block.id ?? idx}`;
-      const open = this._expandedTools.has(key);
-      const args = block.input != null ? JSON.stringify(block.input, null, 2) : '{}';
-      return html`
-        <div class="llmr-tool-block llmr-tool-block--use">
-          <div class="llmr-tool-block-header" @click=${() => this._toggleToolExpand(key)}>
-            <i class="bi bi-wrench"></i>
-            <span class="llmr-tool-name">${block.name}</span>
-            <span class="llmr-tool-id">${block.id ?? ''}</span>
-            <span class="llmr-tool-toggle ms-auto">
-              <i class="bi bi-${open ? 'dash' : 'plus'}-circle"></i>
-            </span>
-          </div>
-          ${open ? html`<pre class="llmr-tool-pre">${args}</pre>` : nothing}
-        </div>
-      `;
-    }
-    return html`<pre class="llmr-tool-pre">${JSON.stringify(block, null, 2)}</pre>`;
+    // Delegate to _renderContentBlock for shared block types (reasoning, text, tool_use, tool_result)
+    return this._renderContentBlock(block, `resp-${idx}`);
   }
 
   // ── Main render ──────────────────────────────────────────────────────────────
@@ -432,15 +463,16 @@ export class LlmRequestDetail extends LightElement {
     const d      = this._detail;
     const req    = parseJson(d.request_json);
     const resp   = parseJson(d.response_json);
-    const hdrs   = parseJson(d.request_headers);
+    const hdrs     = parseJson(d.request_headers);
+    const respHdrs = parseJson(d.response_headers);
     const system = extractSystem(req);
     const msgs   = extractMessages(req);
     const params = extractParams(req);
     const tools  = extractTools(req);
 
     const payloadMissing = !req && !resp;
-    const respContent    = resp?.content ?? (resp?.choices?.[0]?.message ? [resp.choices[0].message] : []);
-    const stopReason     = resp?.stop_reason ?? resp?.choices?.[0]?.finish_reason ?? null;
+    const respBlocks     = extractRespBlocks(resp);
+    const respMeta       = extractRespMeta(resp);
     const toolResultMap  = buildToolResultMap(msgs);
 
     return html`
@@ -463,8 +495,12 @@ export class LlmRequestDetail extends LightElement {
           </div>
         ` : nothing}
 
-        ${hdrs ? this._renderSection('headers', 'Request Headers',
+        ${hdrs ? this._renderSection('req-headers', 'Request Headers',
             this._renderKvTable(Object.entries(hdrs))
+          ) : nothing}
+
+        ${respHdrs ? this._renderSection('resp-headers', 'Response Headers',
+            this._renderKvTable(Object.entries(respHdrs))
           ) : nothing}
 
         ${params.length ? this._renderSection('params', 'Parameters',
@@ -516,18 +552,9 @@ export class LlmRequestDetail extends LightElement {
 
         ${resp ? this._renderSection('response', 'Response',
             html`
-              ${stopReason ? html`
-                <table class="llmr-kv-table mb-2">
-                  <tbody>
-                    <tr>
-                      <td class="llmr-kv-key">stop_reason</td>
-                      <td class="llmr-kv-val">${stopReason}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              ` : nothing}
-              <div class="llmr-msg-list">
-                ${respContent.map((b, i) => this._renderResponseBlock(b, i))}
+              ${respMeta.length ? this._renderKvTable(respMeta) : nothing}
+              <div class="llmr-msg-list llmr-msg-list--resp">
+                ${respBlocks.map((b, i) => this._renderResponseBlock(b, i))}
               </div>
             `
           ) : nothing}

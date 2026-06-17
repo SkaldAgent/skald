@@ -48,14 +48,14 @@ impl ExecuteTask {
         })
     }
 
-    pub fn execute_with_session(&self, args: &Value, session_id: i64, run_context_id: Option<String>) -> Result<String> {
+    pub fn execute_with_session(&self, args: &Value, session_id: i64, run_context: Option<String>) -> Result<String> {
         let mode     = args["mode"].as_str().unwrap_or("").trim().to_string();
         let title    = args["title"].as_str().unwrap_or("").trim().to_string();
         let desc     = args["description"].as_str().unwrap_or("").trim().to_string();
         let cron     = args["cron"].as_str().unwrap_or("").trim().to_string();
         let prompt   = args["prompt"].as_str().unwrap_or("").trim().to_string();
         let agent_id = args["agent_id"].as_str().unwrap_or("worker").trim().to_string();
-        let rc_id    = run_context_id.as_deref();
+        let rc_id    = run_context.as_deref();
 
         if title.is_empty()  { anyhow::bail!("title is required"); }
         if prompt.is_empty() { anyhow::bail!("prompt is required"); }
@@ -99,9 +99,9 @@ impl ExecuteTask {
 /// Builds the execute_task InterfaceTool with the session_id captured in a closure.
 /// Called from the session handler when building AgentRunConfig for interactive sessions.
 pub fn build_execute_task_interface_tool(
-    task_mgr:       Arc<TaskManager>,
-    session_id:     i64,
-    run_context_id: Option<String>,
+    task_mgr:     Arc<TaskManager>,
+    session_id:   i64,
+    run_context:  Option<String>,
 ) -> crate::core::session::handler::InterfaceTool {
     use crate::core::session::handler::{InterfaceTool, ToolFuture};
 
@@ -117,11 +117,11 @@ pub fn build_execute_task_interface_tool(
             }
         }),
         handler: Arc::new(move |args: Value| -> ToolFuture {
-            let tool_clone     = Arc::clone(&tool);
-            let run_context_id = run_context_id.clone();
+            let tool_clone  = Arc::clone(&tool);
+            let run_context = run_context.clone();
             Box::pin(async move {
                 tokio::task::spawn_blocking(move || {
-                    tool_clone.execute_with_session(&args, session_id, run_context_id)
+                    tool_clone.execute_with_session(&args, session_id, run_context)
                 })
                 .await
                 .map_err(|e| anyhow::anyhow!("execute_task panicked: {e}"))?

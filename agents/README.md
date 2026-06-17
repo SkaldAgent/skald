@@ -39,6 +39,7 @@ High detail, expressive.
 | **Tinker** | Clever craftsperson with multitool, gears, repair tools | Orange & steel grey |
 | **Worker** | Practical person with futuristic toolbelt and mechanical elements | Orange & steel grey |
 | **Blueprint** | Scholarly figure with floating scrolls and glowing quills writing words in mid-air, luminous documents orbiting | Deep indigo & burnished gold |
+| **Tech Lead** | Confident strategist at a holographic kanban board, task cards floating mid-air, sub-agents visible in the background | Warm amber & deep teal |
 
 
 ## Adding a new agent icon

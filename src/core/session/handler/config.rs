@@ -57,6 +57,13 @@ impl ChatSessionHandler {
         // can pause for user input. Interactive sessions get it inline via AgentQuestion.
         if !self.is_interactive {
             base_tool_defs.push(super::ask_user_clarification_tool_def());
+            // Remove tools that only make sense in interactive sessions (e.g. read_notification,
+            // which is synthetically injected by ChatHub and returns EMPTY if called directly).
+            let interactive_only = self.tools.interactive_only_names();
+            base_tool_defs.retain(|def| {
+                let name = def["function"]["name"].as_str().unwrap_or("");
+                !interactive_only.iter().any(|n| n == name)
+            });
         }
         // Interactive sessions get read_agent_result so the LLM can poll for async
         // task status. The real delivery happens via inject_async_result (synthetic msg).
@@ -135,6 +142,18 @@ impl ChatSessionHandler {
             });
         }
         // ── End MCP grant initialisation ────────────────────────────────────────
+
+        // Append RunContext system prompt fragments to the dynamic tail (not cached).
+        let extra_system_dynamic = {
+            let rc = self.run_context.read().await;
+            let injected = rc.as_ref().and_then(|r| r.extra_system_prompt());
+            match (extra_system_dynamic, injected) {
+                (Some(e), Some(i)) => Some(format!("{e}\n\n{i}")),
+                (Some(e), None)    => Some(e),
+                (None,    Some(i)) => Some(i),
+                (None,    None)    => None,
+            }
+        };
 
         let root_only_tool_names: Vec<String> = self.tools.root_agent_only_names();
 

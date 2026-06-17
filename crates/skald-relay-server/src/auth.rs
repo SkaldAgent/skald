@@ -108,4 +108,55 @@ mod tests {
         assert_eq!(hexed.len(), 64);
         assert_eq!(hex::encode(raw), hexed);
     }
+
+    /// Cross-compat: the iOS client uses `CryptoKit` to sign the auth challenge,
+    /// the relay uses `ed25519-dalek` to verify.  The two libraries produce
+    /// *different* (but both valid) Ed25519 signatures for the same (key, message)
+    /// — see `data/ios-app/test-vectors.md` §4 "Note on V18".  This test pins
+    /// the two signatures the relay must accept for the canonical
+    /// `SEED_CLIENT = bytes(32..<64)` test vector:
+    ///
+    ///  * `V18_cryptokit` (the value committed in test-vectors.md §4) — what
+    ///    the iOS test suite asserts byte-for-byte.
+    ///  * `V18_dalek` (regression value) — what the Rust `gen-vectors` binary
+    ///    produces.  The relay MUST keep accepting it as well: any signature
+    ///    that was once valid under RFC 8032 strict Ed25519 stays valid
+    ///    (the protocol invariant is "the relay verifies the client's
+    ///    signature", not "the client and relay produce identical bytes").
+    #[test]
+    fn challenge_verifies_cryptokit_signature() {
+        // V8 client_ed25519_pub from test-vectors.md §4.
+        let client_pub: [u8; 32] =
+            hex::decode("12355ea750e60d6370ba6776037f25062f6c9450c5009669884895fd5b377a18")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        let challenge: [u8; 32] =
+            hex::decode("aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        // V18 from test-vectors.md §4 (CryptoKit signature).
+        let v18_cryptokit: [u8; 64] =
+            hex::decode("a2af4518a7001e3269006d30e1175d33d36cc23350c6c4def8347be8ec97e32ce51c4f066ca29cc497690aa241524d20ea20a72d38d9beb6da01e966aada8508")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        // The dalek reference value (regression — see "Note on V18" in §4).
+        let v18_dalek: [u8; 64] =
+            hex::decode("ae38491a1f25bb5fb11f0b17e3d344412bfc927461b6517e9a0ab6a64020054677f59490af026f34c81d9378d4daae4823109ca2d1afbf4ff00230a038270002")
+                .unwrap()
+                .try_into()
+                .unwrap();
+
+        assert!(verify_challenge(&client_pub, &challenge, &v18_cryptokit),
+                "relay must accept the CryptoKit signature committed as V18");
+        assert!(verify_challenge(&client_pub, &challenge, &v18_dalek),
+                "relay must also accept the historical dalek reference signature");
+
+        // Sanity: tampered signature is rejected.
+        let mut bad = v18_cryptokit;
+        bad[0] ^= 0x01;
+        assert!(!verify_challenge(&client_pub, &challenge, &bad));
+    }
 }

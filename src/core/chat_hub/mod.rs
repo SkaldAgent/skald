@@ -105,17 +105,17 @@ impl ChatHub {
         // get_or_create_handler is idempotent; we call it early to read the
         // session's RunContext so it can be inherited by any task spawned here.
         let handler = self.session_mgr.get_or_create_handler(session_id).await?;
-        let run_context_id = handler.run_context_id().await;
+        let run_context_json = handler.run_context_json().await;
 
         // Inject execute_task as an InterfaceTool for all interactive sessions.
-        // session_id and run_context_id are captured so tasks inherit the parent context.
+        // session_id and run_context_json are captured so tasks inherit the parent context.
         let mut interface_tools = opts.interface_tools;
         if let Some(task_mgr) = self.task_mgr.get() {
             interface_tools.push(
                 crate::core::tools::cron_jobs::build_execute_task_interface_tool(
                     Arc::clone(task_mgr),
                     session_id,
-                    run_context_id,
+                    run_context_json,
                 )
             );
         }

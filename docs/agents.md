@@ -62,6 +62,7 @@ When a session has no run context it uses the built-in **"default"** group. The 
 | `tic` | TIC | — | — | ✓ | Background event processor; calls `notify` when something is worth surfacing. Ephemeral. `notify` is injected as an `InterfaceTool` by `TicManager`. Tool access is restricted via the run context set from the `tic.run_context` property. |
 | `explorer` | Explorer | `analysis` | `average` | | Studies code, investigates bugs, analyses architecture, produces structured Markdown reports in `data/explorer/`. No implementation. |
 | `blueprint` | Blueprint | `reasoning` | `very_high` | | Transforms project ideas into comprehensive spec documents in `data/`. Never writes code. Saves output path to scratchpad. |
+| `tech-lead` | Tech Lead | `reasoning` | `very_high` | | Reads project documentation, breaks scope into implementation tasks, sequences them by dependency, and orchestrates `architect`/`engineer` sub-agents to deliver end-to-end. |
 
 
 ---

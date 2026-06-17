@@ -4,9 +4,10 @@ import { formatDate, formatElapsed } from './utils.js';
 
 export class RunningTasksSection extends LightElement {
   static properties = {
-    _jobs:  { state: true },
-    _error: { state: true },
-    _tick:  { state: true },
+    _jobs:    { state: true },
+    _error:   { state: true },
+    _tick:    { state: true },
+    _killing: { state: true },
   };
 
   constructor() {
@@ -14,6 +15,7 @@ export class RunningTasksSection extends LightElement {
     this._jobs      = [];
     this._error     = null;
     this._tick      = 0;
+    this._killing   = new Set();
     this._timer     = null;
     this._pollTimer = null;
   }
@@ -42,6 +44,29 @@ export class RunningTasksSection extends LightElement {
     }
   }
 
+  async _kill(job) {
+    const confirmed = window.confirm(
+      `Terminate task "${job.title}"?\n\nThe task will be stopped immediately and recorded as failed.`
+    );
+    if (!confirmed) return;
+
+    this._killing = new Set([...this._killing, job.id]);
+    try {
+      const res = await fetch(`/api/cron/jobs/${job.id}/kill`, { method: 'POST' });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+      await this.load();
+    } catch (e) {
+      this._error = `Failed to terminate task: ${e.message}`;
+    } finally {
+      const next = new Set(this._killing);
+      next.delete(job.id);
+      this._killing = next;
+    }
+  }
+
   _kindLabel(job) {
     if (job.kind === 'cron' && !job.single_run)
       return html`<span class="task-badge task-badge--cron">cron</span>`;
@@ -51,6 +76,7 @@ export class RunningTasksSection extends LightElement {
   }
 
   _renderCard(job) {
+    const killing = this._killing.has(job.id);
     return html`
       <div class="task-card task-card--running">
         <div class="task-card-header">
@@ -59,6 +85,16 @@ export class RunningTasksSection extends LightElement {
             ${this._kindLabel(job)}
             <span class="task-badge task-badge--running">running</span>
           </div>
+          <button
+            class="task-kill-btn"
+            title="Terminate task"
+            ?disabled=${killing}
+            @click=${() => this._kill(job)}
+          >
+            ${killing
+              ? html`<i class="bi bi-hourglass-split"></i>`
+              : html`<i class="bi bi-x-lg"></i>`}
+          </button>
         </div>
 
         ${job.description ? html`<div class="task-card-desc">${job.description}</div>` : nothing}

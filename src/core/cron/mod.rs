@@ -10,16 +10,20 @@ use tokio::sync::mpsc;
 use tokio::time::Duration;
 use tracing::{error, info};
 
+use core_api::system_bus::{SystemEvent, SystemEventBus};
+
 use crate::core::chat_hub::ChatHub;
+use crate::core::db::chat_sessions;
 use crate::core::db::scheduled_jobs::{self, ScheduledJob};
 use crate::core::session::manager::ChatSessionManager;
 
 pub struct TaskManager {
-    pool:    Arc<SqlitePool>,
-    tz:      Option<Tz>,
-    session: std::sync::OnceLock<Arc<ChatSessionManager>>,
-    hub:     std::sync::OnceLock<Arc<ChatHub>>,
-    self_arc: std::sync::OnceLock<Arc<Self>>,
+    pool:       Arc<SqlitePool>,
+    tz:         Option<Tz>,
+    session:    std::sync::OnceLock<Arc<ChatSessionManager>>,
+    hub:        std::sync::OnceLock<Arc<ChatHub>>,
+    self_arc:   std::sync::OnceLock<Arc<Self>>,
+    system_bus: Arc<SystemEventBus>,
 }
 
 /// Returns `(next_utc, is_single)` where `is_single` is `true` when the
@@ -42,13 +46,14 @@ fn next_fire(schedule: &Schedule, tz: Option<Tz>) -> Option<DateTime<Utc>> {
 }
 
 impl TaskManager {
-    pub fn new(pool: Arc<SqlitePool>, tz: Option<Tz>) -> Arc<Self> {
+    pub fn new(pool: Arc<SqlitePool>, tz: Option<Tz>, system_bus: Arc<SystemEventBus>) -> Arc<Self> {
         Arc::new(Self {
             pool,
             tz,
-            session:  std::sync::OnceLock::new(),
-            hub:      std::sync::OnceLock::new(),
-            self_arc: std::sync::OnceLock::new(),
+            session:    std::sync::OnceLock::new(),
+            hub:        std::sync::OnceLock::new(),
+            self_arc:   std::sync::OnceLock::new(),
+            system_bus,
         })
     }
 
@@ -181,7 +186,7 @@ impl TaskManager {
         single_run:        bool,
         kind:              &str,
         parent_session_id: Option<i64>,
-        run_context_id:    Option<&str>,
+        run_context:       Option<&str>,
     ) -> Result<ScheduledJob> {
         let (first_fire, _is_single, single_run) = if kind == "sync" || kind == "immediate" {
             (None, true, true)
@@ -201,7 +206,7 @@ impl TaskManager {
         let job = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(scheduled_jobs::create(
                 &self.pool, title, description, cron, prompt, agent_id,
-                single_run, next_run_at, kind, parent_session_id, run_context_id,
+                single_run, next_run_at, kind, parent_session_id, run_context, None,
             ))
         })?;
         Ok(job)
@@ -215,12 +220,12 @@ impl TaskManager {
         description:    &str,
         prompt:         &str,
         agent_id:       &str,
-        run_context_id: Option<&str>,
+        run_context: Option<&str>,
     ) -> Result<String> {
         let job = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(scheduled_jobs::create(
                 &self.pool, title, description, "", prompt, agent_id,
-                true, None, "sync", None, run_context_id,
+                true, None, "sync", None, run_context, None,
             ))
         })?;
         let session  = self.session()?;
@@ -242,12 +247,12 @@ impl TaskManager {
         prompt:            &str,
         agent_id:          &str,
         parent_session_id: i64,
-        run_context_id:    Option<&str>,
+        run_context:       Option<&str>,
     ) -> Result<ScheduledJob> {
         let job = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(scheduled_jobs::create(
                 &self.pool, title, description, "", prompt, agent_id,
-                true, None, "async", Some(parent_session_id), run_context_id,
+                true, None, "async", Some(parent_session_id), run_context, None,
             ))
         })?;
         let pool     = Arc::clone(&self.pool);
@@ -259,6 +264,39 @@ impl TaskManager {
         tokio::spawn(async move {
             if let Err(e) = run_job(&pool, &session, &task_mgr, hub.as_ref(), &job_c, tz).await {
                 error!("async task {} ('{}') failed: {e}", job_c.id, job_c.title);
+            }
+        });
+        Ok(job)
+    }
+
+    /// Create and immediately spawn an async job with an opaque `origin_ref`.
+    /// Returns the created `ScheduledJob` (caller uses its `id` for tracking).
+    /// Unlike `add_job_async`, no `parent_session_id` is set — completion is
+    /// delivered via `SystemEvent::JobCompleted` on the system bus.
+    pub fn spawn_async_job(
+        &self,
+        title:       &str,
+        description: &str,
+        prompt:      &str,
+        agent_id:    &str,
+        run_context: Option<&str>,
+        origin_ref:  &str,
+    ) -> Result<scheduled_jobs::ScheduledJob> {
+        let job = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(scheduled_jobs::create(
+                &self.pool, title, description, "", prompt, agent_id,
+                true, None, "async", None, run_context, Some(origin_ref),
+            ))
+        })?;
+        let pool     = Arc::clone(&self.pool);
+        let session  = self.session()?.clone();
+        let hub      = self.hub.get().cloned();
+        let task_mgr = self.self_arc()?;
+        let tz       = self.tz;
+        let job_c    = job.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_job(&pool, &session, &task_mgr, hub.as_ref(), &job_c, tz).await {
+                error!("project-ticket job {} failed: {e}", job_c.id);
             }
         });
         Ok(job)
@@ -313,10 +351,8 @@ async fn run_job(
     let (session_id, _) = session.create_session(&job.agent_id, "cron", false, true).await?;
     scheduled_jobs::set_running(pool, job.id, session_id).await?;
 
-    if let Some(rc_id) = &job.run_context_id {
-        crate::core::db::run_contexts::set_run_context_for_session(pool, session_id, Some(rc_id.as_str()))
-            .await
-            .ok();
+    if let Some(rc) = &job.run_context {
+        chat_sessions::set_run_context(pool, session_id, Some(rc.as_str())).await.ok();
     }
 
     let handler = session.get_or_create_handler(session_id).await?;
@@ -335,7 +371,7 @@ async fn run_job(
 
     // Build interface_tools: run_subtask for background sessions (sync only, no async/cron).
     let task_mgr_clone = Arc::clone(task_mgr);
-    let run_subtask_tool = build_run_subtask_tool(task_mgr_clone, job.run_context_id.clone());
+    let run_subtask_tool = build_run_subtask_tool(task_mgr_clone, job.run_context.clone());
 
     // Use a large buffer and drain rx concurrently with handle_message to avoid
     // deadlock: handle_message may emit many events (ToolStart/ToolDone/Thinking
@@ -385,6 +421,13 @@ async fn run_job(
                            "completed", final_response.as_deref(), None).await?;
             scheduled_jobs::finish_run(pool, job.id, next_run_at.as_deref()).await?;
 
+            task_mgr.system_bus.send(SystemEvent::JobCompleted {
+                job_id:     job.id,
+                origin_ref: job.origin_ref.clone(),
+                result:     final_response.clone(),
+                error:      None,
+            });
+
             match job.kind.as_str() {
                 "cron" => {
                     if let Some(hub) = hub {
@@ -421,6 +464,14 @@ async fn run_job(
                            &completed_at.to_rfc3339(), duration_ms,
                            "failed", None, Some(&err_str)).await?;
             scheduled_jobs::finish_run(pool, job.id, next_run_at.as_deref()).await?;
+
+            task_mgr.system_bus.send(SystemEvent::JobCompleted {
+                job_id:     job.id,
+                origin_ref: job.origin_ref.clone(),
+                result:     None,
+                error:      Some(err_str.clone()),
+            });
+
             if let Some(hub) = hub {
                 hub.notify(format!(
                     "CronJob ID {} ({}) has failed with the following error: {} (check the logs)",
@@ -500,7 +551,7 @@ async fn inject_async_result(
 
 /// Builds the `run_subtask` InterfaceTool injected into background sessions.
 /// Background tasks can only run synchronous sub-tasks — no cron or async.
-fn build_run_subtask_tool(task_mgr: Arc<TaskManager>, run_context_id: Option<String>) -> crate::core::session::handler::InterfaceTool {
+fn build_run_subtask_tool(task_mgr: Arc<TaskManager>, run_context: Option<String>) -> crate::core::session::handler::InterfaceTool {
     use crate::core::session::handler::{InterfaceTool, ToolFuture};
     use serde_json::json;
 
@@ -528,10 +579,10 @@ fn build_run_subtask_tool(task_mgr: Arc<TaskManager>, run_context_id: Option<Str
             let desc           = args["description"].as_str().unwrap_or("").to_string();
             let prompt         = args["prompt"].as_str().unwrap_or("").to_string();
             let agent_id       = args["agent_id"].as_str().unwrap_or("worker").to_string();
-            let run_context_id = run_context_id.clone();
+            let run_context = run_context.clone();
             Box::pin(async move {
                 tokio::task::spawn_blocking(move || {
-                    tm.add_job_sync(&title, &desc, &prompt, &agent_id, run_context_id.as_deref())
+                    tm.add_job_sync(&title, &desc, &prompt, &agent_id, run_context.as_deref())
                 })
                 .await
                 .map_err(|e| anyhow::anyhow!("run_subtask task panicked: {e}"))?

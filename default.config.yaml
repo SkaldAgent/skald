@@ -30,7 +30,7 @@ llm:
   # discard history that should be summarised instead.  With compaction active
   # this field has no effect; without it, this is the only context-size guard.
   max_history_messages: 30
-  max_tool_rounds: 20
+  max_tool_rounds: 100
   datetime:
     enabled: true
     round_minutes: 10  # Help with KV cache (instead of 10:54, it will pass 10:50 to the LLM)

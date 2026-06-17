@@ -86,13 +86,16 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 | `src/core/transcribe/` | TranscribeManager, OpenAiAudioTranscriber, ElevenLabsTranscriber. Traits and record types re-exported from `core-api`. | [transcribe-providers.md](transcribe-providers.md) |
 | `src/core/tts/` | TtsManager (DB-backed + plugin slots), OpenAiTtsSynthesiser, ElevenLabsTtsSynthesiser. Traits and record types re-exported from `core-api`. | [tts-providers.md](tts-providers.md) |
 | `src/core/image_generate/` | ImageGenerate trait, ImageGeneratorManager (DB-backed + plugin slots), OpenRouterImageGenerator | [image-generate.md](image-generate.md) |
-| `src/core/run_context/mod.rs` | `RunContextManager`: CRUD for run contexts + permission groups; `duplicate_group` (atomic SQLite transaction); `check_tool_visibility` (resolves group from run context, delegates to `ApprovalManager`). Takes `Arc<ApprovalManager>` in constructor. | [approval.md](approval.md) |
+| `src/core/run_context/mod.rs` | `RunContext` domain object: fields `security_group`, `system_prompt`, `allow_fs_writes`, `working_directory` + applicative methods `tool_group_id()`, `extra_system_prompt()`, `effective_working_dir()`, `is_write_allowed()`. `RunContextManager`: permission group CRUD; `set_session_run_context`; `duplicate_group`; `check_tool_visibility`. | [approval.md](approval.md) |
+| `src/core/projects/mod.rs` | `ProjectManager` — CRUD for projects (filesystem-linked, ordered by `updated_at`) | [database.md](database.md) |
+| `src/core/projects/tickets.rs` | `ProjectTicketManager` — CRUD + lifecycle for project tickets (`start`, `on_job_completed`, `reset`); `start()` builds a runtime `RunContext` from stored static config (security_group), then always sets `working_directory = project.path`, extends `allow_fs_writes` with the project tree and `{skald_cwd}/data`, and prepends three system prompt fragments (project name/description, working directory, Skald data dir path) | [database.md](database.md) |
 | `src/core/inbox.rs` | `Inbox`: unified façade for pending approvals + clarifications (wraps ApprovalManager, ClarificationManager, ChatHub) | [approval.md](approval.md) |
 | `src/core/db/` | SQLite schema and queries | [database.md](database.md) |
 | `src/core/events.rs` | WS protocol types | [frontend.md](frontend.md) |
 | `src/frontend/mod.rs` | `WebFrontend` — wires `router_factory`, starts plugins, runs Axum | [architecture.md](architecture.md) |
 | `src/frontend/server.rs` | `WebServer` — Axum router, TcpListener, `WebServerHandle` | [architecture.md](architecture.md) |
-| `src/frontend/api/` | 18 HTTP + WebSocket handlers — `State<Arc<Skald>>` | [frontend.md](frontend.md) |
+| `src/frontend/api/` | HTTP + WebSocket handlers — `State<Arc<Skald>>` | [frontend.md](frontend.md) |
+| `src/frontend/api/projects.rs` | REST CRUD for projects and tickets — `GET/POST /api/projects`, `GET/PUT/DELETE /api/projects/{id}`, tickets sub-routes, `start` and `reset` lifecycle endpoints | [database.md](database.md) |
 | `src/config.rs` | `Config` (YAML aggregate: `ServerConfig`, `WebConfig` + re-exports from `core::config`) + `Config::into_split()` | [logging-config.md](logging-config.md) |
 | `crates/plugin-honcho/` | Honcho memory sink (standalone crate) | [honcho.md](honcho.md) |
 | `crates/plugin-tailscale-remote/` | Remote connectivity via Tailscale mesh (standalone crate) | [remote.md](remote.md) |

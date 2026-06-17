@@ -2,20 +2,36 @@
 
 ## RunContext Resolution
 
-Each session can have an active **RunContext** that controls which permission group is used for tool approval.
+Each session can have an active **RunContext** that controls approval policy, system prompt injection, file-write pre-authorization, and the effective working directory for tool calls.
 
 Resolution order at handler creation (`get_or_create_handler`):
 
-1. `chat_sessions.run_context_id` — explicit per-session assignment persisted in DB (set via API, per cron job, or by a run-context config property like TIC's `tic.run_context`)
-2. `None` — falls back to the implicit `"default"` group
+1. `chat_sessions.run_context` — JSON blob persisted in DB (set via API, per cron job, or by TIC's `tic.run_context` config key)
+2. `None` — all RunContext methods return their zero value (`tool_group_id()` → `None`, `extra_system_prompt()` → `None`, `is_write_allowed()` → `false`, `effective_working_dir()` → process cwd)
 
-The resolved `RunContextRow` is stored in `ChatSessionHandler::run_context` (`RwLock<Option<RunContextRow>>`). Its `tool_group_id` is extracted on every tool call and passed to `ApprovalManager::check()`.
+The `RunContext` is stored in `ChatSessionHandler::run_context` (`RwLock<Option<RunContext>>`). The handler calls its applicative methods and never accesses its internal fields directly.
+
+| Method | What the handler uses it for |
+|--------|------------------------------|
+| `tool_group_id()` | Approval rule lookup (passed to `ApprovalManager::check()`) |
+| `extra_system_prompt()` | Injected as dynamic system tail in `build_agent_config` |
+| `is_write_allowed(path)` | Pre-check in `llm_loop.rs` before the approval gate |
+| `effective_working_dir()` | WD injection for file tools and `execute_cmd` in `llm_loop.rs` |
 
 ### Runtime Update
 
-`PUT /api/sessions/:id/run-context` with body `{ "run_context_id": "cron_restrictive" | null }`:
+`POST /api/sessions/:id/run_context` with body containing the full `RunContext` JSON object (or `null` to clear):
 
-- Updates `chat_sessions.run_context_id` in DB
+```json
+{
+  "security_group": "cron_restrictive",
+  "system_prompt": ["Always reply in English."],
+  "allow_fs_writes": ["data/output"],
+  "working_directory": "/path/to/project"
+}
+```
+
+- Updates `chat_sessions.run_context` in DB
 - If the handler is live in memory, calls `handler.set_run_context()` immediately (no restart needed)
 
 ---
@@ -50,7 +66,8 @@ Private helper called by both `handle_message` and `resume_turn` to avoid duplic
 3. Build `base_tool_defs`: built-in tools + `call_agent` + `update_scratchpad`. **MCP tools are no longer included here** — they are resolved dynamically in `all_tool_defs()` each round based on `active_mcp_grants`.
 4. Load session MCP grants from `session_mcp_grants` DB → populate `active_mcp_grants`. If `enabled_mcp_servers` override is provided, merge those names in-memory without touching the DB.
 5. Inject `show_mcp_tools` as an `InterfaceTool` (session-scoped, `stack_id = None`). Skipped if `enabled_mcp_servers` override is active.
-6. Return `AgentRunConfig { ..., mcp: Arc<McpManager>, active_mcp_grants }`.
+6. **RunContext system prompt injection**: read `RunContext.extra_system_prompt()` and append its result to `extra_system_dynamic` (the dynamic tail system message, injected after conversation history, not cached). If both the caller-provided `extra_system_dynamic` and the RunContext fragments are non-empty, they are joined with `"\n\n"`.
+7. Return `AgentRunConfig { ..., mcp: Arc<McpManager>, active_mcp_grants }`.
 
 ---
 
@@ -66,8 +83,8 @@ Private helper called by both `handle_message` and `resume_turn` to avoid duplic
 8. Call `resume_pending_tools(stack_id, &config, &tx)` — re-gates and executes any `pending` tool calls left from an interrupted session.
 9. Call `run_agent_turn(stack_id, &config, &tx)` and await outcome.
 10. On `Final`: send `Done` event (and `Truncated` if applicable); then publish **two events** to `ChatEventBus` — one `User` event (with `is_synthetic` from the caller) and one `Assistant` event (with all `tool_calls` collected during the turn).
-11. On `Cancelled`: send `Error` event ("interrupted by user"). No event bus publication.
-12. On `Exhausted`: send `Error` event (tool round limit exceeded). No event bus publication.
+11. On `Cancelled`: send `Error` event ("interrupted by user"); return `Err("Turn cancelled by user")`. Background runners (cron, tickets) see the `Err` and record the job as `"failed"`. The WS handler logs at INFO level (not ERROR) when it detects this error string, since the client already received the error event.
+12. On `Exhausted`: send `Error` event (tool round limit exceeded); return `Err(...)`. Background runners (cron, tickets) see the `Err` and record the job as `"failed"`. Interactive WS sessions already received the `ServerEvent::Error`; the returned `Err` is logged by the WS handler.
 
 `is_synthetic` is a parameter of `handle_message`. It is `true` for TicManager ticks (system-generated messages injected as user turns), `false` for all real user input. Additionally, `ChatHub::notification_consumer` injects synthetic **Assistant** messages with `is_synthetic = true` containing the `read_notification` tool call and reasoning trace — these are not user turns, but share the same flag for UI filtering. The flag is **persisted** to `chat_history.is_synthetic` so that the UI history API (`GET /api/sessions/:id`) can filter those rows out on page reload — synthetic messages never appear in the conversation visible to the user. They are still included in the LLM context (via `build_openai_messages`) so the assistant can see what it previously said in response to a notification.
 
@@ -172,9 +189,11 @@ Takes the per-turn `token: &CancellationToken` by value-clone from the caller. F
 5. On `LlmTurn::ToolCalls` — for each call (checking `token.is_cancelled()` before each one):
    - Persist assistant "thinking" message, emit `Thinking` event if non-empty.
    - Record tool call in `chat_llm_tools` (status: `pending`).
-   - Emit `ToolStart` event.
-   - Run approval gate (see below).
-   - Dispatch tool: sync sub-agent (`execute_task` mode=sync / `run_subtask`) → `dispatch_sub_agent` (recursive, inline); `execute_cmd` → `exec::run_from_args` wrapped in `tokio::select!` against the token (drop kills the shell via `kill_on_drop`); `update_scratchpad` → `db::scratchpad::upsert`; `ask_user_clarification` → emit `AgentQuestion`, await answer; MCP tool → `McpManager`; interface tool → closure in `AgentRunConfig`; otherwise → `ToolRegistry`.
+   - Emit `ToolStart` event (with original LLM-provided args, before WD injection).
+   - **Working directory injection**: clone args into `effective_args`; if `RunContext.effective_working_dir()` is set, resolve relative `path` args to absolute and inject `workdir` into `execute_cmd` args (if the LLM didn't already set one).
+   - **allow_fs_writes pre-check**: if the tool is a file-write tool, call `RunContext.is_write_allowed(path)` on the effective path; if true, skip `ApprovalManager` entirely and treat as `Allow`.
+   - Run approval gate on `effective_args` (see below).
+   - Dispatch tool using `effective_args`: sync sub-agent (`execute_task` mode=sync / `run_subtask`) → `dispatch_sub_agent` (recursive, inline); `execute_cmd` → `exec::run_from_args` wrapped in `tokio::select!` against the token (drop kills the shell via `kill_on_drop`); `update_scratchpad` → `db::scratchpad::upsert`; `ask_user_clarification` → emit `AgentQuestion`, await answer; MCP tool → `McpManager`; interface tool → closure in `AgentRunConfig`; otherwise → `ToolRegistry`.
    - On success: `ToolDone` event, status → `done`.
    - On error: `ToolError` event, status → `failed`.
 6. Loop back — next round rebuilds context with tool results included.
@@ -325,8 +344,26 @@ Only injected when the `session_scratchpad` table has at least one row for the s
 | Variant | Meaning |
 | --- | --- |
 | `Final { content, message_id, input_tokens, output_tokens, truncated, tool_calls }` | LLM produced a final text response; `tool_calls` carries all `ToolCallEvent`s from all rounds |
-| `Cancelled` | The turn's `CancellationToken` was cancelled (`/stop`), or WS closed during approval |
-| `Exhausted` | All `max_tool_rounds` used without a final message |
+| `Cancelled` | The turn's `CancellationToken` was cancelled (`/stop`), or WS closed during approval. `handle_message` returns `Ok(())`. |
+| `Exhausted` | All `max_tool_rounds` used without a final message. `handle_message` returns `Err(...)` so background runners record the job as `"failed"`. |
+
+---
+
+## Session Cancellation via System Bus
+
+Forceful task termination (e.g. the kill-task API) goes through the system bus to avoid direct coupling between the HTTP layer and the session internals.
+
+**Flow**:
+
+1. `POST /api/cron/jobs/{id}/kill` reads `running_session_id` from the DB and emits `SystemEvent::SessionCancelled { session_id }` on the system bus. Returns 202 immediately.
+2. A background subscriber started in `Skald::new()` receives the event and calls `ChatSessionManager::cancel_session(session_id)`.
+3. `cancel_session` — operates only on handlers already in the `active` map (no side-effectful creation for an unknown session):
+   - `handler.cancel()` — cancels the `CancellationToken`; LLM calls and `execute_cmd` unblock via `tokio::select!`.
+   - `handler.cancel_pending_approvals()` — drops the `oneshot::Sender` for every pending approval of that session; `approve_rx.await` returns `Err`, which the loop interprets as `TurnOutcome::Cancelled`.
+   - `handler.cancel_pending_questions()` — same for clarification channels; `rx.await` returns `Err(QuestionChannelClosed)`, which also yields `TurnOutcome::Cancelled`.
+4. `handle_message` returns `Err("Turn cancelled by user")` → `run_job` records the job run as `"failed"`.
+
+This means kill works correctly even when the task is blocked on `ask_user_clarification` or waiting for human approval — both unblock the moment `cancel_session` drops their sender channels.
 
 ---
 

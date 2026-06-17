@@ -5,29 +5,23 @@ import { formatDate } from './utils.js';
 
 export class CronJobsSection extends LightElement {
   static properties = {
-    _jobs:     { state: true },
-    _contexts: { state: true },
-    _error:    { state: true },
+    _jobs:  { state: true },
+    _error: { state: true },
   };
 
   constructor() {
     super();
-    this._jobs     = [];
-    this._contexts = [];
-    this._error    = null;
+    this._jobs  = [];
+    this._error = null;
   }
 
   async load() {
     this._error = null;
     try {
-      const [jobsRes, ctxRes] = await Promise.all([
-        fetch('/api/cron/jobs'),
-        fetch('/api/run-contexts'),
-      ]);
-      if (!jobsRes.ok) throw new Error(`HTTP ${jobsRes.status}`);
-      const allJobs = await jobsRes.json();
-      this._jobs     = allJobs.filter(j => j.kind === 'cron' && !j.single_run);
-      this._contexts = ctxRes.ok ? await ctxRes.json() : [];
+      const res = await fetch('/api/cron/jobs');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const allJobs = await res.json();
+      this._jobs = allJobs.filter(j => j.kind === 'cron' && !j.single_run);
     } catch (e) {
       this._error = e.message;
     }
@@ -37,18 +31,6 @@ export class CronJobsSection extends LightElement {
     if (!confirm(`Delete job "${job.title}"?`)) return;
     try {
       const res = await fetch(`/api/cron/jobs/${job.id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(await res.text());
-      await this.load();
-    } catch (e) { this._error = e.message; }
-  }
-
-  async _setRunContext(job, value) {
-    try {
-      const res = await fetch(`/api/cron/jobs/${job.id}/run-context`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ run_context_id: value || null }),
-      });
       if (!res.ok) throw new Error(await res.text());
       await this.load();
     } catch (e) { this._error = e.message; }
@@ -109,15 +91,6 @@ export class CronJobsSection extends LightElement {
           <div class="task-card-meta-item">
             <span class="task-card-meta-label">Next run</span>
             <span class="task-card-meta-value">${formatDate(job.next_run_at)}</span>
-          </div>
-          <div class="task-card-meta-item task-card-meta-item--full">
-            <span class="task-card-meta-label">Run context</span>
-            <select class="task-card-select" @change=${(e) => this._setRunContext(job, e.target.value)}>
-              <option value="" .selected=${!job.run_context_id}>(default)</option>
-              ${this._contexts.map(c => html`
-                <option value=${c.id} .selected=${job.run_context_id === c.id}>${c.name}</option>
-              `)}
-            </select>
           </div>
         </div>
 

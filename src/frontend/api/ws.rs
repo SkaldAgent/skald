@@ -232,7 +232,11 @@ async fn handle_socket(mut socket: WebSocket, skald: Arc<Skald>, source: String)
                 };
                 tokio::spawn(async move {
                     if let Err(e) = chat_hub.send_message(&source_clone, &content, opts).await {
-                        tracing::error!(error = %e, source = %source_clone, "send_message failed");
+                        if e.to_string().contains("Turn cancelled") {
+                            tracing::info!(source = %source_clone, "send_message: turn cancelled by user");
+                        } else {
+                            tracing::error!(error = %e, source = %source_clone, "send_message failed");
+                        }
                     }
                 });
             }

@@ -38,4 +38,8 @@ impl Tool for ReadNotification {
     fn root_agent_only(&self) -> bool {
         true
     }
+
+    fn interactive_only(&self) -> bool {
+        true
+    }
 }

@@ -17,12 +17,6 @@ use super::ApiError;
 // ── Response types ─────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
-struct RunContextOption {
-    id:   String,
-    name: String,
-}
-
-#[derive(Serialize)]
 struct PropertyView {
     key:           String,
     name:          String,
@@ -30,7 +24,6 @@ struct PropertyView {
     property_type: String,
     value:         Option<String>,
     default_value: Option<String>,
-    options:       Option<Vec<RunContextOption>>,
 }
 
 #[derive(Serialize)]
@@ -45,32 +38,16 @@ struct ConfigSetView {
 pub async fn list_properties(
     State(skald): State<Arc<Skald>>,
 ) -> Result<Json<Value>, ApiError> {
-    let needs_run_contexts = skald.config_properties.iter()
-        .flat_map(|s| &s.properties)
-        .any(|p| p.property_type == PropertyType::RunContext);
-
-    let run_contexts = if needs_run_contexts {
-        skald.run_context_manager.list_contexts().await?
-    } else {
-        vec![]
-    };
-
     let mut sets = Vec::with_capacity(skald.config_properties.len());
     for set in &skald.config_properties {
         let mut props = Vec::with_capacity(set.properties.len());
         for prop in &set.properties {
             let value = skald.config.get(&prop.key).await?;
-            let (type_str, options) = match prop.property_type {
-                PropertyType::RunContext => {
-                    let opts = run_contexts.iter().map(|rc| RunContextOption {
-                        id:   rc.id.clone(),
-                        name: rc.name.clone(),
-                    }).collect();
-                    ("run_context", Some(opts))
-                }
-                PropertyType::Int    => ("int",    None),
-                PropertyType::Bool   => ("bool",   None),
-                PropertyType::String => ("string", None),
+            let type_str = match prop.property_type {
+                PropertyType::Int    => "int",
+                PropertyType::Bool   => "bool",
+                PropertyType::String => "string",
+                PropertyType::RunContext => "string", // legacy alias, treated as plain string
             };
             props.push(PropertyView {
                 key:           prop.key.clone(),
@@ -79,7 +56,6 @@ pub async fn list_properties(
                 property_type: type_str.into(),
                 value,
                 default_value: prop.default_value.clone(),
-                options,
             });
         }
         sets.push(ConfigSetView {
