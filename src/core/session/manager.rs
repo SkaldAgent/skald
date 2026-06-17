@@ -97,8 +97,14 @@ impl ChatSessionManager {
         source:         &str,
         is_interactive: bool,
         is_ephemeral:   bool,
+        run_context:    Option<&RunContext>,
     ) -> anyhow::Result<(i64, i64)> {
         let session = chat_sessions::create(&self.db, agent_id, source, is_interactive, is_ephemeral).await?;
+        // Persist the RunContext at creation time so it is present before any handler
+        // is constructed (get_or_create_handler reads it once at construction).
+        if let Some(rc) = run_context {
+            chat_sessions::set_run_context(&self.db, session.id, Some(&rc.to_db())).await?;
+        }
         let stack   = chat_sessions_stack::create(
             &self.db, session.id, "main", None, 0, None,
         ).await?;

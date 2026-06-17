@@ -124,49 +124,13 @@ impl ProjectTicketManager {
         let project = projects::get(&self.db, ticket.project_id).await?
             .ok_or_else(|| anyhow!("project {} not found", ticket.project_id))?;
 
-        // Resolve base RC (ticket override → project default → empty).
+        // Resolve base RC (ticket override → project default → empty), then layer the
+        // project-runtime fields (WD, fs-write grants, project-context system prompt).
         // The stored RC carries only static config (e.g. security_group set at creation).
-        let mut rc: RunContext =
+        let base: Option<RunContext> =
             ticket.run_context.as_deref().and_then(RunContext::from_db)
-            .or_else(|| project.run_context.as_deref().and_then(RunContext::from_db))
-            .unwrap_or_default();
-
-        // Working directory is always the project path, overwritten at start time.
-        rc.working_directory = Some(project.path.clone());
-
-        // Absolute path to Skald's own data directory (user personal data store).
-        let skald_data = std::env::current_dir()
-            .unwrap_or_default()
-            .join("data")
-            .to_string_lossy()
-            .into_owned();
-
-        // Grant write access to the project tree and Skald's data directory.
-        if !rc.allow_fs_writes.contains(&project.path) {
-            rc.allow_fs_writes.push(project.path.clone());
-        }
-        if !rc.allow_fs_writes.contains(&skald_data) {
-            rc.allow_fs_writes.push(skald_data.clone());
-        }
-
-        // Build runtime context fragments and prepend before any stored ones.
-        // Note: working directory is intentionally omitted here — the date/time/OS/WD
-        // tail block in MessageBuilder already reflects the effective WD from RunContext.
-        let project_header = if project.description.is_empty() {
-            format!("You are working on project \"{}\".", project.name)
-        } else {
-            format!("You are working on project \"{}\". Description: {}", project.name, project.description)
-        };
-        let mut injected = vec![
-            project_header,
-            format!(
-                "Personal user data is available at: {}. \
-                 Consult it when the task requires knowledge about the user.",
-                skald_data
-            ),
-        ];
-        injected.extend(std::mem::take(&mut rc.system_prompt));
-        rc.system_prompt = injected;
+            .or_else(|| project.run_context.as_deref().and_then(RunContext::from_db));
+        let rc = super::build_runtime_run_context(&project, base);
 
         let origin_ref = format!("PROJECT_TASK:{ticket_id}");
         let rc_json    = rc.to_db();

@@ -13,6 +13,13 @@ use crate::core::run_context::RunContext;
 use crate::core::skald::Skald;
 use super::ApiError;
 
+/// Source-id prefix for a project's interactive chat session (e.g. `project-42`).
+/// A hyphen (not `:`) is used so the id is URL-safe in `/api/{source}/messages`.
+pub const PROJECT_SOURCE_PREFIX: &str = "project-";
+
+/// Agent that drives interactive project-chat sessions.
+const PROJECT_COORDINATOR_AGENT: &str = "project-coordinator";
+
 // ── Request/Response types ────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -233,4 +240,51 @@ pub async fn reset_ticket(
 ) -> Result<StatusCode, ApiError> {
     skald.ticket_manager.reset(tp.tid).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ── Project chat session ──────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct SessionResponse {
+    pub source:     String,
+    pub session_id: i64,
+}
+
+/// Resolves which agent + `RunContext` a `source` should be provisioned with.
+///
+/// `project-{id}` → (`project-coordinator`, project runtime context); any other source
+/// → (`main`, no context). This is the single place that maps a source to its
+/// provisioning config, shared by session-open and session-reset so the two never
+/// diverge.
+pub async fn provisioning_for_source(
+    skald:  &Skald,
+    source: &str,
+) -> Result<(String, Option<RunContext>), ApiError> {
+    let Some(id) = source
+        .strip_prefix(PROJECT_SOURCE_PREFIX)
+        .and_then(|s| s.parse::<i64>().ok())
+    else {
+        return Ok(("main".to_string(), None));
+    };
+
+    let project = skald.projects.get(id).await?
+        .ok_or_else(|| ApiError::not_found(format!("project {id} not found")))?;
+    let base = project.run_context.as_deref().and_then(RunContext::from_db);
+    let rc = crate::core::projects::build_runtime_run_context(&project, base);
+    Ok((PROJECT_COORDINATOR_AGENT.to_string(), Some(rc)))
+}
+
+/// POST /api/projects/{id}/session — open (or resume) the project's chat session.
+/// Pre-creates the `project-{id}` source with the coordinator agent + project context
+/// so the WebSocket finds the right session when the frontend connects.
+pub async fn open_session(
+    Path(p): Path<ProjectPath>,
+    State(skald): State<Arc<Skald>>,
+) -> Result<Json<SessionResponse>, ApiError> {
+    let source = format!("{PROJECT_SOURCE_PREFIX}{}", p.id);
+    let (agent, rc) = provisioning_for_source(&skald, &source).await?;
+    let session_id = skald.chat_hub
+        .provision_session(&source, &agent, rc.as_ref(), false)
+        .await?;
+    Ok(Json(SessionResponse { source, session_id }))
 }

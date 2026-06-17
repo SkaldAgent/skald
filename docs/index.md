@@ -11,6 +11,7 @@ This includes:
 - Modifying the approval gate or tool loop → update [session.md](session.md)
 - Adding a new agent → update [agents.md](agents.md)
 - Any change to the WS protocol → update [frontend.md](frontend.md)
+- Changing the project/ticket lifecycle or project chats → update [projects.md](projects.md)
 
 ---
 
@@ -77,7 +78,7 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 | `src/core/chat_event_bus.rs` | In-process broadcast bus for chat turns and compaction events | [chat-event-bus.md](chat-event-bus.md) |
 | `src/core/compactor.rs` | Context compaction — summarises old history to reduce token usage | [compaction.md](compaction.md) |
 | `src/core/memory/` | Pluggable long-term memory layer (trait + manager) | [memory.md](memory.md) |
-| `src/core/chat_hub/` | Central chat orchestrator, notification pipeline | [architecture.md](architecture.md) |
+| `src/core/chat_hub/` | Central chat orchestrator for **interactive, user-facing sessions only** (web, mobile, project chats — one persistent session per source via the `sources` table); notification pipeline. `provision_session(source, agent_id, rc, reset)` is the single source→session entry point; `clear()` is a thin `main`-agent wrapper over it. **Not** for background agents (cron/TIC/sub-agents → `TaskManager`/`ChatSessionManager`) | [architecture.md](architecture.md) |
 | `src/core/tic/` | Background MCP event processor (TicManager) | [architecture.md](architecture.md) |
 | `src/core/mcp/` | MCP server management, push notification ingestion | [mcp.md](mcp.md) |
 | `src/core/cron/` | Scheduled job scheduler | [cron.md](cron.md) |
@@ -87,15 +88,15 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 | `src/core/tts/` | TtsManager (DB-backed + plugin slots), OpenAiTtsSynthesiser, ElevenLabsTtsSynthesiser. Traits and record types re-exported from `core-api`. | [tts-providers.md](tts-providers.md) |
 | `src/core/image_generate/` | ImageGenerate trait, ImageGeneratorManager (DB-backed + plugin slots), OpenRouterImageGenerator | [image-generate.md](image-generate.md) |
 | `src/core/run_context/mod.rs` | `RunContext` domain object: fields `security_group`, `system_prompt`, `allow_fs_writes`, `working_directory` + applicative methods `tool_group_id()`, `extra_system_prompt()`, `effective_working_dir()`, `is_write_allowed()`. `RunContextManager`: permission group CRUD; `set_session_run_context`; `duplicate_group`; `check_tool_visibility`. | [approval.md](approval.md) |
-| `src/core/projects/mod.rs` | `ProjectManager` — CRUD for projects (filesystem-linked, ordered by `updated_at`) | [database.md](database.md) |
-| `src/core/projects/tickets.rs` | `ProjectTicketManager` — CRUD + lifecycle for project tickets (`start`, `on_job_completed`, `reset`); `start()` builds a runtime `RunContext` from stored static config (security_group), then always sets `working_directory = project.path`, extends `allow_fs_writes` with the project tree and `{skald_cwd}/data`, and prepends three system prompt fragments (project name/description, working directory, Skald data dir path) | [database.md](database.md) |
+| `src/core/projects/mod.rs` | `ProjectManager` — CRUD for projects (filesystem-linked, ordered by `updated_at`). Free fn `build_runtime_run_context(project, base)` layers project-runtime fields (`working_directory = project.path`, `allow_fs_writes` for the project tree + `{skald_cwd}/data`, project-context system prompt fragments) over an optional base RC — shared by ticket jobs and interactive project chats | [projects.md](projects.md) |
+| `src/core/projects/tickets.rs` | `ProjectTicketManager` — CRUD + lifecycle for project tickets (`start`, `on_job_completed`, `reset`); `start()` resolves the base `RunContext` (ticket override → project static config) and delegates to `projects::build_runtime_run_context` for the runtime fields | [projects.md](projects.md) |
 | `src/core/inbox.rs` | `Inbox`: unified façade for pending approvals + clarifications (wraps ApprovalManager, ClarificationManager, ChatHub) | [approval.md](approval.md) |
 | `src/core/db/` | SQLite schema and queries | [database.md](database.md) |
 | `src/core/events.rs` | WS protocol types | [frontend.md](frontend.md) |
 | `src/frontend/mod.rs` | `WebFrontend` — wires `router_factory`, starts plugins, runs Axum | [architecture.md](architecture.md) |
 | `src/frontend/server.rs` | `WebServer` — Axum router, TcpListener, `WebServerHandle` | [architecture.md](architecture.md) |
 | `src/frontend/api/` | HTTP + WebSocket handlers — `State<Arc<Skald>>` | [frontend.md](frontend.md) |
-| `src/frontend/api/projects.rs` | REST CRUD for projects and tickets — `GET/POST /api/projects`, `GET/PUT/DELETE /api/projects/{id}`, tickets sub-routes, `start` and `reset` lifecycle endpoints | [database.md](database.md) |
+| `src/frontend/api/projects.rs` | REST CRUD for projects and tickets — `GET/POST /api/projects`, `GET/PUT/DELETE /api/projects/{id}`, tickets sub-routes, `start`/`reset` lifecycle. `POST /api/projects/{id}/session` opens/resumes the project chat (source `project-{id}`, agent `project-coordinator`). `provisioning_for_source(skald, source)` maps a source → (agent, RunContext) and is reused by `POST /api/sessions` so project resets recreate with the coordinator | [projects.md](projects.md) |
 | `src/config.rs` | `Config` (YAML aggregate: `ServerConfig`, `WebConfig` + re-exports from `core::config`) + `Config::into_split()` | [logging-config.md](logging-config.md) |
 | `crates/plugin-honcho/` | Honcho memory sink (standalone crate) | [honcho.md](honcho.md) |
 | `crates/plugin-tailscale-remote/` | Remote connectivity via Tailscale mesh (standalone crate) | [remote.md](remote.md) |
@@ -143,6 +144,7 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 - [whatsapp-mcp.md](whatsapp-mcp.md) — WhatsApp read+send MCP server (custom Node.js)
 - [approval.md](approval.md) — ApprovalManager: human-in-the-loop, rules, pending approvals, session bypass; tool visibility filtering; group duplication; AllTools MCP server metadata
 - [cron.md](cron.md) — TaskManager, task kinds (cron/sync/async), 7-field cron syntax, job lifecycle, async result delivery
+- [projects.md](projects.md) — Projects subsystem: kanban tickets, lifecycle, `build_runtime_run_context`, interactive project chats
 - [database.md](database.md) — SQLite schema, migration pattern
 - [frontend.md](frontend.md) — WebSocket protocol, ServerEvent types, Lit components
 - [logging-config.md](logging-config.md) — log levels, config.yml full reference

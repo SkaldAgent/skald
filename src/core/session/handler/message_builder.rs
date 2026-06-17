@@ -10,6 +10,23 @@ use crate::core::db::{chat_history, chat_llm_tools, chat_summaries};
 use crate::core::mcp::McpManager;
 use crate::core::tools::tool_names as tn;
 
+/// Registry of installed skills, relative to Skald's process cwd. Injected into agents
+/// that have `inject_skills` enabled (the default).
+const SKILLS_INDEX_PATH: &str = "skills/index.md";
+
+/// OS description (type + version), computed once — it does not change at runtime.
+fn os_description() -> &'static str {
+    static OS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    OS.get_or_init(|| os_info::get().to_string())
+}
+
+/// System IANA timezone name (e.g. `Europe/Rome`), computed once. `None` if it can't
+/// be determined.
+fn system_timezone() -> Option<&'static str> {
+    static TZ: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    TZ.get_or_init(|| iana_time_zone::get_timezone().ok()).as_deref()
+}
+
 /// Pure service that builds the OpenAI-format message array for one LLM round.
 ///
 /// Extracting this from `ChatSessionHandler` allows the builder to be constructed
@@ -76,18 +93,33 @@ impl MessageBuilder {
                  You can edit them with `edit_file` or `write_file` using the path shown.\n"
             );
             for mem_path in &meta.inject_memory {
-                let content = match crate::core::tools::fs::resolve(mem_path) {
-                    Ok(abs) => tokio::fs::read_to_string(&abs).await.ok(),
-                    Err(_)  => None,
-                };
+                // Resolve the entry to (absolute path to read, path to show the agent).
+                let (abs, display) = self.resolve_memory_path(mem_path);
+                let content = tokio::fs::read_to_string(&abs).await.ok();
                 match content {
                     Some(c) => static_content.push_str(&format!(
-                        "\n<memory_file path=\"{mem_path}\">\n{c}\n</memory_file>\n"
+                        "\n<memory_file path=\"{display}\">\n{c}\n</memory_file>\n"
                     )),
                     None => static_content.push_str(&format!(
-                        "\n<memory_file path=\"{mem_path}\">\n(file non ancora creato)\n</memory_file>\n"
+                        "\n<memory_file path=\"{display}\">\n(file not created yet)\n</memory_file>\n"
                     )),
                 }
+            }
+        }
+
+        // ── Skills index ──────────────────────────────────────────────────────
+        // Injected for every agent unless it opts out (`inject_skills: false`).
+        // Reuses the memory-path resolution so the shown path is relative when the
+        // index is under the session WD, absolute otherwise (it lives under Skald's
+        // own cwd, so it shows as absolute inside project sessions). Skipped silently
+        // when no skills are installed.
+        if meta.inject_skills {
+            let (abs, display) = self.resolve_memory_path(SKILLS_INDEX_PATH);
+            if let Ok(c) = tokio::fs::read_to_string(&abs).await {
+                static_content.push_str(&format!(
+                    "\n\n---\nInstalled skills you can use (read the linked `SKILL.md` before running a skill):\n\
+                     \n<skills_index path=\"{display}\">\n{c}\n</skills_index>\n"
+                ));
             }
         }
 
@@ -250,29 +282,43 @@ impl MessageBuilder {
                     _ => secs,
                 };
 
-                let formatted = match self.datetime_config.timezone.as_deref()
+                // Effective timezone: the one configured in config.yml if set, else the
+                // OS timezone. When resolvable we show the IANA name alongside the offset.
+                let tz = self.datetime_config.timezone.as_deref()
                     .and_then(|s| s.parse::<chrono_tz::Tz>().ok())
-                {
+                    .or_else(|| system_timezone().and_then(|s| s.parse::<chrono_tz::Tz>().ok()));
+
+                let (formatted, tz_name) = match tz {
                     Some(tz) => {
                         use chrono::TimeZone as _;
-                        tz.timestamp_opt(secs, 0)
+                        let f = tz.timestamp_opt(secs, 0)
                             .single()
                             .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%:z").to_string())
-                            .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string())
+                            .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string());
+                        (f, Some(tz.name().to_string()))
                     }
                     None => {
-                        chrono::DateTime::from_timestamp(secs, 0)
+                        let f = chrono::DateTime::from_timestamp(secs, 0)
                             .map(|utc| utc.with_timezone(&chrono::Local).format("%Y-%m-%dT%H:%M:%S%:z").to_string())
-                            .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string())
+                            .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string());
+                        (f, None)
                     }
+                };
+                let date_line = match tz_name {
+                    Some(name) => format!("Current date and time: {formatted} ({name})"),
+                    None       => format!("Current date and time: {formatted}"),
                 };
 
                 let cwd = self.working_directory.clone()
                     .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
                     .display()
                     .to_string();
-                let os = std::env::consts::OS;
-                Some(format!("Current date and time: {formatted}\nOperating system: {os}\nWorking directory: {cwd}"))
+                Some(format!(
+                    "{date_line}\nOperating system: {}\nWorking directory: {cwd}\n\
+                     Filesystem tools and execute_cmd use this working directory for relative paths — \
+                     no need to `cd` into it first.",
+                    os_description()
+                ))
             } else {
                 None
             };
@@ -318,6 +364,26 @@ impl MessageBuilder {
     }
 
     /// Builds the MCP list section that replaces the `__MCP_LIST__` sentinel.
+    /// Resolves an `inject_memory` entry to `(absolute path to read, path to show)`.
+    ///
+    /// `$WD` expands to the session's effective working directory (RunContext WD, or the
+    /// process cwd when unset). The shown path is **relative to that working directory
+    /// when the file lives under it, absolute otherwise** — so when the agent references
+    /// it back via `edit_file`/`write_file`, the loop's working-directory injection
+    /// (which rewrites relative paths against the WD) resolves to the very same file.
+    fn resolve_memory_path(&self, mem_path: &str) -> (std::path::PathBuf, String) {
+        let wd = self.working_directory.clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let expanded = mem_path.replace("$WD", &wd.display().to_string());
+        let abs = crate::core::tools::fs::resolve(&expanded)
+            .unwrap_or_else(|_| std::path::PathBuf::from(&expanded));
+        let display = match abs.strip_prefix(&wd) {
+            Ok(rel) => rel.to_string_lossy().into_owned(),
+            Err(_)  => abs.to_string_lossy().into_owned(),
+        };
+        (abs, display)
+    }
+
     fn render_mcp_list(&self, active_mcp_grants: &HashSet<String>) -> String {
         let all_tools = self.mcp.tools();
 

@@ -41,6 +41,16 @@ Initialization runs in a background `tokio::spawn` task. The manager is availabl
 
 `${VAR}` interpolation is supported in `env` values and `api_key`.
 
+### stdio process lifecycle
+
+stdio subprocesses are spawned with `kill_on_drop(true)` and, on Unix, in their
+own process group (`process_group(0)`). The new process group detaches them from
+the terminal's foreground group, so a terminal Ctrl+C (SIGINT to the whole group)
+does not reach them directly — otherwise Python-based servers would catch it and
+dump a `KeyboardInterrupt` traceback. They are instead reaped via `kill_on_drop`:
+when the app shuts down and the per-server reader task is dropped, the child gets
+a silent SIGKILL.
+
 ---
 
 ## Tool Naming Convention

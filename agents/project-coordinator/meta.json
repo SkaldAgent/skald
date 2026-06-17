@@ -1,0 +1,9 @@
+{
+  "name": "Project Coordinator",
+  "description": "Conversational coordinator for a single project. Holds the project context and delegates non-trivial work to specialist sub-agents (tech-lead, architect, engineer, qa, blueprint, researcher) via execute_task. The user talks to one bot that already knows the project.",
+  "scope": "reasoning",
+  "strength": "average",
+  "inject_memory": ["data/memory/index.md", "$WD/SKALD.md"],
+  "is_system_agent": true,
+  "icon": "icon.png"
+}

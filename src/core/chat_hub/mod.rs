@@ -31,6 +31,15 @@ const NOTIFY_BATCH_WINDOW_MS: u64 = 200;
 
 // ── ChatHub ───────────────────────────────────────────────────────────────────
 
+/// Manages **interactive, user-facing sessions only** (web, mobile, project chats):
+/// one live, persistent session per `source`, reachable over WebSocket and addressed
+/// by source id through the `sources` table.
+///
+/// It is **not** a runner for background / non-interactive agents (cron jobs, TIC,
+/// sub-agent tasks). Those go through `TaskManager` / `ChatSessionManager` directly and
+/// must not be routed here — they are not user-facing, have no broadcast audience, and
+/// should not appear in the `sources` table. (Historically this class was misused to
+/// drive non-interactive agents; keep that boundary.)
 pub struct ChatHub {
     db:          Arc<SqlitePool>,
     session_mgr: Arc<ChatSessionManager>,
@@ -138,17 +147,48 @@ impl ChatHub {
         self.session_mgr.get_or_create_handler(session_id).await
     }
 
-    /// Create a new session for the source, discarding the previous one.
-    pub async fn clear(&self, source_id: &str) -> anyhow::Result<i64> {
-        let (session_id, _) = self.session_mgr.create_session("main", source_id, true, false).await?;
+    /// Ensures a persistent, interactive session exists for `source`, created with
+    /// `agent_id` and the given `run_context`.
+    ///
+    /// If a session already exists for the source it is returned as-is, unless `reset`
+    /// is set — in which case the existing session is discarded and a fresh one is
+    /// created (and a `NewSession` event is broadcast so connected clients reset).
+    ///
+    /// This is the single entry point for the source→session mapping ChatHub owns.
+    /// Note: `agent_id`/`run_context` only take effect when a session is actually
+    /// created; on reuse the existing session keeps its original agent and context.
+    pub async fn provision_session(
+        &self,
+        source_id:   &str,
+        agent_id:    &str,
+        run_context: Option<&crate::core::run_context::RunContext>,
+        reset:       bool,
+    ) -> anyhow::Result<i64> {
+        if !reset {
+            if let Some(sid) = sources::active_session_id(&self.db, source_id).await? {
+                return Ok(sid);
+            }
+        }
+        let (session_id, _) = self.session_mgr
+            .create_session(agent_id, source_id, true, false, run_context)
+            .await?;
         sources::upsert(&self.db, source_id, session_id).await?;
-        info!(source_id, session_id, "ChatHub: session cleared");
-        let _ = self.global_tx.send(GlobalEvent {
-            source:     Some(source_id.to_string()),
-            session_id: Some(session_id),
-            event:      ServerEvent::NewSession { session_id },
-        });
+        info!(source_id, session_id, agent_id, reset, "ChatHub: session provisioned");
+        if reset {
+            let _ = self.global_tx.send(GlobalEvent {
+                source:     Some(source_id.to_string()),
+                session_id: Some(session_id),
+                event:      ServerEvent::NewSession { session_id },
+            });
+        }
         Ok(session_id)
+    }
+
+    /// Create a new session for the source, discarding the previous one.
+    /// Thin wrapper over `provision_session` preserving the default `main` agent
+    /// (kept for the `ChatHubApi` trait and generic callers).
+    pub async fn clear(&self, source_id: &str) -> anyhow::Result<i64> {
+        self.provision_session(source_id, "main", None, true).await
     }
 
     /// Subscribe to the global event bus. The `source_id` parameter is accepted
@@ -294,7 +334,7 @@ impl ChatHub {
         if let Some(sid) = sources::active_session_id(&self.db, source_id).await? {
             return Ok(sid);
         }
-        let (session_id, _) = self.session_mgr.create_session(agent_id, source_id, true, false).await?;
+        let (session_id, _) = self.session_mgr.create_session(agent_id, source_id, true, false, None).await?;
         sources::upsert(&self.db, source_id, session_id).await?;
         info!(source_id, session_id, "ChatHub: session created lazily");
         Ok(session_id)

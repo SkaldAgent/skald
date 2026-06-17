@@ -73,3 +73,57 @@ app-copilot.collapsed {
   font-size: 1rem;
   color: #6366f1;
 }
+
+/* ── Tabs (General + project chats) ─────────────────────────────────────────── */
+.copilot-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0 0.5rem;
+  border-bottom: 1px solid var(--toolbar-border);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.copilot-tab {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 160px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  color: var(--bs-secondary-color, #6c757d);
+  white-space: nowrap;
+}
+
+.copilot-tab:hover {
+  background: var(--toolbar-border);
+}
+
+.copilot-tab--active {
+  color: var(--bs-body-color, inherit);
+  border-bottom-color: #6366f1;
+  font-weight: 600;
+}
+
+.copilot-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.copilot-tab-close {
+  border: none;
+  background: none;
+  padding: 0;
+  line-height: 1;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.copilot-tab-close:hover {
+  opacity: 1;
+}

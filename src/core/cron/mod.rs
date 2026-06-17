@@ -348,7 +348,7 @@ async fn run_job(
 
     let started_at = Utc::now();
 
-    let (session_id, _) = session.create_session(&job.agent_id, "cron", false, true).await?;
+    let (session_id, _) = session.create_session(&job.agent_id, "cron", false, true, None).await?;
     scheduled_jobs::set_running(pool, job.id, session_id).await?;
 
     if let Some(rc) = &job.run_context {

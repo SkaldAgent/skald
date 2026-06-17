@@ -39,6 +39,9 @@ export class ChatSession extends LightElement {
     this._rejectingId           = null;
     this._rejectNote            = '';
     this._clarificationAnswer   = '';
+    // Runtime-selected source. When null, falls back to the static `_wsSource`.
+    // Lets a single chat component switch between sessions (e.g. copilot tabs).
+    this._activeSource          = null;
   }
 
   async connectedCallback() {
@@ -49,7 +52,25 @@ export class ChatSession extends LightElement {
 
   // ── Source identity — override in subclass ────────────────────────────────────
 
+  // Static default source for this component. Subclasses override (e.g. 'mobile').
   get _wsSource() { return 'web'; }
+
+  // Effective source: the runtime-selected one, or the static default.
+  get _source() { return this._activeSource ?? this._wsSource; }
+
+  /**
+   * Switch the live connection to a different source: tear down the current WS,
+   * swap source, reload that source's history, and reconnect. Used to move
+   * between sessions (e.g. General ↔ a project chat) without remounting.
+   */
+  async _switchSource(source) {
+    if (this._ws) { this._ws.onclose = null; this._ws.close(); this._ws = null; }
+    this._activeSource = source;
+    this._messages = [];
+    this._waiting  = false;
+    await this._loadHistory();
+    this._connectWS();
+  }
 
   // ── Data loading ──────────────────────────────────────────────────────────────
 
@@ -67,7 +88,7 @@ export class ChatSession extends LightElement {
 
   async _loadHistory() {
     try {
-      const res = await fetch(`/api/${this._wsSource}/messages`);
+      const res = await fetch(`/api/${this._source}/messages`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const items = await res.json();
       if (items.length > 0) {
@@ -93,7 +114,7 @@ export class ChatSession extends LightElement {
 
   _connectWS() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${location.host}/api/ws?source=${this._wsSource}`);
+    const ws = new WebSocket(`${proto}://${location.host}/api/ws?source=${this._source}`);
     this._ws = ws;
     ws.onopen = () => {
       if (this._hasPendingTools) {
@@ -114,7 +135,7 @@ export class ChatSession extends LightElement {
     this._messages = [];
     this._waiting  = false;
     try {
-      const res = await fetch(`/api/sessions?source=${this._wsSource}`, { method: 'POST' });
+      const res = await fetch(`/api/sessions?source=${this._source}`, { method: 'POST' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } catch (e) {
       this._pushError('Could not clear session: ' + e.message);

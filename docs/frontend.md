@@ -4,11 +4,28 @@
 
 `GET /api/ws?source=<string>`
 
-`source` identifies the client type: `web` (default, desktop copilot) or `mobile` (mobile chat page). The same endpoint serves both; ChatHub maintains independent sessions per source.
+`source` identifies the conversation: `web` (default, desktop copilot), `mobile` (mobile chat page), or `project-{id}` (a project's interactive chat — see below). The same endpoint serves all; ChatHub maintains one independent, persistent session per source.
 
 One connection per source. The connection is upgraded by Axum's WS handler in `src/frontend/api/ws.rs`. The client sends one `ClientMessage`, receives a stream of `ServerEvent`s, then can send additional messages (cancel, approval) while events are in flight.
 
 History for a source: `GET /api/<source>/messages` (or the legacy alias `/api/web/messages`).
+
+### Project chats
+
+A project's chat is a persistent session bound to source `project-{id}` and driven by the
+`project-coordinator` agent. `POST /api/projects/{id}/session` provisions (or resumes) it,
+seeding the session's `RunContext` with the project's working directory, fs-write grants, and
+context — then returns `{ source, session_id }`. The frontend connects the WS to that source.
+Because the session is **not** ephemeral and ChatHub reuses the existing session for a source,
+the conversation persists and is resumed on reopen. Resetting it (`POST /api/sessions?source=project-{id}`)
+recreates it with the coordinator agent, not `main` (the handler resolves agent + RunContext per
+source via `provisioning_for_source`).
+
+In the desktop copilot these appear as browser-style **tabs**: `General` (the `web` source, always
+present, not closable) plus one tab per open project chat. The board's **Open Chat** button
+dispatches a `project-chat-open` window event (`{source, label}`); the copilot adds/focuses the tab
+and switches the live connection via `ChatSession._switchSource(source)`. Closing a project tab is
+UI-only — the session persists and can be reopened from the board.
 
 ---
 
@@ -128,8 +145,8 @@ Cancel message (abort current turn): `{"type":"cancel"}`
 
 | File | Element | Responsibility |
 |---|---|---|---|
-| `web/lib/chat-session.js` | `ChatSession` (base) | Shared WS logic, message state, all approval/LLM event handling. Subclasses override `_wsSource`, `_getInputContent`, `_clearInput`, `_scrollToBottom`, `_onMessagePushed` |
-| `web/components/copilot.js` | `<app-copilot>` | Desktop copilot panel (`_wsSource='web'`); resize, composer input with model pill and auto-resize textarea |
+| `web/lib/chat-session.js` | `ChatSession` (base) | Shared WS logic, message state, all approval/LLM event handling. Subclasses override `_wsSource`, `_getInputContent`, `_clearInput`, `_scrollToBottom`, `_onMessagePushed`. Effective source is `_source` (`_activeSource ?? _wsSource`); `_switchSource(source)` tears down the WS, reloads history, and reconnects to switch sessions live |
+| `web/components/copilot.js` | `<app-copilot>` | Desktop copilot panel (`_wsSource='web'`); resize, composer input with model pill and auto-resize textarea. Browser-style tabs (`General` + project chats); listens for the `project-chat-open` window event to add/focus a project tab |
 | `web/components/shared/chat-page.js` | `<chat-page>` | Mobile chat page (`_wsSource='mobile'`); extends `ChatSession` with mobile-specific layout |
 | `web/components/copilot-render.js` | (helpers) | Renders messages, tool call blocks, diffs — shared by copilot and chat-page |
 | `web/components/sidebar.js` | `<app-sidebar>` | Navigation sidebar; polls `/api/inbox` every 10 s for badge count |

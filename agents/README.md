@@ -40,6 +40,7 @@ High detail, expressive.
 | **Worker** | Practical person with futuristic toolbelt and mechanical elements | Orange & steel grey |
 | **Blueprint** | Scholarly figure with floating scrolls and glowing quills writing words in mid-air, luminous documents orbiting | Deep indigo & burnished gold |
 | **Tech Lead** | Confident strategist at a holographic kanban board, task cards floating mid-air, sub-agents visible in the background | Warm amber & deep teal |
+| **Project Coordinator** | Central orchestrator with glowing connected nodes, satellite sub-agents orbiting, holographic project maps and branching task flows | Teal & warm gold |
 
 
 ## Adding a new agent icon

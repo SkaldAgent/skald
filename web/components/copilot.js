@@ -8,6 +8,8 @@ export class AppCopilot extends ChatSession {
     _modelOpen:     { state: true },
     _recording:     { state: true },
     _hasTranscribe: { state: true },
+    _tabs:          { state: true },
+    _activeSource:  { state: true },
   };
 
   constructor() {
@@ -19,10 +21,14 @@ export class AppCopilot extends ChatSession {
     this._resizing      = false;
     this._mediaRecorder = null;
     this._audioChunks   = [];
+    // Browser-style tabs: 'General' (the default 'web' source) is always present and
+    // not closable; project chats are added on demand and addressed by their source.
+    this._tabs          = [{ source: 'web', label: 'General' }];
     this._onResizeMove  = this._onResizeMove.bind(this);
     this._onResizeUp    = this._onResizeUp.bind(this);
     this._onKeydown     = this._onKeydown.bind(this);
     this._onKeyup       = this._onKeyup.bind(this);
+    this._onProjectChatOpen = this._onProjectChatOpen.bind(this);
   }
 
   connectedCallback() {
@@ -30,12 +36,43 @@ export class AppCopilot extends ChatSession {
     this._checkTranscribe();
     window.addEventListener('keydown', this._onKeydown);
     window.addEventListener('keyup',   this._onKeyup);
+    window.addEventListener('project-chat-open', this._onProjectChatOpen);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback?.();
     window.removeEventListener('keydown', this._onKeydown);
     window.removeEventListener('keyup',   this._onKeyup);
+    window.removeEventListener('project-chat-open', this._onProjectChatOpen);
+  }
+
+  // ── Tabs ────────────────────────────────────────────────────────────────────
+
+  // A project chat was opened elsewhere (e.g. the project board): add its tab if
+  // new, expand the copilot, and switch the live connection to it.
+  _onProjectChatOpen(e) {
+    const { source, label } = e.detail ?? {};
+    if (!source) return;
+    if (!this._tabs.some(t => t.source === source)) {
+      this._tabs = [...this._tabs, { source, label: label || source }];
+    }
+    this._collapsed = false;
+    this._selectTab(source);
+  }
+
+  _selectTab(source) {
+    if (source === this._source) return;
+    this._switchSource(source);   // base: tear down WS, reload history, reconnect
+  }
+
+  // Close a project tab (UI only — the session persists server-side and can be
+  // reopened from the board). The 'web'/General tab is never closable.
+  _closeTab(source, e) {
+    e?.stopPropagation();
+    if (source === 'web') return;
+    const wasActive = source === this._source;
+    this._tabs = this._tabs.filter(t => t.source !== source);
+    if (wasActive) this._switchSource('web');
   }
 
   async _checkTranscribe() {
@@ -251,6 +288,26 @@ export class AppCopilot extends ChatSession {
           <i class="bi bi-chevron-right"></i>
         </button>
       </div>
+
+      ${this._tabs.length > 1 ? html`
+        <div class="copilot-tabs">
+          ${this._tabs.map(t => html`
+            <div
+              class="copilot-tab ${t.source === this._source ? 'copilot-tab--active' : ''}"
+              @click=${() => this._selectTab(t.source)}
+              title=${t.label}
+            >
+              <span class="copilot-tab-label">${t.label}</span>
+              ${t.source !== 'web' ? html`
+                <button class="copilot-tab-close" title="Close tab"
+                  @click=${e => this._closeTab(t.source, e)}>
+                  <i class="bi bi-x"></i>
+                </button>
+              ` : nothing}
+            </div>
+          `)}
+        </div>
+      ` : nothing}
 
       <div class="copilot-messages">
         ${this._messages.length === 0 ? html`

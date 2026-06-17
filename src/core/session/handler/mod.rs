@@ -95,6 +95,34 @@ pub(super) fn update_scratchpad_tool_def() -> Value {
     })
 }
 
+/// Tool definition that lets a sub-agent (depth > 0) dispatch a further
+/// synchronous sub-agent. The call is intercepted in `run_agent_turn` and routed
+/// to `dispatch_sub_agent` (the InterfaceTool handler is never reached), so only
+/// the definition is needed here. `agent_id` is required because
+/// `dispatch_sub_agent` rejects calls without it.
+fn run_subtask_tool_def() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": tn::RUN_SUBTASK,
+            "description": "Delegate work to another agent and get its result. Runs the \
+                            named agent synchronously with the given prompt and blocks until \
+                            it finishes, returning its final answer as the tool result. Use \
+                            `list_agents` first to see which agents are available.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_id":    { "type": "string", "description": "Id of the agent to run (see `list_agents`)." },
+                    "title":       { "type": "string", "description": "Short name for this sub-task." },
+                    "description": { "type": "string", "description": "What this sub-task does." },
+                    "prompt":      { "type": "string", "description": "Prompt sent to the agent." }
+                },
+                "required": ["agent_id", "prompt"]
+            }
+        }
+    })
+}
+
 fn ask_user_clarification_tool_def() -> Value {
     json!({
         "type": "function",

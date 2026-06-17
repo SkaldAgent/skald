@@ -104,11 +104,17 @@ impl Tool for GrepFiles {
             anyhow::bail!("Path not found: {user_path}");
         }
 
+        // Walkers emit absolute paths (the `path` arg is resolved to an absolute working
+        // directory upstream). Strip the queried root so results are shown relative to it,
+        // consistent with `list_files` — keeps the model from echoing absolute paths back.
+        let root_prefix = format!("{}/", root.display());
+        let rel = |s: String| s.strip_prefix(&root_prefix).map(str::to_string).unwrap_or(s);
+
         match output_mode {
             "files_only" => {
                 let mut files: Vec<String> = Vec::new();
                 collect_matching_files(&root, &re, &glob_pattern, max_results + offset, &mut files)?;
-                let files: Vec<String> = files.into_iter().skip(offset).take(max_results).collect();
+                let files: Vec<String> = files.into_iter().skip(offset).take(max_results).map(rel).collect();
                 if files.is_empty() {
                     return Ok(format!("No files match {:?} in {user_path}.", pattern));
                 }
@@ -121,7 +127,7 @@ impl Tool for GrepFiles {
                 if counts.is_empty() {
                     return Ok(format!("No matches for {:?} in {user_path}.", pattern));
                 }
-                let lines: Vec<String> = counts.iter().map(|(f, n)| format!("{f}: {n}")).collect();
+                let lines: Vec<String> = counts.into_iter().map(|(f, n)| format!("{}: {n}", rel(f))).collect();
                 Ok(format!("{} file(s):\n{}", lines.len(), lines.join("\n")))
             }
             _ => {
@@ -130,7 +136,7 @@ impl Tool for GrepFiles {
                 let mut truncated = false;
                 search_path(&root, &re, &glob_pattern, max_results + offset, context_lines, &mut matches, &mut output_bytes, &mut truncated)?;
 
-                let matches: Vec<String> = matches.into_iter().skip(offset).take(max_results).collect();
+                let matches: Vec<String> = matches.into_iter().skip(offset).take(max_results).map(rel).collect();
                 if matches.is_empty() {
                     return Ok(format!("No matches for {:?} in {user_path}.", pattern));
                 }

@@ -84,6 +84,12 @@ impl ChatSessionHandler {
 
         child_config.base_tool_defs.extend(self.tools.openai_definitions_sub_agents_only());
         child_config.base_tool_defs.push(super::ask_user_clarification_tool_def());
+        // Let the sub-agent dispatch a further sub-agent (e.g. tech-lead → architect/engineer).
+        // `run_subtask` is intercepted in `run_agent_turn` and routed back here. Only expose it
+        // while the child can still recurse — at the depth limit `dispatch_sub_agent` would reject it.
+        if new_depth < MAX_AGENT_DEPTH {
+            child_config.base_tool_defs.push(super::run_subtask_tool_def());
+        }
 
         {
             let group_id    = self.tool_group_id().await;

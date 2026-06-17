@@ -20,11 +20,12 @@ agents/
 | --- | --- | --- | --- | --- |
 | `name` | string | yes | — | Display name |
 | `description` | string | yes | — | Used in `list_items` (type=agents) output and `AGENTS_LIST` directive |
-| `inject_memory` | `string[]` | no | `[]` | Paths to files injected into the system prompt as `<memory_file>` blocks |
+| `inject_memory` | `string[]` | no | `[]` | Paths to files injected into the system prompt as `<memory_file>` blocks. Relative paths resolve against Skald's process cwd. The `$WD` placeholder expands to the session's effective working directory (RunContext WD, or process cwd when unset) — e.g. `"$WD/SKALD.md"` loads a project-local file. The path **shown** in the block is relative to the working directory when the file is under it, absolute otherwise — so it always resolves back to the same file under the loop's working-directory injection. Missing files inject a `(file not created yet)` placeholder. |
 | `client` | string \| null | no | null | Pin to a specific named LLM model (must exist in DB) |
 | `scope` | string \| null | no | null | Task domain for AUTO client selection |
 | `strength` | LlmStrength \| null | no | null | Minimum LLM capability for AUTO selection |
 | `is_system_agent` | bool | no | `false` | When `true`, excluded from `list_items` (type=agents) output and `AGENTS_LIST` injection. The main agent cannot see or call it. Use for background/system agents (e.g. TIC). |
+| `inject_skills` | bool | no | `true` | When `true` (the default, **including when the key is absent**), the skills registry (`skills/index.md`) is injected into the system prompt as a `<skills_index>` block so the agent can discover installed skills. Path resolution follows the `inject_memory` rule (relative under the working directory, absolute otherwise). Skipped silently if no skills are installed. Set `false` for background agents that don't need them. |
 
 ### Tool restriction
 
@@ -63,6 +64,7 @@ When a session has no run context it uses the built-in **"default"** group. The 
 | `explorer` | Explorer | `analysis` | `average` | | Studies code, investigates bugs, analyses architecture, produces structured Markdown reports in `data/explorer/`. No implementation. |
 | `blueprint` | Blueprint | `reasoning` | `very_high` | | Transforms project ideas into comprehensive spec documents in `data/`. Never writes code. Saves output path to scratchpad. |
 | `tech-lead` | Tech Lead | `reasoning` | `very_high` | | Reads project documentation, breaks scope into implementation tasks, sequences them by dependency, and orchestrates `architect`/`engineer` sub-agents to deliver end-to-end. |
+| `project-coordinator` | Project Coordinator | `reasoning` | `average` | ✓ | Conversational coordinator for a single project's interactive chat (source `project-{id}`). Receives the project context via its session `RunContext` (working dir, description, fs-write grants) and delegates non-trivial work to specialist sub-agents via `execute_task`. System agent — not callable as a sub-agent or ticket agent. |
 
 
 ---
@@ -82,6 +84,7 @@ A synchronous sub-agent call (`execute_task` mode=sync / `run_subtask`) is **not
 9. Build child `AgentRunConfig` via `for_sub_agent()`, then:
    - Replace `active_mcp_grants` with the pre-populated arc from step 8.
    - Append `sub_agents_only` tools and `ask_user_clarification`.
+   - Append `run_subtask` (so the child can dispatch its own sub-agents, e.g. `tech-lead` → `architect`/`engineer`) — **only** when `depth + 1 < MAX_AGENT_DEPTH`, since at the limit the call would be rejected anyway. `for_sub_agent()` clears all interface tools (including the root's `execute_task`/`run_subtask` interface tools), so without this re-injection a sub-agent has **no** tool definition to delegate further; the call itself is then intercepted in `run_agent_turn` and routed back through `dispatch_sub_agent`.
    - Inject `show_mcp_tools` (stack-scoped, `stack_id = Some(child.id)`) as interface tool.
 10. Append prompt as `role = agent` message in child stack.
 11. Emit `AgentStart` event.

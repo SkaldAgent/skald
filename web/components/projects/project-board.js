@@ -189,6 +189,21 @@ export class ProjectBoardSection extends LightElement {
     this.dispatchEvent(new CustomEvent('project-back', { bubbles: true, composed: true }));
   }
 
+  // Open (or resume) the interactive chat with this project's coordinator agent.
+  // Provisions the session server-side, then asks the copilot to focus its tab.
+  async _openChat() {
+    try {
+      const res = await fetch(`/api/projects/${this._projectId}/session`, { method: 'POST' });
+      if (!res.ok) throw new Error(await res.text());
+      const { source } = await res.json();
+      window.dispatchEvent(new CustomEvent('project-chat-open', {
+        detail: { source, label: this._project?.name ?? `Project ${this._projectId}` },
+      }));
+    } catch (e) {
+      this._error = e.message;
+    }
+  }
+
   _toggleExpand(id) {
     this._expanded = this._expanded === id ? null : id;
   }
@@ -389,10 +404,15 @@ export class ProjectBoardSection extends LightElement {
               <i class="bi bi-kanban"></i>${this._project.name}
             </h2>
           </div>
-          <button class="btn btn-sm btn-primary"
-            @click=${() => { this._form = this._emptyForm(); this._error = null; this._modal = { mode: 'add' }; this._loadModalData(); }}>
-            <i class="bi bi-plus-lg me-1"></i>New Ticket
-          </button>
+          <div style="display:flex;gap:0.5rem">
+            <button class="btn btn-sm btn-outline-primary" @click=${() => this._openChat()}>
+              <i class="bi bi-chat-dots me-1"></i>Open Chat
+            </button>
+            <button class="btn btn-sm btn-primary"
+              @click=${() => { this._form = this._emptyForm(); this._error = null; this._modal = { mode: 'add' }; this._loadModalData(); }}>
+              <i class="bi bi-plus-lg me-1"></i>New Ticket
+            </button>
+          </div>
         </div>
 
         ${this._error ? html`

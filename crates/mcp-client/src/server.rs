@@ -51,6 +51,15 @@ impl McpServer {
            .stderr(Stdio::inherit())
            .kill_on_drop(true);
 
+        // Detach the child into its own process group so that a terminal
+        // Ctrl+C (SIGINT delivered to the whole foreground process group)
+        // does not reach it directly. Otherwise Python-based MCP servers
+        // catch the SIGINT and dump a KeyboardInterrupt traceback to stderr.
+        // Cleanup still happens via `kill_on_drop`: when the app shuts down
+        // and the reader task is dropped, the child receives SIGKILL silently.
+        #[cfg(unix)]
+        cmd.process_group(0);
+
         let mut child = cmd.spawn()
             .map_err(|e| anyhow::anyhow!("failed to spawn '{}': {e}", cfg.name))?;
 

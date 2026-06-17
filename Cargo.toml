@@ -44,6 +44,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender   = "0.2"
 chrono             = { version = "0.4", default-features = false, features = ["clock", "std"] }
 chrono-tz          = "0.10"
+iana-time-zone     = "0.1"
+os_info            = "3"
 cron               = "0.16"
 rand               = "0.10.1"
 syn                = { version = "2", features = ["full"] }

@@ -72,7 +72,7 @@ pub async fn create(
     .last_insert_rowid();
 
     let row = sqlx::query_as::<_, ProjectTicket>(sqlx::AssertSqlSafe(format!(
-        "{SELECT} WHERE id = ?"
+        "{SELECT} WHERE pt.id = ?"
     )))
     .bind(id)
     .fetch_one(pool)

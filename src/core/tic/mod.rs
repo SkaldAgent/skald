@@ -192,7 +192,7 @@ impl TicManager {
         // 4. Create a fresh ephemeral session (agent_id = "tic", source = "tic").
         //    We bypass ChatHub entirely — TIC is not a user-facing source and should
         //    not appear in the sources table or consume a broadcast channel.
-        let (session_id, _) = self.session_mgr.create_session(TIC_AGENT, TIC_SOURCE, false, true).await?;
+        let (session_id, _) = self.session_mgr.create_session(TIC_AGENT, TIC_SOURCE, false, true, None).await?;
         let handler = self.session_mgr.get_or_create_handler(session_id).await?;
         handler.set_auto_deny_approvals();
 

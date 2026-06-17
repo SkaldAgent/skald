@@ -20,9 +20,14 @@ struct RawMeta {
     strength:      Option<LlmStrength>,
     #[serde(default)]
     is_system_agent: bool,
+    #[serde(default = "default_true")]
+    inject_skills: bool,
     #[serde(default)]
     icon:          Option<String>,
 }
+
+/// Serde default for boolean fields that should be `true` when the key is absent.
+fn default_true() -> bool { true }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMeta {
@@ -48,6 +53,12 @@ pub struct AgentMeta {
     /// so the main agent cannot see or call it.
     #[serde(default)]
     pub is_system_agent: bool,
+    /// When true (the default, including when the key is absent), the skills index
+    /// (`skills/index.md`) is injected into this agent's system prompt so it can
+    /// discover and use installed skills. Set false for background agents that don't
+    /// need them (e.g. TIC) to save tokens.
+    #[serde(default = "default_true")]
+    pub inject_skills: bool,
     /// Path to the agent's icon image file (relative to the agent's directory).
     /// Defaults to None if no icon is configured.
     #[serde(default)]
@@ -94,6 +105,7 @@ pub fn discover() -> Result<Vec<AgentMeta>> {
             scope:           raw.scope,
             strength:        raw.strength,
             is_system_agent: raw.is_system_agent,
+            inject_skills:   raw.inject_skills,
             icon:            raw.icon,
         };
         trace!(agent_id = %meta.id, client = ?meta.client, scope = ?meta.scope, strength = ?meta.strength, "agent meta loaded");
@@ -123,6 +135,7 @@ pub fn load_meta(agent_id: &str) -> Result<AgentMeta> {
         scope:           raw.scope,
         strength:        raw.strength,
         is_system_agent: raw.is_system_agent,
+        inject_skills:   raw.inject_skills,
         icon:            raw.icon,
     })
 }

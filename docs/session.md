@@ -6,7 +6,7 @@ Each session can have an active **RunContext** that controls approval policy, sy
 
 Resolution order at handler creation (`get_or_create_handler`):
 
-1. `chat_sessions.run_context` — JSON blob persisted in DB (set via API, per cron job, or by TIC's `tic.run_context` config key)
+1. `chat_sessions.run_context` — JSON blob persisted in DB. Set via API, per cron job, by TIC's `tic.run_context` config key, or at session creation: `ChatSessionManager::create_session(agent_id, source, is_interactive, is_ephemeral, run_context)` persists the RC on the row immediately so it is present before the handler is built (the handler reads it once at construction). Project chats use this path via `ChatHub::provision_session`.
 2. `None` — all RunContext methods return their zero value (`tool_group_id()` → `None`, `extra_system_prompt()` → `None`, `is_write_allowed()` → `false`, `effective_working_dir()` → process cwd)
 
 The `RunContext` is stored in `ChatSessionHandler::run_context` (`RwLock<Option<RunContext>>`). The handler calls its applicative methods and never accesses its internal fields directly.
@@ -293,7 +293,13 @@ See *Context Compaction*.
 
 ### 5. Dynamic tail system message
 
-Contains `extra_system_dynamic` (e.g. Honcho long-term memories, retrieved fresh each turn) followed by current date/time, OS, and working directory. Placed **after** the conversation so the stable prefix (messages 1–4) is never invalidated by per-turn changes. The model's recency-biased attention also ensures it reads fresh user context immediately before generating its response.
+Contains `extra_system_dynamic` (e.g. Honcho long-term memories, retrieved fresh each turn) followed by a date/time/OS/working-directory block:
+
+- **Date/time** — formatted in the effective timezone (the `datetime.timezone` config value if set, otherwise the OS timezone via `iana-time-zone`); the IANA name is shown alongside the offset, e.g. `2026-06-17T21:20:00+01:00 (Europe/Rome)`.
+- **Operating system** — type + version via `os_info` (e.g. `Mac OS 15.5.0 [64-bit]`), computed once and cached.
+- **Working directory** — the session's effective WD, followed by a note that filesystem tools and `execute_cmd` use it for relative paths (no need to `cd`).
+
+Placed **after** the conversation so the stable prefix (messages 1–4) is never invalidated by per-turn changes. The model's recency-biased attention also ensures it reads fresh user context immediately before generating its response.
 
 ### 6. Tail reminder system message *(if provided)*
 

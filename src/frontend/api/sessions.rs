@@ -33,7 +33,10 @@ pub async fn create(
     State(skald): State<Arc<Skald>>,
     Query(q): Query<CreateQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    skald.chat_hub.clear(&q.source).await?;
+    // Resolve agent + RunContext from the source so project chats reset with the
+    // coordinator agent (not the default `main`), then provision a fresh session.
+    let (agent, rc) = super::projects::provisioning_for_source(&skald, &q.source).await?;
+    skald.chat_hub.provision_session(&q.source, &agent, rc.as_ref(), true).await?;
     Ok(Json(json!({})))
 }
 

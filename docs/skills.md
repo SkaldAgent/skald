@@ -14,10 +14,21 @@ skills/
 
 ## How the agent uses skills
 
-1. The agent reads `skills/index.md` to discover what skills are available.
+1. `skills/index.md` is injected into the agent's system prompt automatically as a
+   `<skills_index>` block, so every agent discovers available skills without reading it
+   explicitly. Controlled by the `inject_skills` meta.json flag (default `true`; see
+   [agents.md](agents.md)) — set it to `false` for background agents that don't need skills.
+   The block is skipped silently when no skills are installed.
 2. It reads the relevant `SKILL.md` to understand how to invoke the script.
-3. It runs the script via a shell command (e.g. `python3 skills/pdf2text/pdf_to_text.py input.pdf`).
+3. It runs the script via a shell command (e.g. `python3 skills/pdf/scripts/...`).
 4. It uses the script's stdout as the result.
+
+> **Path note:** the injected `<skills_index>` shows the index path relative to the session's
+> working directory when it lives under it, absolute otherwise. In a project chat (working
+> directory = project root) it shows as absolute, since skills live under Skald's own cwd.
+> Invoking a skill from a project session still needs care — `execute_cmd` runs with the project
+> working directory, so scripts referenced cwd-relative (`python3 skills/...`) won't resolve; use
+> an absolute path or `cd` to Skald's root.
 
 ## Adding a skill
 
