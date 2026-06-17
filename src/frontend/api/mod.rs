@@ -18,6 +18,7 @@ pub mod transcribe_audio;
 pub mod transcribe_models;
 pub mod tts_models;
 pub mod ws;
+pub mod ws_session;
 
 use std::sync::Arc;
 
@@ -42,6 +43,7 @@ pub fn router() -> Router<Arc<Skald>> {
         .route("/{source}/messages",                    get(sessions::source_messages))
         .route("/web/tools/{tool_call_id}/resolve",     post(sessions::web_resolve_tool))
         .route("/ws",                                   get(ws::handler))
+        .route("/ws/session/{id}",                      get(ws_session::handler))
         // LLM selector (for copilot dropdown)
         .route("/llm/models/selector",          get(llm::selector))
         // LLM providers

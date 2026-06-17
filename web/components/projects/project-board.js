@@ -242,6 +242,12 @@ export class ProjectBoardSection extends LightElement {
 
           ${isRunning ? html`
             <span style="font-size:0.78rem;color:var(--bs-secondary-color)">Running…</span>
+            ${ticket.session_id != null ? html`
+              <a href="#session/${ticket.session_id}"
+                 style="font-size:0.78rem;font-family:var(--bs-font-monospace);margin-left:auto">
+                <i class="bi bi-chat-text me-1"></i>#${ticket.session_id}
+              </a>
+            ` : nothing}
           ` : nothing}
 
           ${isCompleted ? html`
@@ -254,6 +260,13 @@ export class ProjectBoardSection extends LightElement {
               <i class="bi bi-${isExpanded ? 'chevron-up' : 'chevron-down'} me-1"></i>
               ${isDone ? 'Result' : 'Error'}
             </button>
+            ${ticket.session_id != null ? html`
+              <a href="#session/${ticket.session_id}"
+                 class="btn btn-sm btn-outline-secondary kanban-card-btn"
+                 style="font-family:var(--bs-font-monospace);font-size:0.75rem">
+                <i class="bi bi-chat-text me-1"></i>#${ticket.session_id}
+              </a>
+            ` : nothing}
           ` : nothing}
         </div>
 

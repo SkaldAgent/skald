@@ -57,6 +57,14 @@ export class TaskHistorySection extends LightElement {
       ${isExpanded ? html`
         <tr class="task-history-detail">
           <td colspan="6">
+            ${run.session_id != null ? html`
+              <div style="margin-bottom:0.5rem">
+                <a href="#session/${run.session_id}"
+                   style="font-size:0.8rem;font-family:var(--bs-font-monospace)">
+                  <i class="bi bi-chat-text me-1"></i>View session #${run.session_id}
+                </a>
+              </div>
+            ` : nothing}
             ${run.error ? html`
               <div class="task-history-error"><strong>Error:</strong> ${run.error}</div>
             ` : nothing}

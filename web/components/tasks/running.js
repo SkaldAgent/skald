@@ -112,7 +112,8 @@ export class RunningTasksSection extends LightElement {
           </div>
           <div class="task-card-meta-item">
             <span class="task-card-meta-label">Session</span>
-            <span class="task-card-meta-value">#${job.running_session_id}</span>
+            <a href="#session/${job.running_session_id}"
+               class="task-card-meta-value task-card-session-link">#${job.running_session_id}</a>
           </div>
         </div>
       </div>

@@ -263,6 +263,15 @@
   color: var(--bs-body-color);
 }
 
+a.task-card-session-link {
+  color: var(--bs-primary);
+  text-decoration: none;
+  font-family: var(--bs-font-monospace);
+}
+a.task-card-session-link:hover {
+  text-decoration: underline;
+}
+
 .task-card-meta-item--full {
   grid-column: 1 / -1;
 }

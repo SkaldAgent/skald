@@ -36,6 +36,7 @@ export class SessionDetailPage extends LightElement {
     _data:            { state: true },
     _loading:         { state: true },
     _error:           { state: true },
+    _live:            { state: true },
     _expandedTools:   { state: true },
     _expandedReasons: { state: true },
   };
@@ -47,8 +48,11 @@ export class SessionDetailPage extends LightElement {
     this._data            = null;
     this._loading         = false;
     this._error           = null;
+    this._live            = false;
     this._expandedTools   = new Set();
     this._expandedReasons = new Set();
+    this._ws              = null;
+    this._wsReconnectTimer = null;
   }
 
   connectedCallback() {
@@ -57,10 +61,16 @@ export class SessionDetailPage extends LightElement {
       this._open = e.detail.page === PAGE_ID;
       this.style.display = this._open ? 'flex' : 'none';
       if (this._open) this._loadFromHash();
+      else            this._closeWs();
     });
     window.addEventListener('hashchange', () => {
       if (this._open) this._loadFromHash();
     });
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this._closeWs();
   }
 
   _idFromHash() {
@@ -73,6 +83,7 @@ export class SessionDetailPage extends LightElement {
     const id = this._idFromHash();
     if (id != null && id !== this._sessionId) {
       this._sessionId = id;
+      this._closeWs();
       this._fetch(id);
     }
   }
@@ -87,11 +98,133 @@ export class SessionDetailPage extends LightElement {
       const res = await fetch(`/api/sessions/${id}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       this._data = await res.json();
+      this._connectWs(id);
     } catch (e) {
       this._error = e.message;
     } finally {
       this._loading = false;
     }
+  }
+
+  // ── Live WebSocket ─────────────────────────────────────────────────────────
+
+  _connectWs(id) {
+    this._closeWs();
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/api/ws/session/${id}`);
+    this._ws = ws;
+
+    ws.onopen = () => { this._live = true; };
+
+    ws.onmessage = (e) => {
+      try { this._handleEvent(JSON.parse(e.data)); } catch {}
+    };
+
+    ws.onclose = () => {
+      this._live = false;
+      this._ws = null;
+      // Reconnect after 3 s if the page is still open and showing this session.
+      if (this._open && this._sessionId === id) {
+        this._wsReconnectTimer = setTimeout(() => this._connectWs(id), 3000);
+      }
+    };
+
+    ws.onerror = () => ws.close();
+  }
+
+  _closeWs() {
+    clearTimeout(this._wsReconnectTimer);
+    if (this._ws) { this._ws.onclose = null; this._ws.close(); this._ws = null; }
+    this._live = false;
+  }
+
+  _handleEvent(ev) {
+    if (!this._data) return;
+    const msgs = [...this._data.messages];
+    const now  = new Date().toISOString();
+
+    switch (ev.type) {
+      case 'tool_start':
+        msgs.push({
+          kind:         'tool',
+          tool_call_id: ev.tool_call_id,
+          message_id:   ev.message_id,
+          name:         ev.name,
+          label_short:  ev.label_short,
+          label_full:   ev.label_full,
+          arguments:    ev.arguments,
+          result:       null,
+          error:        null,
+          status:       'pending',
+          created_at:   now,
+        });
+        break;
+
+      case 'tool_done': {
+        const i = msgs.findIndex(m => m.kind === 'tool' && m.tool_call_id === ev.tool_call_id);
+        if (i >= 0) msgs[i] = { ...msgs[i], result: ev.result, status: 'done' };
+        break;
+      }
+
+      case 'tool_error': {
+        const i = msgs.findIndex(m => m.kind === 'tool' && m.tool_call_id === ev.tool_call_id);
+        if (i >= 0) msgs[i] = { ...msgs[i], error: ev.error, status: 'error' };
+        break;
+      }
+
+      case 'thinking':
+        msgs.push({
+          kind:         'thinking',
+          message_id:   ev.message_id,
+          content:      ev.content,
+          reasoning:    '',
+          input_tokens:  ev.input_tokens  ?? null,
+          output_tokens: ev.output_tokens ?? null,
+          created_at:   now,
+        });
+        break;
+
+      case 'done':
+        msgs.push({
+          kind:         'assistant',
+          message_id:   ev.message_id,
+          content:      ev.content,
+          reasoning:    '',
+          input_tokens:  ev.input_tokens  ?? null,
+          output_tokens: ev.output_tokens ?? null,
+          created_at:   now,
+        });
+        break;
+
+      case 'user_message':
+        msgs.push({
+          kind:         'user',
+          content:      ev.content,
+          is_synthetic: false,
+          created_at:   now,
+        });
+        break;
+
+      case 'agent_start':
+        msgs.push({
+          kind:     'agent',
+          agent_id: ev.agent_id,
+          depth:    ev.depth,
+        });
+        break;
+
+      case 'agent_done':
+        msgs.push({
+          kind:     'agent_end',
+          agent_id: ev.agent_id,
+        });
+        break;
+
+      default:
+        return; // ignore unknown events
+    }
+
+    this._data = { ...this._data, messages: msgs };
   }
 
   _toggleTool(id) {
@@ -124,6 +257,9 @@ export class SessionDetailPage extends LightElement {
           <span class="text-secondary small">id: ${session.id}</span>
           ${session.is_ephemeral ? html`<span class="badge bg-light text-dark border">ephemeral</span>` : nothing}
           ${!session.is_interactive ? html`<span class="badge bg-light text-dark border">automated</span>` : nothing}
+          ${this._live
+            ? html`<span class="sd-live-badge"><span class="sd-live-dot"></span>live</span>`
+            : nothing}
         </div>
         <div class="text-secondary small mt-1">${formatDate(session.created_at)}</div>
       </div>
@@ -410,6 +546,30 @@ export class SessionDetailPage extends LightElement {
           border-bottom: 1px dashed var(--bs-border-color);
           padding: 0.25rem 0;
           margin: 0 0 0.375rem 1rem;
+        }
+        .sd-live-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.3rem;
+          font-size: 0.65rem;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          color: var(--bs-success);
+          border: 1px solid var(--bs-success);
+          border-radius: 999px;
+          padding: 0.1rem 0.45rem;
+        }
+        .sd-live-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: var(--bs-success);
+          animation: sd-pulse 1.4s ease-in-out infinite;
+        }
+        @keyframes sd-pulse {
+          0%, 100% { opacity: 1; }
+          50%       { opacity: 0.25; }
         }
       </style>
 

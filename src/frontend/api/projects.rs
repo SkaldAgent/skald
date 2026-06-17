@@ -62,6 +62,7 @@ pub struct TicketResponse {
     pub agent_id:     String,
     pub run_context:  Option<String>,
     pub job_id:       Option<i64>,
+    pub session_id:   Option<i64>,
     pub result:       Option<String>,
     pub error:        Option<String>,
     pub created_at:   String,
@@ -74,7 +75,7 @@ impl From<ProjectTicket> for TicketResponse {
         Self {
             id: t.id, project_id: t.project_id, title: t.title,
             description: t.description, status: t.status, agent_id: t.agent_id,
-            run_context: t.run_context, job_id: t.job_id,
+            run_context: t.run_context, job_id: t.job_id, session_id: t.session_id,
             result: t.result, error: t.error, created_at: t.created_at,
             started_at: t.started_at, completed_at: t.completed_at,
         }
