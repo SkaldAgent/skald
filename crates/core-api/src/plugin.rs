@@ -10,6 +10,7 @@ use crate::bus::ChatEventBus;
 use crate::system_bus::SystemEventBus;
 use crate::chat_hub::ChatHubApi;
 use crate::image_generate::ImageGenerateRegistry;
+use crate::inbox::InboxApi;
 use crate::location::LocationUpdater;
 use crate::memory::Memory;
 use crate::provider::ApiProviderRegistry;
@@ -31,6 +32,11 @@ pub type RouterFactory = Arc<dyn Fn() -> axum::Router + Send + Sync>;
 pub struct PluginContext {
     pub chat_hub:                Arc<dyn ChatHubApi>,
     pub approval:                Arc<dyn ApprovalApi>,
+    /// Unified Inbox façade (approvals + clarifications). See plugin.md §12.2.
+    pub inbox:                   Arc<dyn InboxApi>,
+    /// Skald's shared SQLite pool — lets plugins create/use their own tables
+    /// (e.g. `relay_*`) in the main DB. See plugin.md §12.1.
+    pub db:                      Arc<sqlx::SqlitePool>,
     pub secrets:                 Arc<dyn SecretsApi>,
     pub transcribe:              Arc<dyn TranscribeProvider>,
     pub transcribe_registry:     Arc<dyn TranscribeRegistry>,
@@ -69,6 +75,13 @@ pub trait Plugin: Send + Sync {
 
     /// Runtime state surfaced to the UI and to agents (e.g. mesh IP).
     fn runtime_status(&self) -> Option<Value> { None }
+
+    /// Optional Axum router contributed by the plugin. When `Some`, the main
+    /// `WebFrontend` nests it under `/api/plugin/<id>/` behind Skald's normal
+    /// auth (plugin.md §12.3). The router must close over the plugin's own state
+    /// (it receives no `State`). Default: no routes — existing plugins are
+    /// unaffected.
+    fn http_router(&self) -> Option<axum::Router> { None }
 
     /// Returns a [`Memory`] backend if this plugin provides one.
     fn memory(&self) -> Option<Arc<dyn Memory>> { None }

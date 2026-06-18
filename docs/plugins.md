@@ -16,6 +16,8 @@ pub trait Plugin: Send + Sync {
     async fn start(&self, ctx: PluginContext)  -> Result<()>;
     async fn reload(&self, enabled: bool, config: Value, ctx: PluginContext) -> Result<()>;
     async fn stop(&self)  -> Result<()>;
+    /// Optional: contribute one Axum router nested under `/api/plugin/<id>/`.
+    fn http_router(&self) -> Option<axum::Router> { None }
     fn as_any(&self)      -> &dyn Any;
 }
 ```
@@ -23,7 +25,15 @@ pub trait Plugin: Send + Sync {
 `start()` and `reload()` must **spawn internal tasks and return immediately**.
 `stop()` must cancel all internal tasks and **await their completion**.
 
-`PluginContext` (`crates/core-api/src/plugin.rs`) carries typed `Arc<dyn Trait>` deps sourced from `Skald` — plugins use only what they need.
+`PluginContext` (`crates/core-api/src/plugin.rs`) carries typed `Arc<dyn Trait>` deps sourced from `Skald` — plugins use only what they need. Beyond the registry/provider deps, it includes:
+
+- `db: Arc<sqlx::SqlitePool>` — Skald's shared SQLite pool (create/use plugin-owned tables here).
+- `inbox: Arc<dyn InboxApi>` — unified approvals + clarifications façade (`list_pending`, `approve`, `reject`, `answer`); idempotent by `request_id`.
+- `chat_hub.events(...)` — subscribe to the global `GlobalEvent` bus (including the four Inbox events; see [approval.md](approval.md)).
+
+### Plugin HTTP routes (`http_router`)
+
+A plugin can mount HTTP routes by overriding `http_router()` (default `None`). After `start_enabled()`, `WebFrontend::start` collects routers via `PluginManager::collect_plugin_routers()` and nests each enabled plugin's router under `/api/plugin/<id>/`, behind Skald's normal auth. The router must close over the plugin's own state (no axum `State` is passed). Only routes — no nav entries / JS assets / Lit components. The mesh-facing router (`router_factory`) does not include plugin routes.
 
 ---
 
@@ -36,6 +46,7 @@ pub trait Plugin: Send + Sync {
 | `set_router_factory(factory)` | Provide Axum router factory (called by `WebFrontend`) |
 | `set_web_port(port)` | Provide HTTP port for plugins that need it (called by `WebFrontend`) |
 | `start_enabled()` | Start all DB-enabled plugins |
+| `collect_plugin_routers()` | Gather `(id, Router)` of enabled plugins to nest under `/api/plugin/<id>/` (called by `WebFrontend` after `start_enabled`) |
 | `stop_all()` | Graceful shutdown on SIGINT |
 | `toggle(id, enabled)` | Enable/disable and start/stop at runtime |
 | `list()` | `Vec<PluginInfo>` with enabled + running flags |
@@ -56,6 +67,7 @@ WebFrontend::start():
   → plugin_manager.set_router_factory(factory)
   → plugin_manager.set_web_port(port)
   → plugin_manager.start_enabled().await
+  → plugin_manager.collect_plugin_routers().await   // nest under /api/plugin/<id>/
 ```
 
 ### Enabled/disabled persistence
@@ -84,6 +96,16 @@ Plugins live in independent workspace crates (see [workspace-crates.md](workspac
 | `toggle_item` (kind=plugin) | Enable/disable a plugin by id (immediate + persisted) |
 | `configure_plugin` | Update a plugin's config JSON and restart it immediately |
 
+### Plugin-provided global LLM tools
+
+The `Plugin` trait has **no** `tools()` method: it cannot register global LLM tools by itself. The pattern (used by `mobile-connector`) is:
+
+1. The plugin exposes a domain control trait (e.g. `RelayAgent`) and implements it on the plugin struct.
+2. The plugin crate exports a factory `fn xxx_tools(agent: Arc<dyn Trait>) -> Vec<Arc<dyn Tool>>`.
+3. In `Skald::new` (`src/core/skald.rs`), after the registry is built, the plugin is fetched via `PluginManager::get_plugin_typed::<P>()`, cast to the trait, and its tools are registered with `ToolRegistry::register_arc(...)`.
+
+The tools call into the plugin lazily, so they can be registered before the plugin's runloop starts (they return an error while the plugin is stopped). This keeps the `core-api` `Plugin` trait minimal while still allowing tool-based control surfaces (plugin.md §11).
+
 ---
 
 ## Available Plugins
@@ -95,6 +117,7 @@ Plugins live in independent workspace crates (see [workspace-crates.md](workspac
 | `telegram` | `crates/plugin-telegram-bot/src/lib.rs` | [telegram.md](telegram.md) |
 | `whisper_local` | `crates/plugin-transcribe-whisper-local/src/lib.rs` | [whisper-local.md](whisper-local.md) |
 | `comfyui` | `crates/plugin-comfyui/src/lib.rs` | [image-generate.md](image-generate.md) |
+| `mobile-connector` | `crates/plugin-mobile-connector/src/lib.rs` | [mobile-connector.md](mobile-connector.md) |
 
 ---
 
@@ -243,3 +266,4 @@ All types used by `ApiProvider` (`LlmProviderRecord`, `LlmModelRecord`, `TtsMode
 | `orpheus_tts_3b` | `crates/plugin-tts-orpheus-3b` | Local TTS via Orpheus 3B (Python subprocess) |
 | `kokoro_tts` | `crates/plugin-tts-kokoro` | Local TTS via Kokoro ONNX (lightweight, multilingual) |
 | `elevenlabs` | `crates/plugin-elevenlabs` | ElevenLabs cloud TTS and transcription (ApiProvider) |
+| `mobile-connector` | `crates/plugin-mobile-connector` | Bridges the Inbox to mobile apps over the relay (E2E encrypted) — see [mobile-connector.md](mobile-connector.md) |

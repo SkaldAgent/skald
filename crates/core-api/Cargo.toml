@@ -11,3 +11,6 @@ chrono       = { version = "0.4", default-features = false, features = ["clock",
 async-trait  = "0.1"
 anyhow       = "1"
 axum         = { version = "0.8", default-features = false }
+# SqlitePool exposed to plugins via PluginContext (plugin.md §12.1). Version
+# pinned to match the rest of the workspace.
+sqlx         = { version = "0.9.0", features = ["runtime-tokio", "sqlite"] }

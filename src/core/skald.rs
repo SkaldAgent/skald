@@ -209,6 +209,20 @@ impl Skald {
         tool_registry.register(super::tools::set_secret::SetSecret(Arc::clone(&secrets)));
         tool_registry.register(super::tools::list_secrets::ListSecrets(Arc::clone(&secrets)));
         tool_registry.register(super::tools::configure_plugin::ConfigurePlugin(Arc::clone(&plugin_manager)));
+
+        // Mobile-connector control tools (plugin.md §11). The plugin Arc itself
+        // implements `RelayAgent`; we look it up and bind the tools to it. The
+        // tools call into the plugin lazily, so registering them before the
+        // plugin's runloop starts is fine (they fail gracefully while stopped).
+        if let Some(mc) = plugin_manager
+            .get_plugin_typed::<plugin_mobile_connector::MobileConnectorPlugin>("mobile-connector")
+        {
+            let agent: Arc<dyn plugin_mobile_connector::RelayAgent> = mc;
+            for tool in plugin_mobile_connector::mobile_tools(agent) {
+                tool_registry.register_arc(tool);
+            }
+            info!("mobile-connector tools registered");
+        }
         debug!("tool registry built");
 
         let (event_tx, _) = tokio::sync::broadcast::channel::<core_api::events::GlobalEvent>(512);
@@ -269,7 +283,7 @@ impl Skald {
             info!("context compactor disabled (no compaction config)");
         }
 
-        let clarification = ClarificationManager::new();
+        let clarification = ClarificationManager::new(event_tx.clone());
 
         let manager = Arc::new(ChatSessionManager::new(
             Arc::clone(&pool),

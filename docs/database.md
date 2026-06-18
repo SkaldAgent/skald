@@ -4,6 +4,8 @@
 
 `db::init_pool(path)` opens a SQLite connection pool with `create_if_missing=true`, then calls `create_tables()`. All `CREATE TABLE IF NOT EXISTS` statements are idempotent — safe to run on every startup.
 
+The pool is opened in **WAL journal mode** (`synchronous=NORMAL`) with a **5 s `busy_timeout`**. The DB is written concurrently (chat loop, cron, and plugins such as the mobile-connector persisting its E2E `send_counter` before each send). Without `busy_timeout`, a contended write returns `SQLITE_BUSY` ("database is locked") immediately and the operation is lost — which silently dropped outbound mobile messages (the `inbox_update` never reached the device). WAL lets readers run alongside the single writer; `busy_timeout` makes a writer wait for the lock instead of failing.
+
 ---
 
 ## Table Schemas
@@ -297,6 +299,24 @@ One row per source (e.g. `"web"`, `"telegram"`). Tracks the active session for e
 | `updated_at` | TEXT | NOT NULL DEFAULT `datetime('now')` |
 
 `ChatHub::get_or_create_session()` reads this table; `sources::upsert()` writes it.
+
+---
+
+### relay_clients
+
+Created and owned by the `mobile-connector` plugin (`crates/plugin-mobile-connector/src/db.rs`), not the main crate. One row per paired mobile device. Counters MUST persist across restarts to prevent AES-GCM nonce reuse / replay (see [mobile-connector.md](mobile-connector.md)).
+
+| Column | Type | Constraints |
+| --- | --- | --- |
+| `ed25519_pub` | BLOB | PRIMARY KEY (32 B) |
+| `x25519_pub` | BLOB | NOT NULL (32 B, for ECDH) |
+| `state` | TEXT | NOT NULL (`pending` \| `authorized`) |
+| `platform` | TEXT | nullable (`ios` \| `android`) |
+| `device_info` | TEXT | nullable JSON (from the E2E `hello`) |
+| `send_counter` | INTEGER | NOT NULL DEFAULT 0 (dir agent→client) |
+| `recv_counter` | INTEGER | NOT NULL DEFAULT 0 (last seen, dir client→agent) |
+| `authorized_at` | INTEGER | nullable unix ms |
+| `last_seen` | INTEGER | nullable unix ms |
 
 ---
 

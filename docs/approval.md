@@ -287,6 +287,21 @@ Each entry contains:
 
 ---
 
+## Inbox bus events (`GlobalEvent`)
+
+Inbox lifecycle changes are broadcast on the global `GlobalEvent` bus so any subscriber (Telegram, the mobile-connector plugin) can react without polling. Plugins subscribe via `ctx.chat_hub.events(...)`. Four events cover the full Inbox cycle:
+
+| Event (`ServerEvent`) | Emitted by | When |
+| --- | --- | --- |
+| `ApprovalRequested { request_id, tool_call_id, tool_name }` | `ApprovalManager::register` | A tool call is gated and enters the Inbox |
+| `ApprovalResolved { request_id, tool_call_id, approved }` | `ApprovalManager::resolve` **and** `resolve_for_tool_call` | An approval is approved/rejected (from any surface: Inbox REST, WS, mobile, or the inline copilot card) |
+| `ClarificationRequested { request_id, title }` | `ClarificationManager::register` | A clarification question enters the Inbox |
+| `ClarificationResolved { request_id }` | `ClarificationManager::resolve` | A clarification is answered |
+
+These are distinct from the per-session WS events `ApprovalRequired` (carries full args for the active client) and `AgentQuestion` (the interactive clarification prompt). The `ClarificationManager` now holds a `broadcast::Sender<GlobalEvent>` injected from `Skald::new` (same `event_tx` the `ApprovalManager` uses), mirroring the approval manager.
+
+---
+
 ## Agent Inbox
 
 The **Agent Inbox** is the unified web page for managing all pending requests from background sessions (cron, etc.):

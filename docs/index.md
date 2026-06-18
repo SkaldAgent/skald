@@ -41,7 +41,7 @@ The project is a Cargo workspace. Extracted crates live in `crates/`:
 | Crate | Path | Notes |
 | --- | --- | --- |
 | `skald` | `.` (root) | Main application binary |
-| `core-api` | `crates/core-api/` | Shared types and traits: `ServerEvent`, `GlobalEvent`, `ChatHubApi`, `ApprovalApi`, `Tool`, `Memory`, `ChatbotClient`, `Transcribe`, `TextToSpeech`, `ImageGenerate`, `SecretsApi`, `LocationManager`, `InterfaceTool`, `Plugin`, `PluginContext`, `ApiProvider`, `ApiProviderRegistry`, `RemoteAccess`. Also owns all DB record types: `LlmProviderRecord`, `LlmModelRecord`, `TtsModelRecord`, `TranscribeModelRecord`, `ImageGenerateModelRecord`. |
+| `core-api` | `crates/core-api/` | Shared types and traits: `ServerEvent`, `GlobalEvent`, `ChatHubApi`, `ApprovalApi`, `InboxApi`, `Tool`, `Memory`, `ChatbotClient`, `Transcribe`, `TextToSpeech`, `ImageGenerate`, `SecretsApi`, `LocationManager`, `InterfaceTool`, `Plugin`, `PluginContext`, `ApiProvider`, `ApiProviderRegistry`, `RemoteAccess`. Also owns all DB record types: `LlmProviderRecord`, `LlmModelRecord`, `TtsModelRecord`, `TranscribeModelRecord`, `ImageGenerateModelRecord`. |
 | `llm-client` | `crates/llm-client/` | OpenAI-compatible, Anthropic, Ollama, LmStudio implementations of `ChatbotClient`. Depends on `core-api` and re-exports the trait and associated types for backward compatibility. |
 | `mcp-client` | `crates/mcp-client/` | MCP protocol layer: `McpServer` (stdio), `McpHttpServer`, `McpServerClient` trait, config types |
 | `honcho-client` | `crates/honcho-client/` | Honcho v3 REST API client — zero dependencies on the main crate |
@@ -51,6 +51,9 @@ The project is a Cargo workspace. Extracted crates live in `crates/`:
 | `plugin-telegram-bot` | `crates/plugin-telegram-bot/` | Private Telegram bot interface |
 | `plugin-tts-orpheus-3b` | `crates/plugin-tts-orpheus-3b/` | Local TTS via Orpheus 3B (Python subprocess) |
 | `plugin-tts-kokoro` | `crates/plugin-tts-kokoro/` | Local TTS via Kokoro ONNX (lightweight, multilingual) |
+| `skald-relay-common` | `crates/skald-relay-common/` | Shared frame types + crypto for the relay and mobile-connector plugin; owns the `gen-vectors` reference generator. No axum/tokio/Skald deps. |
+| `skald-relay-server` | `crates/skald-relay-server/` | Zero-trust store-and-forward relay + push bridge (iOS/Android remote control). Depends on `skald-relay-common`. Live APNs sender behind the `push-live` cargo feature (see [workspace-crates.md](workspace-crates.md)). |
+| `plugin-mobile-connector` | `crates/plugin-mobile-connector/` | Agent end of the relay protocol: bridges the Inbox to mobile apps, E2E encrypted. See [mobile-connector.md](mobile-connector.md). |
 
 To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace].members` list in the root `Cargo.toml`, then add a `path` dependency in `[dependencies]`.
 

@@ -8,6 +8,7 @@ pub mod chatbot;
 pub mod chat_hub;
 pub mod events;
 pub mod image_generate;
+pub mod inbox;
 pub mod interface_tool;
 pub mod location;
 pub mod memory;

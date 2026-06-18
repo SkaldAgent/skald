@@ -20,12 +20,22 @@ pub mod stack_mcp_grants;
 pub mod tool_permission_groups;
 
 use anyhow::Result;
-use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
+use sqlx::{SqlitePool, sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous}};
 use std::str::FromStr;
+use std::time::Duration;
 
 pub async fn init_pool(path: &str) -> Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(path)?
-        .create_if_missing(true);
+        .create_if_missing(true)
+        // WAL lets readers run alongside a single writer, and `busy_timeout`
+        // makes a writer *wait* for the lock instead of failing immediately with
+        // SQLITE_BUSY ("database is locked"). Without these, concurrent writers —
+        // e.g. the mobile-connector persisting its E2E `send_counter` while the
+        // chat loop / cron write history — abort mid-operation, which silently
+        // drops outbound mobile messages (inbox_update never reaches the device).
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(Duration::from_secs(5));
     let pool = SqlitePool::connect_with(opts).await?;
     create_tables(&pool).await?;
     migrate_tables(&pool).await?;

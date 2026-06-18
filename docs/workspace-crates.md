@@ -25,7 +25,26 @@ Shared contract types and traits used by both the main crate and future independ
 | `core_api::tool` | `Tool` trait, `ToolCategory`, `ToolDescriptionLength`, `truncate_label` |
 | `core_api::memory` | `Memory` trait — pluggable long-term memory backend contract |
 | `core_api::remote` | `RemoteAccess` trait — mesh/remote-connectivity provider contract |
+| `core_api::approval` | `ApprovalApi` trait — resolve pending tool-call approvals |
+| `core_api::inbox` | `InboxApi` trait + `InboxSnapshot`/`InboxApprovalItem`/`InboxClarificationItem` — unified approvals + clarifications façade |
 | `core_api::plugin` | `Plugin` trait, `PluginContext`, `RouterFactory` — plugin lifecycle contract and dependency bag |
+
+### `PluginContext` fields (dependency bag)
+
+`PluginContext` (`crates/core-api/src/plugin.rs`) carries the deps a plugin may need. Notable fields:
+
+| Field | Type | Purpose |
+| --- | --- | --- |
+| `chat_hub` | `Arc<dyn ChatHubApi>` | Send messages; `events()` subscribes to the global `GlobalEvent` bus |
+| `approval` | `Arc<dyn ApprovalApi>` | Resolve tool-call approvals |
+| `inbox` | `Arc<dyn InboxApi>` | Unified approvals + clarifications: `list_pending`, `approve`, `reject`, `answer` (idempotent by `request_id`) |
+| `db` | `Arc<sqlx::SqlitePool>` | Skald's shared SQLite pool — plugins create/use their own tables (e.g. `relay_*`) here |
+| `event_bus` / `system_bus` | `Arc<ChatEventBus>` / `Arc<SystemEventBus>` | In-process buses |
+| `web_port` / `remote_slot` / `router_factory` | — | Networking deps (mesh plugins) |
+
+### Plugin HTTP routes (`Plugin::http_router`)
+
+A plugin may contribute one `axum::Router` by overriding `fn http_router(&self) -> Option<axum::Router>` (default `None`, so existing plugins are unaffected). After `start_enabled()`, `WebFrontend::start` calls `PluginManager::collect_plugin_routers()` and nests each enabled plugin's router under `/api/plugin/<id>/`, behind Skald's normal auth. The router must close over the plugin's own state (it receives no axum `State`). Only routes are supported — no nav entries, JS assets, or Lit components (see plugin.md §12.3). The mesh-facing router built by `router_factory` does **not** include plugin routes.
 
 ### `ChatHubApi` trait
 
@@ -78,6 +97,7 @@ The goal is to allow plugins to live in their own workspace crates without depen
 | `orpheus_tts_3b` | `crates/plugin-tts-orpheus-3b/` | [tts-providers.md](tts-providers.md) |
 | `kokoro_tts` | `crates/plugin-tts-kokoro/` | [tts-providers.md](tts-providers.md) |
 | `elevenlabs` | `crates/plugin-elevenlabs/` | [tts-providers.md](tts-providers.md) |
+| `mobile-connector` | `crates/plugin-mobile-connector/` | [mobile-connector.md](mobile-connector.md) |
 
 ### Remaining in main crate
 
@@ -101,6 +121,8 @@ All plugins have been extracted to independent workspace crates. ElevenLabs (TTS
 | `core_api::bus::{BusEvent, ChatEvent, ChatEventRole, RecvError}` | ✅ In `core-api` |
 | `core_api::memory::Memory` | ✅ In `core-api` |
 | `core_api::tool::{Tool, ToolCategory}` | ✅ In `core-api` |
+| `core_api::approval::ApprovalApi` | ✅ In `core-api` |
+| `core_api::inbox::{InboxApi, InboxSnapshot, …}` | ✅ In `core-api` |
 
 ---
 
@@ -218,3 +240,59 @@ Independent plugin crate for the private Telegram bot interface. Depends only on
 | `tools.rs` | `interface_tools` (async) — `send_attachment` always present; `send_voice_message` injected only when at least one TTS provider is active |
 
 `send_voice_message` calls `TtsProvider::get()` at message time, synthesises text via the highest-priority active provider, and sends the result with `bot.send_voice()`. The tool's description automatically includes the provider's `instructions()` field so the LLM knows how to format text for that specific voice engine.
+
+---
+
+## `skald-relay-common` — `crates/skald-relay-common/`
+
+Shared building blocks for the Skald Remote Control relay **and** the mobile-connector plugin, so both ends stay byte-identical on the wire and against the interop vectors (`data/ios-app/test-vectors.md`). Lightweight: **no** axum/tokio/Skald dependency.
+
+`Outgoing` derives both `Serialize` (relay emits these frames) and `Deserialize` (the mobile-connector plugin, as the agent end, receives them).
+
+| Module | Contents |
+| --- | --- |
+| `crypto` | Domain constants (`AUTH_DOMAIN`, `NS_DOMAIN`, KDF/session salts, direction prefixes), `decode_hex`, `namespace_id`, `challenge_message`, `sign_challenge`/`verify_challenge`, `ct_eq`; E2E suite: `derive_keys`, `ecdh`, `derive_aes_key`, `build_nonce`, `build_aad`, `seal`/`open` (AES-256-GCM) |
+| `frames` | serde control-frame types: `Incoming`/`Outgoing`, `AuthFrame`, `MessageIn`, `AuthorizeFrame`, `PairingStartFrame`, and the `codes` module |
+| `bin/gen-vectors` | Reference generator for the crypto interop vectors. Run with `cargo run -p skald-relay-common --bin gen-vectors`; a thin driver over the `crypto` library functions |
+
+The relay only uses the verify/namespace subset of `crypto`; the full E2E suite is end-to-end between agent and client and used by the plugin + `gen-vectors`. See [plugin.md §1.1](../data/ios-app/plugin.md) and [relay.md §2](../data/ios-app/relay.md).
+
+---
+
+## `skald-relay-server` — `crates/skald-relay-server/`
+
+Zero-trust store-and-forward relay + push bridge for the iOS/Android remote-control feature. Depends on `skald-relay-common` for frames and the verify/namespace crypto subset; `src/types.rs` and `src/auth.rs` are now thin re-exports of the common crate. No `gen-vectors` binary here anymore (moved to the common crate). See [relay.md](../data/ios-app/relay.md).
+
+### Source modules
+
+| Module | Contents |
+| --- | --- |
+| `main.rs` | Thin binary entry: tracing init → `Config::from_env` → `AppState::build` → `axum::serve` with graceful shutdown |
+| `lib.rs` | `AppState` (shared state, pusher wiring), `router`, `spawn_gc`, `shutdown_signal`. Conditionally swaps `LogPusher` for the live `ApnsPusher` when the `push-live` feature is on and APNs creds are present |
+| `config.rs` | Env-driven `Config` (`bind`, `db_path`); `ApnsConfig` (team/key/PEM/bundle/sandbox) loaded from `APNS_KEY_PATH` + `APNS_BUNDLE_ID` + `APNS_SANDBOX` (gated by `push-live`) |
+| `push.rs` | `Pusher` trait + `LogPusher` (default, redacted log only), `PushItem` + `apns_payload()`/`fcm_payload()` builders, the **content-in-push vs wake** decision (3500 B threshold, always compiled and unit-tested). Behind `push-live`: `ApnsPusher` (ES256 JWT provider auth, HTTP/2 over TLS via reqwest) and `build_pusher` factory |
+| `store.rs` | `sqlx`/`sqlite` persistence: namespaces, clients, queue, pairing |
+| `routing.rs` | `Registry` — in-memory `namespace_id → agent + clients` connection map |
+| `auth.rs` | Re-export of `skald-relay-common::auth` (challenge verify, `namespace_id` derivation) |
+| `types.rs` | Re-export of `skald-relay-common::frames` (serde control-frame types) |
+| `limits.rs` | Content-push byte cap, TTLs, rate-limits |
+| `ws.rs` | `handle_socket`: challenge → `auth(role)` → forward loop; keepalive; queue drain on connect |
+
+### Push bridge
+
+The normative decision (content-in-push vs wake-only) and the JSON payload builders (`apns_payload` / `fcm_payload`) are always compiled and unit-tested — no Apple/Google credentials needed.
+
+The **live senders** are behind the `push-live` cargo feature (default: off):
+
+| Sender | Status | Notes |
+| --- | --- | --- |
+| `ApnsPusher` | ✅ implemented | ES256 JWT (refresh at 30 min, TTL 60 min) + HTTP/2 via reqwest ALPN. Headers: `apns-topic`, `apns-push-type` (`alert`/`background`), `apns-id` (UUID v4), `authorization: bearer <jwt>`. Body = `item.apns_payload()`. Sandbox vs prod selected by `ApnsConfig::sandbox`. Android notifications ignored (no FCM sender yet) |
+| `FcmPusher` | ⬜ not implemented | FCM HTTP v1, OAuth2 service account, data-only message. Not in scope yet — until then, Android pushes are dropped at the platform check inside `ApnsPusher` |
+
+Credentials: read at boot from `config/apns-key.json` (`{team_id, key_id, private_key}`) plus `APNS_BUNDLE_ID` / `APNS_SANDBOX` env vars. The PEM is already newline-decoded by `serde_json` and passed straight to `jsonwebtoken`. Logs never include the full `device_token` or any payload content — only `short()`-truncated identifiers and `apns-id` for correlation.
+
+---
+
+## `plugin-mobile-connector` — `crates/plugin-mobile-connector/`
+
+The **agent** end of the relay protocol: bridges Skald's Inbox to mobile apps over a single permanent WebSocket, E2E encrypted. Depends on `skald-relay-common` (all of `crypto` + `frames`) and `core-api` (`Plugin`, `InboxApi`, `ChatHubApi`, `SqlitePool`). Owns the `relay_clients` table and the `data/relay/seed` file. Implements `Plugin` (lifecycle + `http_router` for the QR endpoint) and `RelayAgent` (control surface). Exports `mobile_tools(agent)` so the main crate registers its three LLM tools. See [mobile-connector.md](mobile-connector.md).

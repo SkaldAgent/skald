@@ -6,10 +6,15 @@ description = "Skald Remote Control relay: zero-trust store-and-forward + push b
 license = "MIT"
 
 # Main binary (the relay). Deploy entrypoint is /skald-relay-server.
-# A second binary `gen-vectors` (src/bin/gen-vectors.rs) is auto-discovered and
-# produces the crypto interop test vectors (data/ios-app/test-vectors.md §3).
+# Frame types + crypto live in the shared `skald-relay-common` crate; the
+# `gen-vectors` reference generator (crypto interop test vectors,
+# data/ios-app/test-vectors.md §3) moved there too (run with
+# `cargo run -p skald-relay-common --bin gen-vectors`).
 
 [dependencies]
+# --- shared frame types + crypto (frames + verify/namespace subset) ---
+skald-relay-common = { path = "../skald-relay-common" }
+
 # --- async runtime + web/WS ---
 axum         = { version = "0.8", features = ["ws"] }
 tokio        = { version = "1", features = ["full"] }
@@ -24,32 +29,40 @@ async-trait = "0.1"
 # --- persistence ---
 sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite"] }
 
-# --- crypto (relay only verifies Ed25519 + derives namespace_id via SHA-256) ---
-ed25519-dalek = "2"
-sha2          = "0.10"
-subtle        = "2"          # constant-time token compare
+# --- encoding used directly in the WS handler ---
 hex           = "0.4"
 base64        = "0.22"
 rand          = "0.8"        # CSPRNG for the 32-byte challenge nonce
-
-# --- crypto needed ONLY by the gen-vectors reference generator (E2E suite) ---
-x25519-dalek = { version = "2", features = ["static_secrets"] }
-hkdf         = "0.12"
-aes-gcm      = "0.10"
 
 # --- observability + misc ---
 anyhow             = "1"
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender   = "0.2"
 chrono             = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+# --- push-live senders (optional, off by default) ---
+# reqwest: HTTP/2 client for APNs (`http2` enables ALPN h2, `rustls-tls` avoids
+#   an OpenSSL build dependency, `json` matches the body type).
+# jsonwebtoken: ES256 JWT signing for APNs provider auth tokens.
+#   `use_pem` lets us load the .p8 PEM directly; `p256` covers Apple's ES256
+#   algorithm (the only curve APNs accepts) without pulling a separate crypto
+#   crate.
+# uuid: APNs requires a unique `apns-id` per message so retries are de-duped.
+reqwest      = { version = "0.13", default-features = false, features = ["http2", "json", "rustls"], optional = true }
+jsonwebtoken = { version = "9", features = ["use_pem"], optional = true }
+uuid         = { version = "1", features = ["v4"], optional = true }
 
 [features]
 default = []
 # Live push senders (need real APNs/FCM credentials). Off by default so the
 # relay builds & runs without external creds; the normative decision/payload
 # logic is always compiled and unit-tested. See push.rs.
-push-live = []
+push-live = ["dep:reqwest", "dep:jsonwebtoken", "dep:uuid"]
 
 [dev-dependencies]
 # WebSocket client used by the protocol integration tests (tests/protocol.rs).
 tokio-tungstenite = "0.29"
+# Sign challenges / compute namespace_id from the test harness side.
+ed25519-dalek = "2"
+sha2          = "0.10"

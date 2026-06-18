@@ -1,6 +1,7 @@
 # ── Runtime config & secrets ──────────────────────────────────────────────────
 # Copy of default.config.yaml with real API keys — never commit
 /config.yml
+/config/
 # OAuth tokens, credentials, WhatsApp session data
 /secrets/
 !/secrets/.gitkeep
@@ -8,6 +9,10 @@
 /.understand-anything
 # ── Database & runtime data ───────────────────────────────────────────────────
 /database.db
+# SQLite WAL-mode sidecar files (journal_mode=WAL)
+*.db-wal
+*.db-shm
+*.db-journal
 /data/
 /logs/
 /tmp/

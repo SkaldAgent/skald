@@ -98,6 +98,8 @@ impl PluginManager {
         Ok(PluginContext {
             chat_hub:                Arc::clone(&skald.chat_hub) as _,
             approval:                Arc::clone(&skald.approval) as _,
+            inbox:                   Arc::new(skald.inbox.clone()) as _,
+            db:                      Arc::clone(&skald.db),
             secrets:                 Arc::clone(&skald.secrets) as _,
             transcribe:              Arc::clone(&skald.transcribe_manager) as _,
             transcribe_registry:     Arc::clone(&skald.transcribe_manager) as _,
@@ -112,6 +114,32 @@ impl PluginManager {
             remote_slot:             Arc::clone(&skald.remote),
             router_factory,
         })
+    }
+
+    /// Collects the HTTP routers contributed by enabled plugins (plugin.md §12.3).
+    /// Returns `(plugin_id, router)` pairs; the caller (`WebFrontend::start`)
+    /// nests each under `/api/plugin/<id>/`. Only plugins with `enabled=true` in
+    /// the DB and a non-`None` `http_router()` are included.
+    ///
+    /// Call this AFTER `start_enabled()` so a plugin's router can close over state
+    /// initialised during `reload`/`start`.
+    pub async fn collect_plugin_routers(&self) -> Vec<(String, axum::Router)> {
+        let mut out = Vec::new();
+        for plugin in &self.plugins {
+            match db::get(&self.db, plugin.id()).await {
+                Ok(Some(row)) if row.enabled => {}
+                Ok(_) => continue,
+                Err(e) => {
+                    warn!(plugin = plugin.id(), error = %e, "collect_plugin_routers: DB read failed; skipping");
+                    continue;
+                }
+            }
+            if let Some(router) = plugin.http_router() {
+                info!(plugin = plugin.id(), "plugin contributed an HTTP router → /api/plugin/{}", plugin.id());
+                out.push((plugin.id().to_string(), router));
+            }
+        }
+        out
     }
 
     // ── Startup ───────────────────────────────────────────────────────────────

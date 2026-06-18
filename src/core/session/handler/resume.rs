@@ -19,7 +19,7 @@ impl ChatSessionHandler {
         if let Some((srv, mcp_tool)) = crate::core::mcp::parse_mcp_tool_name(name) {
             return self.mcp.call(srv, mcp_tool, args).await;
         }
-        self.tools.dispatch(name, args)
+        self.tools.dispatch(name, args).await
     }
 
     /// Resumes the LLM loop for the current session WITHOUT appending a new user message.

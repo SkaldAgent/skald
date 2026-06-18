@@ -52,6 +52,21 @@ impl AppState {
             std::fs::create_dir_all(parent)?;
         }
         let store = Store::init(&cfg.db_path).await?;
+        // Push bridge: live APNs when `push-live` is enabled and credentials
+        // are present; otherwise the credential-free LogPusher (so the relay
+        // still boots locally — see push.rs).
+        #[cfg(feature = "push-live")]
+        let pusher: Arc<dyn Pusher> = match cfg.apns.as_ref() {
+            Some(apns) => push::build_pusher(apns),
+            None => {
+                tracing::warn!(
+                    target: "relay::push",
+                    "push-live feature enabled but no APNs config; falling back to LogPusher"
+                );
+                Arc::new(LogPusher)
+            }
+        };
+        #[cfg(not(feature = "push-live"))]
         let pusher: Arc<dyn Pusher> = Arc::new(LogPusher);
         Ok(AppState {
             store,

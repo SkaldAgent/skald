@@ -13,7 +13,9 @@ members = [
     "crates/plugin-tts-orpheus-3b",
     "crates/plugin-tts-kokoro",
     "crates/plugin-elevenlabs",
+    "crates/skald-relay-common",
     "crates/skald-relay-server",
+    "crates/plugin-mobile-connector",
 ]
 resolver = "2"
 
@@ -84,3 +86,4 @@ plugin-comfyui                   = { path = "crates/plugin-comfyui" }
 plugin-tts-orpheus-3b            = { path = "crates/plugin-tts-orpheus-3b" }
 plugin-tts-kokoro                = { path = "crates/plugin-tts-kokoro" }
 plugin-elevenlabs                = { path = "crates/plugin-elevenlabs" }
+plugin-mobile-connector          = { path = "crates/plugin-mobile-connector" }

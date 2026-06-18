@@ -7,14 +7,31 @@ use std::net::SocketAddr;
 
 use skald_relay_server::config::Config;
 use skald_relay_server::{AppState, router, shutdown_signal, spawn_gc};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "skald_relay_server=info,info".into()),
+    // Persist logs to `logs/skald-relay.log` (rolling daily), mirroring the main
+    // app, and also mirror to stdout for terminal development. Raise verbosity
+    // with RUST_LOG, e.g. `RUST_LOG=skald_relay_server=debug` (or `=trace` for
+    // full frame-level tracing). The `_log_guard` must live for the whole
+    // program so the non-blocking writer flushes.
+    std::fs::create_dir_all("logs")?;
+    let file_appender = tracing_appender::rolling::daily("logs", "skald-relay.log");
+    let (non_blocking, _log_guard) = tracing_appender::non_blocking(file_appender);
+
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "skald_relay_server=info,info".into());
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(non_blocking)
+                .with_ansi(false),
         )
+        .with(tracing_subscriber::fmt::layer())
         .init();
 
     let cfg = Config::from_env();

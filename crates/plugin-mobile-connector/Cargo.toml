@@ -1,0 +1,27 @@
+[package]
+name = "plugin-mobile-connector"
+version = "0.1.0"
+edition = "2024"
+description = "Mobile connector plugin — bridges Skald's Inbox to mobile apps via the relay (see data/ios-app/plugin.md)"
+
+[dependencies]
+core-api           = { path = "../core-api" }
+skald-relay-common = { path = "../skald-relay-common" }
+ed25519-dalek      = "2"
+anyhow             = "1"
+async-trait        = "0.1"
+serde              = { version = "1", features = ["derive"] }
+serde_json         = "1"
+tokio              = { version = "1", features = ["full"] }
+tokio-util         = { version = "0.7", features = ["rt"] }
+tokio-tungstenite  = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+futures-util       = "0.3"
+tracing            = "0.1"
+sqlx               = { version = "0.9.0", features = ["runtime-tokio", "sqlite"] }
+axum               = { version = "0.8" }
+rand               = "0.9"
+chrono             = { version = "0.4", default-features = false, features = ["clock", "std"] }
+hex                = "0.4"
+base64             = "0.22"
+qrcode             = "0.14"
+image              = { version = "0.25", default-features = false, features = ["png"] }

@@ -151,6 +151,182 @@ fn short(s: &str) -> String {
     format!("{}…", &s[..n])
 }
 
+// ---------------------------------------------------------------------------
+// Live push senders (feature `push-live`). The normative decision/payload
+// logic above stays feature-free and is what the unit tests cover; the real
+// network calls to Apple/Google live behind the gate and need no test
+// fixtures (they need real credentials).
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "push-live")]
+mod live {
+    use super::*;
+    use crate::config::ApnsConfig;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use uuid::Uuid;
+
+    /// APNs HTTP/2 sender (provider-auth via ES256 JWT, per Apple docs). Caches
+    /// the JWT in memory and refreshes it at 30 min (token is valid 60 min).
+    pub struct ApnsPusher {
+        config: ApnsConfig,
+        jwt: tokio::sync::RwLock<JwtState>,
+        client: reqwest::Client,
+    }
+
+    /// Cached provider-auth JWT. Re-signed lazily when the remaining TTL
+    /// drops below [`REFRESH_AFTER`].
+    struct JwtState {
+        token: String,
+        expires_at: Instant,
+    }
+
+    /// Refresh threshold (Apple allows up to 60 min; we renew at the halfway
+    /// point so a clock-skew rejection is unlikely).
+    const REFRESH_AFTER: Duration = Duration::from_secs(30 * 60);
+    /// TTL Apple assigns to a freshly issued provider JWT.
+    const JWT_TTL: Duration = Duration::from_secs(60 * 60);
+
+    impl ApnsPusher {
+        pub fn new(config: ApnsConfig) -> Self {
+            let client = reqwest::Client::new();
+            let jwt = tokio::sync::RwLock::new(JwtState {
+                token: String::new(),
+                // Start expired so the first `notify()` triggers a sign.
+                expires_at: Instant::now(),
+            });
+            Self {
+                config,
+                jwt,
+                client,
+            }
+        }
+
+        /// Return a valid provider JWT, signing a fresh one if the cached one
+        /// is within [`REFRESH_AFTER`] of its TTL.
+        async fn jwt(&self) -> anyhow::Result<String> {
+            // Fast path: cached token is still good.
+            {
+                let state = self.jwt.read().await;
+                if state.expires_at.saturating_duration_since(Instant::now()) > REFRESH_AFTER {
+                    return Ok(state.token.clone());
+                }
+            }
+            // Slow path: take the write lock, double-check (another task may
+            // have refreshed while we were waiting), then sign.
+            let mut state = self.jwt.write().await;
+            if state.expires_at.saturating_duration_since(Instant::now()) > REFRESH_AFTER {
+                return Ok(state.token.clone());
+            }
+            let token = self.generate_jwt()?;
+            state.token = token.clone();
+            state.expires_at = Instant::now() + JWT_TTL;
+            Ok(token)
+        }
+
+        /// Sign a fresh provider JWT (ES256 over the team's P-256 key).
+        fn generate_jwt(&self) -> anyhow::Result<String> {
+            let mut header = Header::new(Algorithm::ES256);
+            header.kid = Some(self.config.key_id.clone());
+
+            let iat = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs() as i64;
+            let claims = serde_json::json!({
+                "iss": self.config.team_id,
+                "iat": iat,
+            });
+
+            let key = EncodingKey::from_ec_pem(self.config.private_key_pem.as_bytes())?;
+            Ok(encode(&header, &claims, &key)?)
+        }
+
+        /// POST the APNs payload over HTTP/2 (negotiated via ALPN by reqwest).
+        async fn send_apns(&self, device_token: &str, item: &PushItem) -> anyhow::Result<()> {
+            let token = self.jwt().await?;
+            let host = if self.config.sandbox {
+                "https://api.sandbox.push.apple.com"
+            } else {
+                "https://api.push.apple.com"
+            };
+            let url = format!("{host}/3/device/{device_token}");
+            let push_type = match item.kind() {
+                PushKind::Content => "alert",
+                PushKind::Wake => "background",
+            };
+            let body = item.apns_payload();
+            let apns_id = Uuid::new_v4().to_string();
+
+            let resp = self
+                .client
+                .post(&url)
+                .header("apns-topic", &self.config.bundle_id)
+                .header("apns-push-type", push_type)
+                .header("apns-id", &apns_id)
+                .header("authorization", format!("bearer {token}"))
+                .json(&body)
+                .send()
+                .await?;
+
+            let status = resp.status();
+            if !status.is_success() {
+                // Apple returns a JSON `{"reason": "..."}` body on errors; safe
+                // to log (it never echoes our payload content).
+                let reason = resp.text().await.unwrap_or_default();
+                tracing::warn!(
+                    target: "relay::push",
+                    status = %status,
+                    apns_id = %apns_id,
+                    reason = %reason,
+                    "APNs request failed"
+                );
+            } else {
+                tracing::info!(
+                    target: "relay::push",
+                    apns_id = %apns_id,
+                    "APNs request accepted"
+                );
+            }
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Pusher for ApnsPusher {
+        async fn notify(&self, device_token: &str, platform: Platform, item: &PushItem) {
+            // FcmPusher is not implemented yet: this sender only knows APNs.
+            if platform != Platform::Ios {
+                tracing::debug!(
+                    target: "relay::push",
+                    platform = platform.as_str(),
+                    "ApnsPusher ignoring non-iOS notification (no FcmPusher yet)"
+                );
+                return;
+            }
+            if let Err(e) = self.send_apns(device_token, item).await {
+                // Never echo device_token or content — only the truncated
+                // identifier and a generic error class.
+                tracing::warn!(
+                    target: "relay::push",
+                    device_token = %short(device_token),
+                    error = %e,
+                    "APNs send failed"
+                );
+            }
+        }
+    }
+
+    /// Build the live APNs pusher. Caller falls back to [`LogPusher`] if
+    /// `cfg.apns` is `None` (key file missing, bundle id unset, …).
+    pub fn build_pusher(cfg: &ApnsConfig) -> Arc<dyn Pusher> {
+        Arc::new(ApnsPusher::new(cfg.clone()))
+    }
+}
+
+#[cfg(feature = "push-live")]
+pub use live::build_pusher;
+
 #[cfg(test)]
 mod tests {
     use super::*;

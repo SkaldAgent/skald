@@ -226,6 +226,9 @@ impl ApprovalManager {
             ("edit_file",      "require"),
             ("insert_at_line", "require"),
             ("replace_lines",  "require"),
+            // Opening a mobile pairing window emits a secret (the QR) into chat:
+            // it must be a deliberate human action, not LLM-triggerable (plugin.md §11).
+            ("mobile_start_pairing", "require"),
         ];
 
         for (pattern, action) in defaults {
@@ -422,11 +425,24 @@ impl ApprovalManager {
             tx,
         };
 
+        let info_source = source.to_string();
         self.pending.lock().await.insert(request_id, entry);
         info!(
             session_id, tool = tool_name, agent = agent_id, source, request_id,
             "approval: pending registered"
         );
+        // Broadcast on the global bus so Inbox subscribers (e.g. the
+        // mobile-connector plugin) can re-snapshot. This is the bus counterpart
+        // of the per-session `ApprovalRequired` WS event.
+        let _ = self.event_tx.send(GlobalEvent {
+            source:     Some(info_source),
+            session_id: Some(session_id),
+            event:      ServerEvent::ApprovalRequested {
+                request_id,
+                tool_call_id,
+                tool_name: tool_name.to_string(),
+            },
+        });
         (request_id, rx)
     }
 
@@ -493,6 +509,20 @@ impl ApprovalManager {
                     session_id = entry.info.session_id, verb,
                     "approval: resolved by tool_call_id"
                 );
+                // Mirror `resolve()`: broadcast on the global bus so Inbox
+                // subscribers (e.g. the mobile-connector plugin) re-snapshot.
+                // Without this, approving the inline copilot card leaves mobile
+                // clients showing a stale pending item.
+                let approved = matches!(decision, ApprovalDecision::Approved);
+                let _ = self.event_tx.send(GlobalEvent {
+                    source:     Some(entry.info.source.clone()),
+                    session_id: Some(entry.info.session_id),
+                    event:      ServerEvent::ApprovalResolved {
+                        request_id,
+                        tool_call_id: entry.info.tool_call_id,
+                        approved,
+                    },
+                });
                 let _ = entry.tx.send(decision);
                 return true;
             }

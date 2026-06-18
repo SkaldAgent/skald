@@ -4,8 +4,10 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use chrono::Utc;
 use serde::Serialize;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{broadcast, Mutex, oneshot};
 use tracing::info;
+
+use crate::core::events::{GlobalEvent, ServerEvent};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PendingClarificationInfo {
@@ -26,15 +28,20 @@ struct PendingEntry {
 }
 
 pub struct ClarificationManager {
-    pending: Mutex<HashMap<i64, PendingEntry>>,
-    next_id: AtomicI64,
+    pending:  Mutex<HashMap<i64, PendingEntry>>,
+    next_id:  AtomicI64,
+    /// Global event bus sender, mirroring `ApprovalManager`. Used to broadcast
+    /// `ClarificationRequested` / `ClarificationResolved` so Inbox subscribers
+    /// (e.g. the mobile-connector plugin) can re-snapshot.
+    event_tx: broadcast::Sender<GlobalEvent>,
 }
 
 impl ClarificationManager {
-    pub fn new() -> Arc<Self> {
+    pub fn new(event_tx: broadcast::Sender<GlobalEvent>) -> Arc<Self> {
         Arc::new(Self {
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicI64::new(1),
+            event_tx,
         })
     }
 
@@ -66,15 +73,34 @@ impl ClarificationManager {
             tx,
         };
 
+        let title_owned  = title.to_string();
+        let source_owned = source.to_string();
         self.pending.lock().await.insert(request_id, entry);
         info!(session_id, agent = agent_id, source, request_id, "clarification: pending registered");
+        // Broadcast on the global bus; counterpart of the per-session
+        // `AgentQuestion` WS event.
+        let _ = self.event_tx.send(GlobalEvent {
+            source:     Some(source_owned),
+            session_id: Some(session_id),
+            event:      ServerEvent::ClarificationRequested {
+                request_id,
+                title: title_owned,
+            },
+        });
         (request_id, rx)
     }
 
     pub async fn resolve(&self, request_id: i64, answer: String) -> bool {
         if let Some(entry) = self.pending.lock().await.remove(&request_id) {
             info!(request_id, "clarification: resolved");
+            let session_id = entry.info.session_id;
+            let source     = entry.info.source.clone();
             let _ = entry.tx.send(answer);
+            let _ = self.event_tx.send(GlobalEvent {
+                source:     Some(source),
+                session_id: Some(session_id),
+                event:      ServerEvent::ClarificationResolved { request_id },
+            });
             true
         } else {
             false

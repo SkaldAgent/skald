@@ -136,12 +136,34 @@ pub enum ServerEvent {
         tried:      Vec<String>,
         last_error: String,
     },
+    /// A new approval entered the Inbox. Emitted on the global bus when the
+    /// `ApprovalManager` registers a pending request, so bus subscribers (e.g.
+    /// the mobile-connector plugin) can re-snapshot the Inbox. Distinct from
+    /// `ApprovalRequired`, which is the per-session WS event carrying full args
+    /// for the active client.
+    ApprovalRequested {
+        request_id:   i64,
+        tool_call_id: i64,
+        tool_name:    String,
+    },
     /// A pending approval or pending-write was resolved (approved or rejected).
     /// Emitted on the global bus so all clients (e.g. Telegram) can update their UI.
     ApprovalResolved {
         request_id:   i64,
         tool_call_id: i64,
         approved:     bool,
+    },
+    /// A new clarification entered the Inbox. Emitted on the global bus when the
+    /// `ClarificationManager` registers a pending question. Distinct from
+    /// `AgentQuestion`, which is the per-session WS event for the active client.
+    ClarificationRequested {
+        request_id: i64,
+        title:      String,
+    },
+    /// A pending clarification was resolved (answered). Emitted on the global bus
+    /// so all clients can update their Inbox view.
+    ClarificationResolved {
+        request_id: i64,
     },
     /// The active session for a source was replaced (e.g. /new, /clear).
     NewSession {
@@ -181,7 +203,10 @@ impl ServerEvent {
             Self::Truncated          { .. } => "truncated",
             Self::ModelFallback      { .. } => "model_fallback",
             Self::LlmFailed          { .. } => "llm_failed",
+            Self::ApprovalRequested  { .. } => "approval_requested",
             Self::ApprovalResolved   { .. } => "approval_resolved",
+            Self::ClarificationRequested { .. } => "clarification_requested",
+            Self::ClarificationResolved  { .. } => "clarification_resolved",
             Self::NewSession         { .. } => "new_session",
             Self::UserMessage        { .. } => "user_message",
             Self::TurnRunning        { .. } => "turn_running",

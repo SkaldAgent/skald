@@ -1,33 +1,36 @@
 import { html, nothing } from 'lit';
-import { LightElement } from '../../lib/base.js';
-import { formatDate } from '../tasks/utils.js';
+import { unsafeHTML }   from 'lit/directives/unsafe-html.js';
+import { LightElement, renderMarkdown } from '../../lib/base.js';
+import { formatDate }   from '../tasks/utils.js';
 
 export class ProjectBoardSection extends LightElement {
   static properties = {
-    _project:  { state: true },
-    _tickets:  { state: true },
-    _modal:    { state: true },
-    _form:     { state: true },
-    _saving:   { state: true },
-    _error:    { state: true },
-    _expanded: { state: true },
-    _agents:   { state: true },
-    _groups:   { state: true },
+    _project:    { state: true },
+    _tickets:    { state: true },
+    _modal:      { state: true },
+    _form:       { state: true },
+    _saving:     { state: true },
+    _error:      { state: true },
+    _expanded:   { state: true },
+    _agents:     { state: true },
+    _groups:     { state: true },
+    _activeTab:  { state: true },
   };
 
   constructor() {
     super();
-    this._project   = null;
-    this._tickets   = [];
-    this._modal     = null;
-    this._form      = this._emptyForm();
-    this._saving    = false;
-    this._error     = null;
-    this._expanded  = null;
-    this._pollTimer = null;
-    this._projectId = null;
-    this._agents    = [];
-    this._groups    = [];
+    this._project    = null;
+    this._tickets    = [];
+    this._modal      = null;
+    this._form       = this._emptyForm();
+    this._saving     = false;
+    this._error      = null;
+    this._expanded   = null;
+    this._pollTimer  = null;
+    this._projectId  = null;
+    this._agents     = [];
+    this._groups     = [];
+    this._activeTab  = 'tickets';
   }
 
   disconnectedCallback() {
@@ -94,17 +97,24 @@ export class ProjectBoardSection extends LightElement {
   }
 
   _groupTickets() {
-    const groups = { todo: [], running: [], completed: [] };
+    const running   = [];
+    const todo      = [];
+    const completed = [];
+
     for (const t of this._tickets) {
-      if (t.status === 'todo') {
-        groups.todo.push(t);
-      } else if (t.status === 'pending' || t.status === 'in_progress') {
-        groups.running.push(t);
+      if (t.status === 'pending' || t.status === 'in_progress') {
+        running.push(t);
+      } else if (t.status === 'todo') {
+        todo.push(t);
       } else {
-        groups.completed.push(t);
+        completed.push(t);
       }
     }
-    return groups;
+
+    todo.sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''));
+    completed.sort((a, b) => (b.completed_at ?? '').localeCompare(a.completed_at ?? ''));
+
+    return { running, todo, completed };
   }
 
   async _loadModalData() {
@@ -189,8 +199,6 @@ export class ProjectBoardSection extends LightElement {
     this.dispatchEvent(new CustomEvent('project-back', { bubbles: true, composed: true }));
   }
 
-  // Open (or resume) the interactive chat with this project's coordinator agent.
-  // Provisions the session server-side, then asks the copilot to focus its tab.
   async _openChat() {
     try {
       const res = await fetch(`/api/projects/${this._projectId}/session`, { method: 'POST' });
@@ -217,15 +225,15 @@ export class ProjectBoardSection extends LightElement {
     const isCompleted = isDone || isFailed;
     const isExpanded  = this._expanded === ticket.id;
 
-    const cardClass = isRunning  ? 'kanban-card kanban-card--running'
-                    : isDone     ? 'kanban-card kanban-card--done'
-                    : isFailed   ? 'kanban-card kanban-card--failed'
-                    : 'kanban-card';
+    const cardClass = isRunning  ? 'ticket-card ticket-card--running'
+                    : isDone     ? 'ticket-card ticket-card--done'
+                    : isFailed   ? 'ticket-card ticket-card--failed'
+                    : 'ticket-card';
 
     return html`
       <div class="${cardClass}">
-        <div class="kanban-card-header">
-          <span class="kanban-card-title">${ticket.title}</span>
+        <div class="ticket-card-header">
+          <span class="ticket-card-title">${ticket.title}</span>
           ${isRunning ? html`
             <span class="spinner-border spinner-border-sm text-primary"
               style="width:0.7rem;height:0.7rem;flex-shrink:0"></span>
@@ -233,52 +241,55 @@ export class ProjectBoardSection extends LightElement {
         </div>
 
         ${ticket.description
-          ? html`<div class="kanban-card-desc">${ticket.description}</div>`
+          ? html`<div class="ticket-card-desc">${ticket.description}</div>`
           : nothing}
 
-        <div class="kanban-card-meta">
-          <i class="bi bi-person me-1"></i>${ticket.agent_id}
+        <div class="ticket-card-meta">
+          <span><i class="bi bi-person me-1"></i>${ticket.agent_id}</span>
           ${ticket.started_at ? html`
-            <span class="ms-2">${formatDate(ticket.started_at)}</span>
+            <span><i class="bi bi-clock me-1"></i>${formatDate(ticket.started_at)}</span>
+          ` : html`
+            <span><i class="bi bi-calendar me-1"></i>${formatDate(ticket.created_at)}</span>
+          `}
+          ${isCompleted && ticket.completed_at ? html`
+            <span><i class="bi bi-check2 me-1"></i>${formatDate(ticket.completed_at)}</span>
           ` : nothing}
         </div>
 
-        <div class="kanban-card-actions">
+        <div class="ticket-card-actions">
           ${ticket.status === 'todo' ? html`
-            <button class="btn btn-sm btn-outline-primary kanban-card-btn"
+            <button class="btn btn-sm btn-outline-primary ticket-card-btn"
               @click=${() => this._startTicket(ticket)}>
               <i class="bi bi-play-fill me-1"></i>Start
             </button>
-            <button class="btn btn-sm btn-outline-danger kanban-card-btn"
+            <button class="btn btn-sm btn-outline-danger ticket-card-btn"
               @click=${() => this._deleteTicket(ticket)}>
               <i class="bi bi-trash"></i>
             </button>
           ` : nothing}
 
           ${isRunning ? html`
-            <span style="font-size:0.78rem;color:var(--bs-secondary-color)">Running…</span>
+            <span class="ticket-card-running-label">Running…</span>
             ${ticket.session_id != null ? html`
-              <a href="#session/${ticket.session_id}"
-                 style="font-size:0.78rem;font-family:var(--bs-font-monospace);margin-left:auto">
+              <a href="#session/${ticket.session_id}" class="ticket-card-session-link">
                 <i class="bi bi-chat-text me-1"></i>#${ticket.session_id}
               </a>
             ` : nothing}
           ` : nothing}
 
           ${isCompleted ? html`
-            <button class="btn btn-sm btn-outline-secondary kanban-card-btn"
+            <button class="btn btn-sm btn-outline-secondary ticket-card-btn"
               @click=${() => this._resetTicket(ticket)}>
               <i class="bi bi-arrow-counterclockwise me-1"></i>Reset
             </button>
-            <button class="btn btn-sm kanban-card-btn ${isDone ? 'btn-outline-success' : 'btn-outline-danger'}"
+            <button class="btn btn-sm ticket-card-btn ${isDone ? 'btn-outline-success' : 'btn-outline-danger'}"
               @click=${() => this._toggleExpand(ticket.id)}>
               <i class="bi bi-${isExpanded ? 'chevron-up' : 'chevron-down'} me-1"></i>
               ${isDone ? 'Result' : 'Error'}
             </button>
             ${ticket.session_id != null ? html`
               <a href="#session/${ticket.session_id}"
-                 class="btn btn-sm btn-outline-secondary kanban-card-btn"
-                 style="font-family:var(--bs-font-monospace);font-size:0.75rem">
+                 class="btn btn-sm btn-outline-secondary ticket-card-btn ticket-card-session-btn">
                 <i class="bi bi-chat-text me-1"></i>#${ticket.session_id}
               </a>
             ` : nothing}
@@ -286,28 +297,51 @@ export class ProjectBoardSection extends LightElement {
         </div>
 
         ${isCompleted && isExpanded ? html`
-          <div class="kanban-card-result kanban-card-result--${isDone ? 'success' : 'error'}">
+          <div class="ticket-card-result ticket-card-result--${isDone ? 'success' : 'error'}">
             ${isDone
-              ? (ticket.result    ?? '(no output)')
-              : (ticket.error     ?? '(no error message)')}
+              ? html`<div class="ticket-result-markdown copilot-markdown">
+                  ${unsafeHTML(renderMarkdown(ticket.result ?? '(no output)'))}
+                </div>`
+              : html`<pre class="ticket-result-error">${ticket.error ?? '(no error message)'}</pre>`}
           </div>
         ` : nothing}
       </div>
     `;
   }
 
-  _renderColumn(label, icon, colorClass, tickets) {
+  _renderSection(label, icon, colorClass, tickets, emptyLabel) {
     return html`
-      <div class="kanban-column">
-        <div class="kanban-column-header ${colorClass}">
+      <div class="ticket-section">
+        <div class="ticket-section-header ${colorClass}">
           <span><i class="bi bi-${icon} me-1"></i>${label}</span>
-          <span class="badge bg-secondary">${tickets.length}</span>
+          <span class="badge bg-secondary ms-2">${tickets.length}</span>
         </div>
-        <div class="kanban-cards">
-          ${tickets.length === 0
-            ? html`<div class="kanban-column-empty">No tickets</div>`
-            : tickets.map(t => this._renderTicketCard(t))}
-        </div>
+        ${tickets.length === 0
+          ? html`<div class="ticket-section-empty">${emptyLabel}</div>`
+          : tickets.map(t => this._renderTicketCard(t))}
+      </div>
+    `;
+  }
+
+  _renderTabBar() {
+    return html`
+      <div class="project-tab-bar">
+        <button
+          class="project-tab ${this._activeTab === 'tickets' ? 'project-tab--active' : ''}"
+          @click=${() => { this._activeTab = 'tickets'; }}>
+          <i class="bi bi-card-list me-1"></i>Tickets
+        </button>
+      </div>
+    `;
+  }
+
+  _renderTicketsTab() {
+    const { running, todo, completed } = this._groupTickets();
+    return html`
+      <div class="ticket-list">
+        ${this._renderSection('Running', 'activity',     'ticket-section-header--running',   running,   'No tickets running')}
+        ${this._renderSection('Todo',    'circle',       '',                                  todo,      'No tickets to do')}
+        ${this._renderSection('Completed', 'check-circle', 'ticket-section-header--completed', completed, 'No completed tickets')}
       </div>
     `;
   }
@@ -391,8 +425,6 @@ export class ProjectBoardSection extends LightElement {
       `;
     }
 
-    const groups = this._groupTickets();
-
     return html`
       <div class="project-page">
         <div class="project-page-header">
@@ -401,7 +433,7 @@ export class ProjectBoardSection extends LightElement {
               <i class="bi bi-arrow-left me-1"></i>Projects
             </button>
             <h2 class="project-page-title">
-              <i class="bi bi-kanban"></i>${this._project.name}
+              <i class="bi bi-folder2"></i>${this._project.name}
             </h2>
           </div>
           <div style="display:flex;gap:0.5rem">
@@ -415,15 +447,13 @@ export class ProjectBoardSection extends LightElement {
           </div>
         </div>
 
+        ${this._renderTabBar()}
+
         ${this._error ? html`
           <div class="alert alert-danger py-2 mx-3 mt-3 mb-0" style="font-size:0.85rem">${this._error}</div>
         ` : nothing}
 
-        <div class="kanban-board">
-          ${this._renderColumn('Todo',      'circle',       '',                              groups.todo)}
-          ${this._renderColumn('Running',   'activity',     'kanban-column-header--running', groups.running)}
-          ${this._renderColumn('Completed', 'check-circle', '',                              groups.completed)}
-        </div>
+        ${this._activeTab === 'tickets' ? this._renderTicketsTab() : nothing}
 
         ${this._modal ? this._renderModal() : nothing}
       </div>

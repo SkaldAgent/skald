@@ -50,10 +50,16 @@ impl WebFrontend {
         self.skald.plugin_manager
             .start_config_watcher(self.skald.shutdown_token.clone());
 
+        // Collect HTTP routers contributed by enabled plugins (plugin.md §12.3)
+        // AFTER start_enabled(), so each router can close over state set up during
+        // the plugin's reload/start. Nested under /api/plugin/<id>/.
+        let plugin_routers = self.skald.plugin_manager.collect_plugin_routers().await;
+
         let addr = format!("{}:{}", "0.0.0.0", self.port);
         let server = WebServer::new(
             self.static_dir.clone(),
             Arc::clone(&self.skald),
+            plugin_routers,
         );
         let handle = server.start(&addr).await?;
         info!(%addr, "server listening");

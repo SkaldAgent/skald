@@ -6,7 +6,7 @@ without the user re-explaining it every time.
 
 Two ways to work on a project:
 
-1. **Kanban tickets** — fire-and-forget background tasks (one agent run per ticket).
+1. **Tickets** — fire-and-forget background tasks (one agent run per ticket).
 2. **Interactive chat** — a persistent conversation with the project's coordinator agent, which
    delegates to specialist sub-agents.
 
@@ -44,7 +44,7 @@ identical project context. Edit it in one place.
 
 ---
 
-## Kanban tickets (background)
+## Tickets (background)
 
 A ticket is an individual work item with a `title`, `description`, `agent_id`, and optional
 `run_context` (static config only). Lifecycle in `ProjectTicketManager`:
@@ -58,8 +58,15 @@ A ticket is an individual work item with a `title`, `description`, `agent_id`, a
   `SystemEvent::JobCompleted` whose `origin_ref` matches `PROJECT_TASK:`, calls `on_job_completed`
   to persist the result/error and final status.
 
-The board UI (`web/components/projects/project-board.js`) renders Todo / Running / Completed
-columns, polls while tickets are active, and links each ticket to its session.
+The board UI (`web/components/projects/project-board.js`) renders tickets in a single scrollable
+list divided into three sections:
+
+- **Running** — active tickets (status `pending` or `in_progress`), in start order.
+- **Todo** — pending tickets, sorted by `created_at` descending (newest first).
+- **Completed** — done/failed tickets, sorted by `completed_at` descending (most recent first).
+
+The LLM result of a done ticket is rendered as markdown. Failed tickets show raw error text.
+The view polls every 5 s while any ticket is running. Each ticket links to its session.
 
 ---
 

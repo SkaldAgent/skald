@@ -56,6 +56,12 @@ impl ToolRegistry {
         self.tools.insert(tool.name().to_string(), Arc::new(tool));
     }
 
+    /// Register an already-boxed tool (e.g. plugin-provided tools whose
+    /// constructors return `Arc<dyn Tool>`).
+    pub fn register_arc(&mut self, tool: Arc<dyn Tool>) {
+        self.tools.insert(tool.name().to_string(), tool);
+    }
+
     /// Tool definitions for the root agent (depth = 0): excludes sub_agents_only tools.
     pub fn openai_definitions(&self) -> Vec<Value> {
         self.tools.values()
@@ -114,9 +120,9 @@ impl ToolRegistry {
     }
 
     /// Dispatch a tool call by name.
-    pub fn dispatch(&self, name: &str, args: Value) -> Result<String> {
+    pub async fn dispatch(&self, name: &str, args: Value) -> Result<String> {
         match self.tools.get(name) {
-            Some(tool) => tool.execute(args),
+            Some(tool) => tool.execute_async(args).await,
             None       => anyhow::bail!("Unknown tool: {name}"),
         }
     }
