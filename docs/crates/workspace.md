@@ -247,21 +247,27 @@ Independent plugin crate for the private Telegram bot interface. Depends only on
 
 Shared building blocks for the Skald Remote Control relay **and** the mobile-connector plugin, so both ends stay byte-identical on the wire and against the interop vectors (`data/ios-app/test-vectors.md`). Lightweight: **no** axum/tokio/Skald dependency.
 
-`Outgoing` derives both `Serialize` (relay emits these frames) and `Deserialize` (the mobile-connector plugin, as the agent end, receives them).
+Implements two transport versions:
 
 | Module | Contents |
 | --- | --- |
 | `crypto` | Domain constants (`AUTH_DOMAIN`, `NS_DOMAIN`, KDF/session salts, direction prefixes), `decode_hex`, `namespace_id`, `challenge_message`, `sign_challenge`/`verify_challenge`, `ct_eq`; E2E suite: `derive_keys`, `ecdh`, `derive_aes_key`, `build_nonce`, `build_aad`, `seal`/`open` (AES-256-GCM) |
-| `frames` | serde control-frame types: `Incoming`/`Outgoing`, `AuthFrame`, `MessageIn`, `AuthorizeFrame`, `PairingStartFrame`, and the `codes` module |
-| `bin/gen-vectors` | Reference generator for the crypto interop vectors. Run with `cargo run -p skald-relay-common --bin gen-vectors`; a thin driver over the `crypto` library functions |
+| `frames` | serde control-frame types for the **legacy v1** JSON wire protocol: `Incoming`/`Outgoing`, `AuthFrame`, `MessageIn`, `AuthorizeFrame`, `PairingStartFrame`, and the `codes` module (historical, no longer used by deployed code) |
+| `proto` | **Active:** Protobuf-generated types for the **v2** binary wire protocol (`data/ios-app/v2/relay-protocol.md` §1-4). Compiled from `proto/skald/relay/v2/relay_frame.proto` by `build.rs` (prost-build). Exposed as `skald_relay_common::proto::v2` so future versions can sit alongside. `bytes` fields come through as `::prost::bytes::Bytes` (prost 0.13 default — wire-compatible with `Vec<u8>`). Every WebSocket binary frame post-auth is **exactly one** `RelayFrame` message. |
+| `bin/gen-vectors` | Reference generator for the crypto interop vectors + protobuf encoding. Run with `cargo run -p skald-relay-common --bin gen-vectors`; a thin driver over the `crypto` library functions. Produces both v1 (JSON) and v2 (protobuf) test vectors. |
 
 The relay only uses the verify/namespace subset of `crypto`; the full E2E suite is end-to-end between agent and client and used by the plugin + `gen-vectors`. See [plugin.md §1.1](../data/ios-app/plugin.md) and [relay.md §2](../data/ios-app/relay.md).
+
+**Transport versions:**
+
+- **v1** (JSON-text): frames in `frames` module; no app deployed
+- **v2** (protobuf-binary): active; adds presence + live channel (route-or-fail). Documented in `data/ios-app/v2/` ([index.md](../data/ios-app/v2/index.md), [relay-protocol.md](../data/ios-app/v2/relay-protocol.md), [framing.md](../data/ios-app/v2/framing.md))
 
 ---
 
 ## `skald-relay-server` — `crates/skald-relay-server/`
 
-Zero-trust store-and-forward relay + push bridge for the iOS/Android remote-control feature. Depends on `skald-relay-common` for frames and the verify/namespace crypto subset; `src/types.rs` and `src/auth.rs` are now thin re-exports of the common crate. No `gen-vectors` binary here anymore (moved to the common crate). See [relay.md](../data/ios-app/relay.md).
+Zero-trust store-and-forward relay + push bridge for the iOS/Android remote-control feature. Depends on `skald-relay-common` for **protobuf types** (`proto::v2`) and the verify/namespace crypto subset. Implements the **v2 binary wire protocol** (`data/ios-app/v2/relay-protocol.md`): every post-auth WebSocket binary frame is exactly one `RelayFrame` protobuf message. Includes presence tracking and a live channel (route-or-fail) for state pulls that don't queue. No `gen-vectors` binary here anymore (moved to the common crate).
 
 ### Source modules
 
@@ -272,11 +278,11 @@ Zero-trust store-and-forward relay + push bridge for the iOS/Android remote-cont
 | `config.rs` | Env-driven `Config` (`bind`, `db_path`); `ApnsConfig` (team/key/PEM/bundle/sandbox) loaded from `APNS_KEY_PATH` + `APNS_BUNDLE_ID` + `APNS_SANDBOX` (gated by `push-live`) |
 | `push.rs` | `Pusher` trait + `LogPusher` (default, redacted log only), `PushItem` + `apns_payload()`/`fcm_payload()` builders, the **content-in-push vs wake** decision (3500 B threshold, always compiled and unit-tested). Behind `push-live`: `ApnsPusher` (ES256 JWT provider auth, HTTP/2 over TLS via reqwest) and `build_pusher` factory |
 | `store.rs` | `sqlx`/`sqlite` persistence: namespaces, clients, queue, pairing |
-| `routing.rs` | `Registry` — in-memory `namespace_id → agent + clients` connection map |
+| `routing.rs` | `Registry` — in-memory `namespace_id → agent + clients` connection map; presence tracking per namespace |
 | `auth.rs` | Re-export of `skald-relay-common::auth` (challenge verify, `namespace_id` derivation) |
-| `types.rs` | Re-export of `skald-relay-common::frames` (serde control-frame types) |
-| `limits.rs` | Content-push byte cap, TTLs, rate-limits |
-| `ws.rs` | `handle_socket`: challenge → `auth(role)` → forward loop; keepalive; queue drain on connect |
+| `types.rs` | Re-export of `skald-relay-common::proto::v2` (protobuf control-frame types for v2 binary transport) |
+| `limits.rs` | Content-push byte cap, TTLs, rate-limits (`MAX_FRAME_BYTES` 64 KiB, `MAX_LIVE_FRAME_BYTES` 512 KiB per relay-protocol.md §5) |
+| `ws.rs` | `handle_socket` — v2 transport driver (relay-protocol.md §1). Challenge → protobuf `Auth` decode → role dispatch → forward loop. Presence events, live (`Message.live=true`) route-or-fail dispatch, and store-and-forward queue. WS-level Ping/Pong keepalive (not protobuf messages). |
 
 ### Push bridge
 
@@ -295,4 +301,4 @@ Credentials: read at boot from `config/apns-key.json` (`{team_id, key_id, privat
 
 ## `plugin-mobile-connector` — `crates/plugin-mobile-connector/`
 
-The **agent** end of the relay protocol: bridges Skald's Inbox to mobile apps over a single permanent WebSocket, E2E encrypted. Depends on `skald-relay-common` (all of `crypto` + `frames`) and `core-api` (`Plugin`, `InboxApi`, `ChatHubApi`, `SqlitePool`). Owns the `relay_clients` table and the `data/relay/seed` file. Implements `Plugin` (lifecycle + `http_router` for the QR endpoint) and `RelayAgent` (control surface). Exports `mobile_tools(agent)` so the main crate registers its three LLM tools. See [mobile-connector.md](mobile-connector.md).
+The **agent** end of the relay protocol: bridges Skald's Inbox to mobile apps over a single permanent WebSocket, E2E encrypted. Depends on `skald-relay-common` (all of `crypto` + `proto::v2`) and `core-api` (`Plugin`, `InboxApi`, `ChatHubApi`, `SqlitePool`). Owns the `relay_clients` table and the `data/relay/seed` file. Implements the **v2 binary transport client** (`data/ios-app/v2/relay-protocol.md`): encodes/decodes `RelayFrame` protobuf, sends presence events, handles the live channel for `inbox_request` pulls. Implements `Plugin` (lifecycle + `http_router` for the QR endpoint) and `RelayAgent` (control surface). Exports `mobile_tools(agent)` so the main crate registers its three LLM tools. See [mobile-connector.md](mobile-connector.md).

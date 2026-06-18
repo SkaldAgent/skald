@@ -7,6 +7,7 @@
 
 use crate::limits::CONTENT_PUSH_MAX_B64;
 use async_trait::async_trait;
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use serde_json::{Value, json};
 
 /// Device platform (relay-protocol.md): selects APNs vs FCM.
@@ -41,20 +42,30 @@ pub enum PushKind {
     Wake,
 }
 
-/// Everything needed to build a push, already in on-the-wire encoding.
+/// Everything needed to build a push.
+///
+/// `ciphertext` carries the **raw** bytes — exactly what v2 transports on the
+/// WebSocket (protobuf `Message.ciphertext`). The relay base64-encodes them
+/// when building the APNs/FCM JSON envelope (`d.c` field): that field is still
+/// base64 because that's what the APNs/FCM wire protocols expect, unchanged
+/// from v1. The base64 step therefore lives **inside** `apns_payload()` /
+/// `fcm_payload()` — callers never pre-encode.
 #[derive(Debug, Clone)]
 pub struct PushItem {
     pub namespace_id: String,
     pub from_hex: String,
     pub nonce_hex: String,
-    pub ciphertext_b64: String,
+    /// Raw ciphertext bytes (v2 `Message.ciphertext` as it travels on the
+    /// WebSocket). The relay base64-encodes them when building APNs/FCM JSON.
+    pub ciphertext: Vec<u8>,
 }
 
 impl PushItem {
-    /// Normative selection rule: content-in-push if `len(base64(ciphertext)) <=
-    /// CONTENT_PUSH_MAX_B64`, otherwise wake-only.
+    /// Normative selection rule: content-in-push if
+    /// `len(base64(ciphertext)) <= CONTENT_PUSH_MAX_B64`, otherwise wake-only.
+    /// We measure the base64 length on demand (cheap, no allocation kept).
     pub fn kind(&self) -> PushKind {
-        if self.ciphertext_b64.len() <= CONTENT_PUSH_MAX_B64 {
+        if B64.encode(&self.ciphertext).len() <= CONTENT_PUSH_MAX_B64 {
             PushKind::Content
         } else {
             PushKind::Wake
@@ -77,7 +88,7 @@ impl PushItem {
                     "ns": self.namespace_id,
                     "from": self.from_hex,
                     "n": self.nonce_hex,
-                    "c": self.ciphertext_b64
+                    "c": B64.encode(&self.ciphertext)
                 }
             }),
             PushKind::Wake => json!({
@@ -101,7 +112,7 @@ impl PushItem {
             PushKind::Content => {
                 data.insert("from".into(), json!(self.from_hex));
                 data.insert("n".into(), json!(self.nonce_hex));
-                data.insert("c".into(), json!(self.ciphertext_b64));
+                data.insert("c".into(), json!(B64.encode(&self.ciphertext)));
             }
             PushKind::Wake => {
                 data.insert("wake".into(), json!("true"));
@@ -139,7 +150,7 @@ impl Pusher for LogPusher {
             kind = ?kind,
             ns = %short(&item.namespace_id),
             token = %short(device_token),
-            ct_b64_len = item.ciphertext_b64.len(),
+            ct_b64_len = B64.encode(&item.ciphertext).len(),
             "would deliver push (no push credentials configured: LogPusher)"
         );
     }
@@ -336,21 +347,27 @@ mod tests {
             namespace_id: "a".repeat(64),
             from_hex: "b".repeat(64),
             nonce_hex: "c".repeat(24),
-            ciphertext_b64: "Z".repeat(ct_len),
+            ciphertext: vec![0xAA; ct_len],
         }
     }
 
     #[test]
     fn threshold_is_inclusive_3500() {
-        assert_eq!(item(CONTENT_PUSH_MAX_B64).kind(), PushKind::Content);
-        assert_eq!(item(CONTENT_PUSH_MAX_B64 + 1).kind(), PushKind::Wake);
+        // 2625 raw bytes → 3500 base64 bytes (2625 % 3 == 0 → no padding needed).
+        let at_boundary = item((CONTENT_PUSH_MAX_B64 / 4) * 3);
+        assert_eq!(at_boundary.kind(), PushKind::Content);
+        // 2626 raw bytes → 3504 base64 bytes (2626 % 3 == 1 → 2 padding chars) → Wake.
+        assert_eq!(
+            item((CONTENT_PUSH_MAX_B64 / 4) * 3 + 1).kind(),
+            PushKind::Wake
+        );
     }
 
     #[test]
     fn apns_content_has_blob_and_mutable() {
         let p = item(100).apns_payload();
         assert_eq!(p["aps"]["mutable-content"], 1);
-        assert_eq!(p["d"]["c"], "Z".repeat(100));
+        assert_eq!(p["d"]["c"], B64.encode(&vec![0xAA; 100]));
         assert_eq!(p["d"]["n"], "c".repeat(24));
         assert!(p["d"].get("wake").is_none());
     }
@@ -368,7 +385,7 @@ mod tests {
         let p = item(100).fcm_payload("tok123");
         assert_eq!(p["message"]["token"], "tok123");
         assert_eq!(p["message"]["android"]["priority"], "high");
-        assert_eq!(p["message"]["data"]["c"], "Z".repeat(100));
+        assert_eq!(p["message"]["data"]["c"], B64.encode(&vec![0xAA; 100]));
         assert!(p["message"].get("notification").is_none());
     }
 }

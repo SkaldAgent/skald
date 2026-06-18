@@ -9,6 +9,7 @@
 
 use async_trait::async_trait;
 use serde::Serialize;
+use serde_json::Value;
 
 /// One pending approval, surfaced to plugins (mirrors the main crate's
 /// `PendingApprovalInfo`, trimmed to the fields a plugin needs for the
@@ -17,6 +18,12 @@ use serde::Serialize;
 pub struct InboxApprovalItem {
     pub request_id:    i64,
     pub tool_name:     String,
+    /// Human-readable one-line label for the tool call, from `Tool::describe(Short)`.
+    /// Used for the card / push notification text.
+    pub summary:       String,
+    /// Raw tool arguments (untruncated). Source of truth for the detail dialog so
+    /// the user sees exactly what is being approved — critical for `execute_cmd`.
+    pub arguments:     Value,
     pub agent_id:      String,
     pub source:        String,
     pub context_label: Option<String>,

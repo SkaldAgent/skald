@@ -1,16 +1,21 @@
 # Mobile Connector Plugin (`mobile-connector`)
 
 Bridges Skald's **Inbox** (approvals + clarifications) to mobile apps over the
-**relay**, implementing the **agent** role of the relay protocol. The plugin is
+**relay**, implementing the **agent** role of the v2 relay protocol. The plugin is
 the namespace owner and the sole authority over authorized devices. Skald is
 never exposed on the internet: only this plugin connects out, and only to the
 relay.
 
 - Crate: `crates/plugin-mobile-connector`
-- Shared crypto/frames: `crates/skald-relay-common` (byte-for-byte interop with
-  the reference vectors in `data/ios-app/test-vectors.md`)
-- Full contract: `data/ios-app/plugin.md`, `crypto.md`, `relay-protocol.md`,
-  `payloads.md`
+- Shared crypto + v2 protobuf: `crates/skald-relay-common` (byte-for-byte interop
+  with the reference vectors in `data/ios-app/test-vectors.md`)
+- **Active transport:** v2 (protobuf-binary) — documented in:
+  - `data/ios-app/v2/index.md` — overview and versioning
+  - `data/ios-app/v2/relay-protocol.md` — protobuf schema, presence, live channel
+  - `data/ios-app/v2/framing.md` — E2E plaintext framing (version + compression)
+  - `data/ios-app/v2/payloads.md` — JSON payload schemas (inbox_request, inbox_update, …)
+- **Invariant semantics** (shared with v1): `data/ios-app/plugin.md`, `crypto.md`,
+  pairing, authorization, E2E encryption
 
 ---
 
@@ -21,9 +26,9 @@ relay.
 | `identity.rs` | Seed load/generate (`data/relay/seed`, `0600`) + derived Ed25519/X25519 keys + `namespace_id` |
 | `db.rs` | `relay_clients` table — devices + anti-replay counters (atomic counter helpers) |
 | `pairing.rs` | In-memory single-window pairing sessions (`code → session`) + `QrCodeData` |
-| `payloads.rs` | E2E JSON payload schemas (`inbox_update`, `notification`, client responses incl. `inbox_request`) |
-| `state.rs` | Shared runtime: pairing policy, per-client `aes_key` cache, seal/open, Inbox application |
-| `ws.rs` | Permanent reconnecting agent WebSocket (challenge → auth → authorize → dispatch) |
+| `payloads.rs` | E2E JSON payload schemas (`inbox_update`, `notification`, client responses incl. `inbox_request`). Zlib-compressible per v2 framing.md |
+| `state.rs` | Shared runtime: pairing policy, per-client `aes_key` cache, seal/open, Inbox application. Presence tracking per namespace |
+| `ws.rs` | Permanent reconnecting agent WebSocket (v2 binary transport). Challenge → protobuf `Auth` decode → role dispatch → forward loop. Handles presence events and live (`Message.live=true`) dispatch for `inbox_request` pulls |
 | `router.rs` | The QR-code HTTP endpoint (`/pairingqrcode`) |
 | `agent.rs` | `RelayAgent` control trait (pairing, list, authorize, revoke) |
 | `tools.rs` | The three LLM tools, registered in the main crate's `ToolRegistry` |
@@ -104,7 +109,12 @@ device sends the complete list including it; revoking sends it without.
 - **Inbox → clients:** the bus subscriber reacts to the four Inbox events
   (`approval_requested`, `approval_resolved`, `clarification_requested`,
   `clarification_resolved`), builds an `InboxSnapshot` via `inbox.list_pending()`,
-  and sends a sealed `inbox_update` to every Authorized client.
+  and sends a sealed `inbox_update` to every Authorized client. Each approval
+  carries a humanised `summary` (from `Tool::describe(Short)`, computed in
+  `Inbox::list_pending`) for the card/notification plus the raw `arguments`
+  (untruncated) for the detail dialog — so the user sees the full `execute_cmd`
+  command, not a truncated label. Each clarification carries its
+  `suggested_answers`.
 - **Clients → Inbox:** inbound `message` is checked (`from` ∈ Authorized,
   nonce direction + counter > `recv_counter`), opened, and dispatched by `kind`:
   `approval_response` → `inbox.approve/reject`, `clarification_response` →
@@ -114,11 +124,14 @@ device sends the complete list including it; revoking sends it without.
   `string ↔ i64` (non-parsing ids are dropped). Inbox ops are idempotent by
   `request_id`.
 - **Reconnect snapshot (`inbox_request`):** the relay does **not** notify the
-  agent when a client reconnects, so the client sends `inbox_request` after every
-  `auth_ok` (e.g. when the app is opened from a push). The agent replies with an
-  `inbox_update` sealed to the requester only — not a broadcast — so other devices
-  are not needlessly re-aligned. Side-effect-free and idempotent. See
-  `data/ios-app/payloads.md` §4.6.
+  agent when a client reconnects, so the client sends `inbox_request` on the
+  **live channel** (`Message.live=true`) after every `auth_ok` (e.g. when the app
+  is opened from a push). The agent replies with an `inbox_update` sealed to the
+  requester only — not a broadcast — so other devices are not needlessly
+  re-aligned. A pull of stale state is useless, so the live channel is correct:
+  if the agent is offline, the client gets `PeerOffline` immediately instead of
+  waiting. Side-effect-free and idempotent (by `request_id`). See
+  `data/ios-app/v2/relay-protocol.md` §3.1.
 
 ---
 

@@ -34,6 +34,15 @@ hex           = "0.4"
 base64        = "0.22"
 rand          = "0.8"        # CSPRNG for the 32-byte challenge nonce
 
+# --- v2 wire format (data/ios-app/v2/relay-protocol.md) ---
+# `prost`: matches the major used by `skald-relay-common` so the
+#   generated `proto::v2::RelayFrame` types here are the same compile-time
+#   ones the common crate re-exports. `bytes`: `prost` 0.13 generates
+#   `bytes` fields as `prost::bytes::Bytes`; we use the crate directly in
+#   the WS handler to build zero-copy frame payloads.
+prost         = "0.13"
+bytes         = "1"
+
 # --- observability + misc ---
 anyhow             = "1"
 tracing            = "0.1"
@@ -66,3 +75,9 @@ tokio-tungstenite = "0.29"
 # Sign challenges / compute namespace_id from the test harness side.
 ed25519-dalek = "2"
 sha2          = "0.10"
+# The integration test constructs the same protobuf `RelayFrame`s the relay
+# sends on the wire (data/ios-app/v2/relay-protocol.md) — prost matches the
+# generator used by `skald-relay-common`, bytes is the `Bytes` type prost 0.13
+# generates for `bytes` fields.
+prost         = "0.13"
+bytes         = "1"

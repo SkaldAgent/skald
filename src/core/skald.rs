@@ -347,6 +347,7 @@ impl Skald {
         let inbox = Inbox::new(
             Arc::clone(&approval),
             Arc::clone(&clarification),
+            Arc::clone(&tools),
         );
 
         let catalog = ToolCatalog::new(

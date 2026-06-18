@@ -29,7 +29,7 @@ pub trait Plugin: Send + Sync {
 
 - `db: Arc<sqlx::SqlitePool>` — Skald's shared SQLite pool (create/use plugin-owned tables here).
 - `inbox: Arc<dyn InboxApi>` — unified approvals + clarifications façade (`list_pending`, `approve`, `reject`, `answer`); idempotent by `request_id`.
-- `chat_hub.events(...)` — subscribe to the global `GlobalEvent` bus (including the four Inbox events; see [approval.md](approval.md)).
+- `chat_hub.events(...)` — subscribe to the global `GlobalEvent` bus (including the four Inbox events; see [approval/index.md](approval/index.md)).
 
 ### Plugin HTTP routes (`http_router`)
 
@@ -78,7 +78,7 @@ Plugin state and configuration are stored exclusively in the `plugins` SQLite ta
 
 ## Adding a New Plugin
 
-Plugins live in independent workspace crates (see [workspace-crates.md](workspace-crates.md)):
+Plugins live in independent workspace crates (see [crates/workspace.md](crates/workspace.md)):
 
 1. Create `crates/plugin-<name>/` with a `Cargo.toml` depending on `core-api` and any needed external crates.
 2. Implement `core_api::plugin::Plugin` in `crates/plugin-<name>/src/lib.rs`.
@@ -114,9 +114,9 @@ The tools call into the plugin lazily, so they can be registered before the plug
 |---|---|---|
 | `honcho` | `crates/plugin-honcho/src/lib.rs` | [honcho.md](honcho.md) |
 | `remote_connectivity` | `crates/plugin-tailscale-remote/src/lib.rs` | [remote.md](remote.md) |
-| `telegram` | `crates/plugin-telegram-bot/src/lib.rs` | [telegram.md](telegram.md) |
+| `telegram` | `crates/plugin-telegram-bot/src/lib.rs` | [plugins/telegram.md](plugins/telegram.md) |
 | `whisper_local` | `crates/plugin-transcribe-whisper-local/src/lib.rs` | [whisper-local.md](whisper-local.md) |
-| `comfyui` | `crates/plugin-comfyui/src/lib.rs` | [image-generate.md](image-generate.md) |
+| `comfyui` | `crates/plugin-comfyui/src/lib.rs` | [providers/image.md](providers/image.md) |
 | `mobile-connector` | `crates/plugin-mobile-connector/src/lib.rs` | [mobile-connector.md](mobile-connector.md) |
 
 ---
@@ -175,7 +175,7 @@ pub trait ImageGenerateRegistry: Send + Sync { async fn register(&self, provider
 | `get(id)` | Returns a specific provider by id |
 | `generate(provider_id, prompt)` | Generates and saves image, returns `(PathBuf, url)` |
 
-The LLM interacts with providers via two tools: `image_generate_providers_list` and `image_generate`. See [image-generate.md](image-generate.md) for the full flow.
+The LLM interacts with providers via two tools: `image_generate_providers_list` and `image_generate`. See [providers/image.md](providers/image.md) for the full flow.
 
 ---
 
@@ -210,7 +210,7 @@ pub trait TtsRegistry: Send + Sync {
 | `ctx.tts_registry.register(...)` | Add a plugin TTS provider (ephemeral) |
 | `ctx.tts_registry.unregister(id)` | Remove a plugin provider |
 
-See [tts-providers.md](tts-providers.md) for the full manager API and DB schema.
+See [providers/tts.md](providers/tts.md) for the full manager API and DB schema.
 
 ---
 

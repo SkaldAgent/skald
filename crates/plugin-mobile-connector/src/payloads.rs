@@ -48,7 +48,10 @@ pub fn build_inbox_update(snapshot: &InboxSnapshot) -> Value {
                 "request_id": a.request_id.to_string(),
                 "tool_name":  a.tool_name,
                 "agent_label": "Skald",
-                "summary":    a.context_label.clone().unwrap_or_else(|| a.tool_name.clone()),
+                // Short human label for card/notification; raw args for the detail
+                // dialog (untruncated — e.g. the full `execute_cmd` command).
+                "summary":    a.summary,
+                "arguments":  a.arguments,
                 "created_at": iso_to_ms(&a.created_at),
             })
         })
@@ -62,6 +65,7 @@ pub fn build_inbox_update(snapshot: &InboxSnapshot) -> Value {
                 "request_id":  c.request_id.to_string(),
                 "question":    c.question,
                 "context":     c.context_label,
+                "suggested_answers": c.suggested_answers,
                 "agent_label": "Skald",
                 "created_at":  iso_to_ms(&c.created_at),
             })

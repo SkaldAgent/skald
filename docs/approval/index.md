@@ -35,45 +35,9 @@ llm_loop.rs
 
 Rules are scoped to **permission groups** (`tool_permission_groups` table). A session's active **RunContext** references a group via its `security_group` field; rules in that group take precedence over rules in the `"default"` group.
 
-### RunContext Fields
-
-`RunContext` is a JSON blob stored in `chat_sessions.run_context`, `scheduled_jobs.run_context`, `projects.run_context`, and `project_tickets.run_context`.
-
-| Field | Type | Default | Purpose |
-|-------|------|---------|---------|
-| `security_group` | `Option<String>` | `null` | Permission group ID for approval rule lookup |
-| `system_prompt` | `Vec<String>` | `[]` | Prompt fragments injected as dynamic system context every turn |
-| `allow_fs_writes` | `Vec<String>` | `[]` | Paths pre-authorized for file writes (bypasses approval gate entirely) |
-| `working_directory` | `Option<String>` | `null` | Effective WD for tool calls; `null` = Skald's process cwd |
-
-`RunContext` exposes these as applicative methods (the handler is agnostic to its internal fields):
-
-```rust
-rc.tool_group_id()         -> Option<&str>   // for approval rule lookup
-rc.extra_system_prompt()   -> Option<String>  // joins system_prompt with "\n\n"
-rc.effective_working_dir() -> PathBuf         // configured path or process cwd
-rc.is_write_allowed(path)  -> bool            // pre-auth check for file writes
-```
-
-### Evaluation Chain
-
-```
-chat_session.run_context  (JSON blob)
-  └─► RunContext.tool_group_id()  → e.g. "cron_restrictive"
-        │
-        ├─ rules WHERE group_id = "cron_restrictive"  ← evaluated first
-        └─ rules WHERE group_id = "default"           ← fallback
-```
-
-The handler exposes two views: `run_context_json()` (full blob, for propagating to child tasks) and `tool_group_id()` (delegates to `rc.tool_group_id()`, for approval checks).
-
-If a session has no `run_context` or the blob has no `security_group`, only the `"default"` group rules apply.
+**For full RunContext documentation** (fields, resolution, API, project integration) — see [../session/run-context.md](../session/run-context.md) (source of truth).
 
 The `"default"` group is seeded automatically at startup and **cannot be deleted**. Its rules can be freely edited.
-
-The session `run_context` is set via `POST /api/sessions/{id}/run_context` with body containing the full `RunContext` JSON (or `null` to clear it). At runtime the in-memory handler is updated immediately.
-
-See [session.md](session.md) for how RunContext is resolved at session creation.
 
 ---
 
@@ -340,7 +304,7 @@ The legacy endpoints `/api/approval/pending` and `/api/approval/resolve/:id` rem
 
 The page is implemented in `web/components/agent-inbox.js` (`<agent-inbox-page>`). Polls every 8 s when open. The red badge in the sidebar (independent polling every 10 s) shows the total pending count.
 
-See [frontend.md](frontend.md) for component details.
+See [../frontend.md](../frontend.md) for component details.
 
 ---
 
@@ -502,7 +466,7 @@ The UI is split into two Lit components that communicate via the `approval-navig
 
 MCP tools are grouped under their server's `friendly_name` (from `mcp_servers` in the `GET /api/approval/tools` response). The server `description` is shown as a subtitle.
 
-The **Agent Profiles** page (`web/components/agent-profiles.js`, `<agent-profiles-page>`) is a separate sidebar entry that manages `run_contexts`. Each profile links a session to a permission group via a dropdown. The `"default"` profile cannot be deleted. See [session.md](session.md) for the resolution chain.
+The **Agent Profiles** page (`web/components/agent-profiles.js`, `<agent-profiles-page>`) is a separate sidebar entry that manages `run_contexts`. Each profile links a session to a permission group via a dropdown. The `"default"` profile cannot be deleted. See [../session.md](../session.md) for the resolution chain.
 
 ---
 

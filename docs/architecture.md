@@ -228,7 +228,7 @@ The binary depends on several independent library crates in `crates/`. Each crat
 
 `core-api` is the designated contract crate for plugin independence. A plugin that depends only on `core-api` (instead of the full main crate) can be extracted into its own workspace member without circular dependencies.
 
-See [workspace-crates.md](workspace-crates.md) for the full extraction roadmap.
+See [crates/workspace.md](crates/workspace.md) for the full extraction roadmap.
 
 ### Future: `skald-core` crate
 

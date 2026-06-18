@@ -29,7 +29,7 @@ agents/
 
 ### Tool restriction
 
-Tool restriction is **not** declared in the agent file (the per-agent `allow_tools` whitelist and the `run_context` default were both removed). Tool visibility and execution-time approval are governed uniformly by **permission groups** bound to **run contexts** (see [approval.md](approval.md)).
+Tool restriction is **not** declared in the agent file (the per-agent `allow_tools` whitelist and the `run_context` default were both removed). Tool visibility and execution-time approval are governed uniformly by **permission groups** bound to **run contexts** (see [approval/index.md](approval/index.md)).
 
 A run context is assigned to a **session** at runtime, never in `meta.json`:
 
@@ -132,7 +132,7 @@ An agent cannot call itself or the `main` agent.
 
 1. Create `agents/<id>/meta.json` with at minimum `name` and `description`.
 2. Create `agents/<id>/AGENT.md` with the system prompt.
-3. Optionally restrict tools by assigning the agent's sessions a run context (permission group) at runtime — see [approval.md](approval.md).
+3. Optionally restrict tools by assigning the agent's sessions a run context (permission group) at runtime — see [approval/index.md](approval/index.md).
 4. **No restart required** — agents are discovered on every request.
 
 ---

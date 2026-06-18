@@ -110,7 +110,7 @@ All Honcho API errors are **fire-and-forget**: logged as `warn!` and never propa
 
 ## Read Path
 
-`HonchoMemory` implements the [`Memory`](memory.md) trait. Before each LLM turn,
+`HonchoMemory` implements the [`Memory`](../memory.md) trait. Before each LLM turn,
 `query_context` is called automatically by `ChatSessionHandler::handle_message` — for
 **all** session types: interactive, cron, and tic.
 

@@ -51,9 +51,9 @@ The project is a Cargo workspace. Extracted crates live in `crates/`:
 | `plugin-telegram-bot` | `crates/plugin-telegram-bot/` | Private Telegram bot interface |
 | `plugin-tts-orpheus-3b` | `crates/plugin-tts-orpheus-3b/` | Local TTS via Orpheus 3B (Python subprocess) |
 | `plugin-tts-kokoro` | `crates/plugin-tts-kokoro/` | Local TTS via Kokoro ONNX (lightweight, multilingual) |
-| `skald-relay-common` | `crates/skald-relay-common/` | Shared frame types + crypto for the relay and mobile-connector plugin; owns the `gen-vectors` reference generator. No axum/tokio/Skald deps. |
-| `skald-relay-server` | `crates/skald-relay-server/` | Zero-trust store-and-forward relay + push bridge (iOS/Android remote control). Depends on `skald-relay-common`. Live APNs sender behind the `push-live` cargo feature (see [workspace-crates.md](workspace-crates.md)). |
-| `plugin-mobile-connector` | `crates/plugin-mobile-connector/` | Agent end of the relay protocol: bridges the Inbox to mobile apps, E2E encrypted. See [mobile-connector.md](mobile-connector.md). |
+| `skald-relay-common` | `crates/skald-relay-common/` | Shared crypto + v2 protobuf frame types for the relay and mobile-connector plugin; owns the `gen-vectors` reference generator. Implements v2 binary transport (presence, live channel). No axum/tokio/Skald deps. |
+| `skald-relay-server` | `crates/skald-relay-server/` | Zero-trust store-and-forward relay + push bridge (iOS/Android remote control). v2 binary transport (protobuf), presence tracking, live channel route-or-fail. Depends on `skald-relay-common`. Live APNs sender behind the `push-live` cargo feature (see [crates/workspace.md](crates/workspace.md)). |
+| `plugin-mobile-connector` | `crates/plugin-mobile-connector/` | Agent end of the v2 relay protocol: bridges the Inbox to mobile apps over WebSocket, E2E encrypted. Handles presence, live inbox pulls, pairing. See [plugins/mobile-connector.md](plugins/mobile-connector.md). |
 
 To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace].members` list in the root `Cargo.toml`, then add a `path` dependency in `[dependencies]`.
 
@@ -87,13 +87,13 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 | `src/core/cron/` | Scheduled job scheduler | [cron.md](cron.md) |
 | `src/core/plugin/` | Plugin system (PluginManager) | [plugins.md](plugins.md) |
 | `src/core/secrets.rs` | SecretsStore — centralised token/key store over SQLite | [secrets.md](secrets.md) |
-| `src/core/transcribe/` | TranscribeManager, OpenAiAudioTranscriber, ElevenLabsTranscriber. Traits and record types re-exported from `core-api`. | [transcribe-providers.md](transcribe-providers.md) |
-| `src/core/tts/` | TtsManager (DB-backed + plugin slots), OpenAiTtsSynthesiser, ElevenLabsTtsSynthesiser. Traits and record types re-exported from `core-api`. | [tts-providers.md](tts-providers.md) |
-| `src/core/image_generate/` | ImageGenerate trait, ImageGeneratorManager (DB-backed + plugin slots), OpenRouterImageGenerator | [image-generate.md](image-generate.md) |
-| `src/core/run_context/mod.rs` | `RunContext` domain object: fields `security_group`, `system_prompt`, `allow_fs_writes`, `working_directory` + applicative methods `tool_group_id()`, `extra_system_prompt()`, `effective_working_dir()`, `is_write_allowed()`. `RunContextManager`: permission group CRUD; `set_session_run_context`; `duplicate_group`; `check_tool_visibility`. | [approval.md](approval.md) |
+| `src/core/transcribe/` | TranscribeManager, OpenAiAudioTranscriber, ElevenLabsTranscriber. Traits and record types re-exported from `core-api`. | [providers/transcribe.md](providers/transcribe.md) |
+| `src/core/tts/` | TtsManager (DB-backed + plugin slots), OpenAiTtsSynthesiser, ElevenLabsTtsSynthesiser. Traits and record types re-exported from `core-api`. | [providers/tts.md](providers/tts.md) |
+| `src/core/image_generate/` | ImageGenerate trait, ImageGeneratorManager (DB-backed + plugin slots), OpenRouterImageGenerator | [providers/image.md](providers/image.md) |
+| `src/core/run_context/mod.rs` | `RunContext` domain object: fields `security_group`, `system_prompt`, `allow_fs_writes`, `working_directory` + applicative methods `tool_group_id()`, `extra_system_prompt()`, `effective_working_dir()`, `is_write_allowed()`. `RunContextManager`: permission group CRUD; `set_session_run_context`; `duplicate_group`; `check_tool_visibility`. | [approval/index.md](approval/index.md) |
 | `src/core/projects/mod.rs` | `ProjectManager` — CRUD for projects (filesystem-linked, ordered by `updated_at`). Free fn `build_runtime_run_context(project, base)` layers project-runtime fields (`working_directory = project.path`, `allow_fs_writes` for the project tree + `{skald_cwd}/data`, project-context system prompt fragments) over an optional base RC — shared by ticket jobs and interactive project chats | [projects.md](projects.md) |
 | `src/core/projects/tickets.rs` | `ProjectTicketManager` — CRUD + lifecycle for project tickets (`start`, `on_job_completed`, `reset`); `start()` resolves the base `RunContext` (ticket override → project static config) and delegates to `projects::build_runtime_run_context` for the runtime fields | [projects.md](projects.md) |
-| `src/core/inbox.rs` | `Inbox`: unified façade for pending approvals + clarifications (wraps ApprovalManager, ClarificationManager, ChatHub) | [approval.md](approval.md) |
+| `src/core/inbox.rs` | `Inbox`: unified façade for pending approvals + clarifications (wraps ApprovalManager, ClarificationManager, ChatHub) | [approval/index.md](approval/index.md) |
 | `src/core/db/` | SQLite schema and queries | [database.md](database.md) |
 | `src/core/events.rs` | WS protocol types | [frontend.md](frontend.md) |
 | `src/frontend/mod.rs` | `WebFrontend` — wires `router_factory`, starts plugins, runs Axum | [architecture.md](architecture.md) |
@@ -104,9 +104,9 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 | `crates/plugin-honcho/` | Honcho memory sink (standalone crate) | [honcho.md](honcho.md) |
 | `crates/plugin-tailscale-remote/` | Remote connectivity via Tailscale mesh (standalone crate) | [remote.md](remote.md) |
 | `crates/plugin-transcribe-whisper-local/` | Local STT via whisper.cpp (standalone crate) | [whisper-local.md](whisper-local.md) |
-| `crates/plugin-telegram-bot/` | Private Telegram bot (standalone crate) | [telegram.md](telegram.md) |
-| `crates/plugin-tts-orpheus-3b/` | Orpheus TTS 3B — local TTS via Python subprocess (standalone crate) | [tts-providers.md](tts-providers.md) |
-| `crates/plugin-tts-kokoro/` | Kokoro ONNX — lightweight local TTS, multilingual (standalone crate) | [tts-providers.md](tts-providers.md) |
+| `crates/plugin-telegram-bot/` | Private Telegram bot (standalone crate) | [plugins/telegram.md](plugins/telegram.md) |
+| `crates/plugin-tts-orpheus-3b/` | Orpheus TTS 3B — local TTS via Python subprocess (standalone crate) | [providers/tts.md](providers/tts.md) |
+| `crates/plugin-tts-kokoro/` | Kokoro ONNX — lightweight local TTS, multilingual (standalone crate) | [providers/tts.md](providers/tts.md) |
 | `crates/honcho-client/` | Honcho v3 REST API client (standalone crate) | [honcho.md](honcho.md) |
 | `web/components/` | Lit frontend components | [frontend.md](frontend.md) |
 | `run.sh` | Supervisor loop | [self-rewriting.md](self-rewriting.md) |
@@ -132,37 +132,74 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 
 ## Navigation
 
+### Core Architecture
+
 - [architecture.md](architecture.md) — component wiring, startup sequence, request lifecycle
-- [chat-event-bus.md](chat-event-bus.md) — ChatEventBus, event types, publication rules, adding consumers
 - [self-rewriting.md](self-rewriting.md) — restart mechanism, safe self-modification workflow
-- [session.md](session.md) — ChatSessionHandler, tool loop, approval gate
-- [agents.md](agents.md) — agent discovery, meta.json, call_agent, depth limit
-- [tools.md](tools.md) — Tool trait, ToolRegistry, built-in catalogue
+- [database.md](database.md) — SQLite schema, migration pattern
+- [logging-config.md](logging-config.md) — log levels, config.yml full reference
+
+### Session & LLM Loop
+
+- [session.md](session.md) — ChatSessionHandler, message flow, approval gate integration
+- [session/run-context.md](session/run-context.md) — RunContext: permissions, system prompt, file authorization, working directory
 - [llm-clients.md](llm-clients.md) — ChatbotClient trait, LlmManager, ApiProvider, ProviderRegistry, AUTO selection
 - [compaction.md](compaction.md) — context compaction: trigger, summarisation flow, DB schema, config
-- [mcp.md](mcp.md) — McpManager, transports, naming convention, enable/disable
-- [gcal-mcp.md](gcal-mcp.md) — Google Calendar read-only MCP server (custom Python)
-- [gmail-mcp.md](gmail-mcp.md) — Gmail read+modify MCP server (custom Python)
-- [gmaps-mcp.md](gmaps-mcp.md) — Google Maps transit/directions MCP server (custom Python)
-- [whatsapp-mcp.md](whatsapp-mcp.md) — WhatsApp read+send MCP server (custom Node.js)
-- [approval.md](approval.md) — ApprovalManager: human-in-the-loop, rules, pending approvals, session bypass; tool visibility filtering; group duplication; AllTools MCP server metadata
-- [cron.md](cron.md) — TaskManager, task kinds (cron/sync/async), 7-field cron syntax, job lifecycle, async result delivery
-- [projects.md](projects.md) — Projects subsystem: kanban tickets, lifecycle, `build_runtime_run_context`, interactive project chats
-- [database.md](database.md) — SQLite schema, migration pattern
-- [frontend.md](frontend.md) — WebSocket protocol, ServerEvent types, Lit components
-- [logging-config.md](logging-config.md) — log levels, config.yml full reference
-- [plugins.md](plugins.md) — Plugin trait, PluginManager, TranscribeManager, provider catalogue
 - [memory.md](memory.md) — Memory trait, MemoryManager, integration in the LLM loop
-- [honcho.md](honcho.md) — Honcho memory plugin: setup, config, filtering, lifecycle
-- [telegram.md](telegram.md) — Telegram bot setup, pairing, whitelist, HITL approval
-- [whisper-local.md](whisper-local.md) — Local STT via whisper.cpp, model setup, TranscribeManager integration
+
+### Approval & Permissions
+
+- [approval/index.md](approval/index.md) — ApprovalManager: human-in-the-loop, rules, pending approvals, session bypass; tool visibility filtering; group duplication
+- [session/run-context.md](session/run-context.md) — RunContext fields and integration (single source of truth)
+
+### Tools & Agents
+
+- [agents.md](agents.md) — agent discovery, meta.json, call_agent, depth limit
+- [tools.md](tools.md) — Tool trait, ToolRegistry, built-in catalogue
+- [chat-event-bus.md](chat-event-bus.md) — ChatEventBus, event types, publication rules, adding consumers
+- [cron.md](cron.md) — TaskManager, task kinds (cron/sync/async), 7-field cron syntax, job lifecycle, async result delivery
+
+### Model Providers
+
+- [llm-clients.md](llm-clients.md) — LLM client trait and selection
+- [providers/tts.md](providers/tts.md) — Text-to-Speech: trait, manager, provider catalogue, tts_models DB table
+- [providers/transcribe.md](providers/transcribe.md) — Cloud STT via OpenAI-compatible audio API, transcribe_models DB table
+- [providers/image.md](providers/image.md) — Image generation: trait, manager, async task system, LLM tools, REST endpoint
+
+### MCP (Model Context Protocol)
+
+- [mcp.md](mcp.md) — McpManager, transports, naming convention, enable/disable, integration
+- [mcp/servers/gmail.md](mcp/servers/gmail.md) — Gmail read+modify MCP server (custom Python)
+- [mcp/servers/gcal.md](mcp/servers/gcal.md) — Google Calendar read-only MCP server (custom Python)
+- [mcp/servers/gmaps.md](mcp/servers/gmaps.md) — Google Maps transit/directions MCP server (custom Python)
+- [mcp/servers/whatsapp.md](mcp/servers/whatsapp.md) — WhatsApp read+send MCP server (custom Node.js)
+
+### Plugin System
+
+- [plugins.md](plugins.md) — Plugin trait, PluginManager, HTTP router integration
+- [plugins/honcho.md](plugins/honcho.md) — Honcho memory plugin: setup, config, filtering, lifecycle
+- [plugins/mobile-connector.md](plugins/mobile-connector.md) — Mobile app relay bridge, E2E encryption, Inbox synchronization
+- [plugins/telegram.md](plugins/telegram.md) — Telegram bot setup, pairing, whitelist, HITL approval
+- [plugins/whisper-local.md](plugins/whisper-local.md) — Local STT via whisper.cpp, model setup, TranscribeManager integration
+- [plugins/remote.md](plugins/remote.md) — Tailscale mesh remote connectivity
+
+### Projects & Tickets
+
+- [projects.md](projects.md) — Projects subsystem: kanban tickets, lifecycle, `build_runtime_run_context`, interactive project chats
+
+### Frontend & Notifications
+
+- [frontend.md](frontend.md) — WebSocket protocol, ServerEvent types, Lit components
+- [notifications.md](notifications.md) — Notification system: `read_notification` tool, synthetic injection flow, `data/notifications.md` format
+
+### Infrastructure & Security
+
 - [secrets.md](secrets.md) — SecretsApi trait, SecretsStore, well-known keys, security notes
-- [transcribe-providers.md](transcribe-providers.md) — Cloud STT via OpenAI-compatible audio API, transcribe_models DB table
-- [tts-providers.md](tts-providers.md) — Text-to-Speech: trait, manager, OpenAiTtsSynthesiser, tts_models DB table
-- [image-generate.md](image-generate.md) — Image generation: trait, manager, async task system, LLM tools, REST endpoint
+- [crates/workspace.md](crates/workspace.md) — Workspace crate catalogue, `core-api` module reference, plugin extraction roadmap
+
+### Miscellaneous
+
 - [skills.md](skills.md) — Skills system: reusable Python capability packages
-- [notifications.md](notifications.md) — Notification system: `read_notification` tool, synthetic injection flow, `data/notifications.md` format, how TIC uses it, how the main agent updates preferences
-- [workspace-crates.md](workspace-crates.md) — Workspace crate catalogue, `core-api` module reference, plugin extraction roadmap
 
 ## When to Update This File
 

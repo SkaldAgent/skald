@@ -8,9 +8,19 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// Maximum size of a WebSocket frame (64 KiB). Above this → `payload_too_large`.
+/// Applies to all pre-auth frames and to post-auth frames whose `Message` does
+/// not set the `live` flag (v2 spec §5).
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
-/// Hard cap accepted by the transport before forcibly closing the connection.
-pub const TRANSPORT_FRAME_CAP: usize = 128 * 1024;
+/// v2: max size of a WS binary frame carrying a `Message{live:true}` on an
+/// authenticated connection (relay-protocol.md §5: `MAX_LIVE_FRAME_BYTES =
+/// 524288`, i.e. 512 KiB exactly). The relay enforces this manually in `ws.rs`
+/// based on auth state + `Message.live`.
+pub const MAX_LIVE_FRAME_BYTES: usize = 512 * 1024;
+/// axum's per-message cap: must be at least `MAX_LIVE_FRAME_BYTES` so live
+/// frames can flow. The relay enforces the strict per-frame limits itself
+/// in `ws.rs` (64 KiB pre-auth, 64 KiB post-auth non-live, 512 KiB
+/// post-auth-live).
+pub const TRANSPORT_FRAME_CAP: usize = MAX_LIVE_FRAME_BYTES;
 
 /// Time allowed to receive `auth` after the `challenge`.
 pub const CHALLENGE_TIMEOUT_SECS: u64 = 30;

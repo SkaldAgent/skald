@@ -184,7 +184,7 @@ Models are **never hard-deleted**. `DELETE /api/llm/models/{id}` sets `removed_a
 | `removed_at` | TEXT | nullable; soft-delete |
 | `created_at` | TEXT | NOT NULL DEFAULT `datetime('now')` |
 
-Only providers that declare `ServiceType::Transcribe` in `ApiProvider::supported_types()` should have rows here (OpenAI, OpenRouter). See [transcribe-providers.md](transcribe-providers.md).
+Only providers that declare `ServiceType::Transcribe` in `ApiProvider::supported_types()` should have rows here (OpenAI, OpenRouter). See [providers/transcribe.md](providers/transcribe.md).
 
 ---
 
@@ -200,7 +200,7 @@ Only providers that declare `ServiceType::Transcribe` in `ApiProvider::supported
 | `removed_at` | TEXT | nullable; soft-delete |
 | `created_at` | TEXT | NOT NULL DEFAULT `datetime('now')` |
 
-Only providers that declare `ServiceType::ImageGenerate` in `ApiProvider::supported_types()` should have rows here (OpenRouter, OpenAI). See [image-generate.md](image-generate.md).
+Only providers that declare `ServiceType::ImageGenerate` in `ApiProvider::supported_types()` should have rows here (OpenRouter, OpenAI). See [providers/image.md](providers/image.md).
 
 ---
 
@@ -232,7 +232,7 @@ Managed via `SecretsStore` (`src/core/secrets.rs`). See [secrets.md](secrets.md)
 | `removed_at` | TEXT | nullable; soft-delete |
 | `created_at` | TEXT | NOT NULL DEFAULT `datetime('now')` |
 
-See [tts-providers.md](tts-providers.md).
+See [providers/tts.md](providers/tts.md).
 
 ---
 

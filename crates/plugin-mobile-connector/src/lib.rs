@@ -3,7 +3,12 @@
 //! Bridges Skald's Inbox (approvals + clarifications) to mobile apps over the
 //! relay, implementing the **agent** role of the relay protocol: it owns the
 //! namespace and is the sole authority on authorized devices. See
-//! `data/ios-app/plugin.md` for the full contract.
+//! `data/iOS-app/v2/relay-protocol.md` for the wire contract.
+//!
+//! The wire transport is **v2 protobuf binary**: every `RelayFrame` travels as
+//! a WebSocket `Message::Binary`. E2E payloads are wrapped in the v2 framing
+//! (`version ‖ comp ‖ json`) and sealed with AES-256-GCM under the per-client
+//! `aes_key`.
 //!
 //! Module map:
 //! - `identity`  — seed + derived keys + namespace_id
@@ -11,7 +16,7 @@
 //! - `pairing`   — in-memory pairing sessions + QR payload
 //! - `payloads`  — E2E JSON payload schemas (inbox_update, responses, …)
 //! - `state`     — shared runtime (pairing policy, seal/open, Inbox application)
-//! - `ws`        — the permanent reconnecting agent WebSocket
+//! - `ws`        — the permanent reconnecting agent WebSocket (v2 binary)
 //! - `router`    — the QR-code HTTP endpoint
 //! - `agent`     — the `RelayAgent` control trait
 //! - `tools`     — `Tool` impls callable by the host (registered in the main crate)
@@ -109,8 +114,10 @@ impl MobileConnectorPlugin {
         let cancel = CancellationToken::new();
         let mut handles = Vec::new();
 
-        // Outbound WS queue.
-        let (out_tx, out_rx) = mpsc::unbounded_channel::<String>();
+        // Outbound WS queue. v2 transport: every queued value is the already-
+        // encoded `RelayFrame` protobuf bytes, ready to be wrapped in
+        // `Message::Binary` by the WS layer.
+        let (out_tx, out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         state.set_outbound(out_tx);
 
         // WS runloop (only if a relay_url is set).
@@ -200,7 +207,7 @@ impl Plugin for MobileConnectorPlugin {
                 "relay_url": {
                     "type": "string",
                     "title": "Relay URL",
-                    "description": "wss:// URL of the relay (e.g. wss://relay.skaldagent.net/v1/ws).",
+                    "description": "wss:// URL of the relay (e.g. wss://relay.skaldagent.net/v2/ws).",
                 },
                 "pairing_ttl": {
                     "type": "integer",

@@ -25,3 +25,13 @@ subtle        = "2"
 hex           = "0.4"
 base64        = "0.22"
 rand          = "0.8"
+flate2        = "1"
+
+# --- protobuf (v2 transport) ---
+prost = "0.13"
+bytes = "1"
+
+[build-dependencies]
+# Generates the Rust types for `proto/skald/relay/v2/relay_frame.proto`.
+# The output lands in OUT_DIR and is `include!`-ed by `src/proto.rs`.
+prost-build = "0.13"

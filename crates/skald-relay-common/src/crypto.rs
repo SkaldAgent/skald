@@ -15,8 +15,12 @@
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use flate2::Compression;
+use flate2::read::ZlibDecoder;
+use flate2::write::ZlibEncoder;
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
 use subtle::ConstantTimeEq;
 use x25519_dalek::{PublicKey, StaticSecret};
 
@@ -256,6 +260,104 @@ impl std::fmt::Display for CryptoError {
 
 impl std::error::Error for CryptoError {}
 
+// ---------------------------------------------------------------------------
+// v2 plaintext framing (data/iOS-app/v2/framing.md §1, §2, §3)
+// ---------------------------------------------------------------------------
+
+/// Framing version byte for `compress_payload` / `decompress_payload`
+/// (framing.md §1). Always `0x01` today.
+pub const FRAMING_VERSION: u8 = 0x01;
+/// `comp` byte value: no compression (framing.md §2).
+pub const COMP_NONE: u8 = 0x00;
+/// `comp` byte value: zlib / DEFLATE (framing.md §2).
+pub const COMP_ZLIB: u8 = 0x01;
+/// Soglia: solo comprimere se `len(payload) > COMPRESS_THRESHOLD` (framing.md §2.3).
+pub const COMPRESS_THRESHOLD: usize = 1024;
+/// Hard ceiling on the decompressed payload size (defense-in-depth against a
+/// zlib bomb from a compromised authorized device). A small ciphertext, under
+/// the frame limit, could otherwise expand to many GB. 8 MiB is well above any
+/// legitimate payload (the largest, `health_sync` on the live channel, is
+/// bounded by `MAX_LIVE_CIPHERTEXT_BYTES` ≈ 512 KiB even before compression).
+pub const MAX_DECOMPRESSED_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Compose the v2 plaintext frame around `payload`:
+/// `version(0x01) ‖ comp(1B) ‖ payload`. Compresses with zlib if
+/// `payload.len() > COMPRESS_THRESHOLD` (framing.md §2.3, §1).
+pub fn compress_payload(payload: &[u8]) -> Vec<u8> {
+    if payload.len() > COMPRESS_THRESHOLD {
+        let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(payload).expect("zlib write to Vec is infallible");
+        let compressed = enc.finish().expect("zlib finish is infallible");
+        let mut out = Vec::with_capacity(2 + compressed.len());
+        out.push(FRAMING_VERSION);
+        out.push(COMP_ZLIB);
+        out.extend_from_slice(&compressed);
+        out
+    } else {
+        let mut out = Vec::with_capacity(2 + payload.len());
+        out.push(FRAMING_VERSION);
+        out.push(COMP_NONE);
+        out.extend_from_slice(payload);
+        out
+    }
+}
+
+/// Errors from the v2 plaintext framing (framing.md §3). The error variant
+/// is intentionally opaque to avoid leaking information to upstream callers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FramingError {
+    /// Truncated input (fewer than 2 bytes).
+    Short,
+    /// `version` byte is not `0x01`.
+    BadVersion,
+    /// `comp` byte is not in `{0x00, 0x01}`.
+    BadComp,
+    /// zlib decompress failed (corrupt compressed body) or the decompressed
+    /// output exceeded [`MAX_DECOMPRESSED_BYTES`].
+    Zlib,
+}
+
+impl std::fmt::Display for FramingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FramingError::Short => write!(f, "framing input shorter than 2 bytes"),
+            FramingError::BadVersion => write!(f, "unknown framing version"),
+            FramingError::BadComp => write!(f, "unknown compression algorithm"),
+            FramingError::Zlib => write!(f, "zlib decompress failed"),
+        }
+    }
+}
+impl std::error::Error for FramingError {}
+
+/// Decompose a v2 plaintext frame: return the original `payload` (i.e. the
+/// bytes that were passed to `compress_payload`). Validates the framing
+/// header and decompresses the body if `comp == 0x01` (framing.md §3).
+pub fn decompress_payload(plaintext: &[u8]) -> Result<Vec<u8>, FramingError> {
+    let (version, comp, body) = match plaintext.split_first_chunk::<2>() {
+        Some((&[v, c], rest)) => (v, c, rest),
+        None => return Err(FramingError::Short),
+    };
+    if version != FRAMING_VERSION {
+        return Err(FramingError::BadVersion);
+    }
+    match comp {
+        COMP_NONE => Ok(body.to_vec()),
+        COMP_ZLIB => {
+            // Cap the output: `take` makes the reader yield EOF at the limit, so
+            // a zlib bomb stops there instead of exhausting memory. If the
+            // decoder still has bytes left we hit exactly the limit and reject.
+            let mut dec = ZlibDecoder::new(body).take(MAX_DECOMPRESSED_BYTES + 1);
+            let mut out = Vec::with_capacity((body.len() * 2).min(MAX_DECOMPRESSED_BYTES as usize));
+            dec.read_to_end(&mut out).map_err(|_| FramingError::Zlib)?;
+            if out.len() as u64 > MAX_DECOMPRESSED_BYTES {
+                return Err(FramingError::Zlib);
+            }
+            Ok(out)
+        }
+        _ => Err(FramingError::BadComp),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,5 +495,78 @@ mod tests {
             "74fb4ffcbbe069859cfb0790023811554dad328d9f4ac4a1d28077086e33a4e7"
         );
         let _ = ns_raw;
+    }
+
+    #[test]
+    fn framing_round_trip_small_payload_no_compression() {
+        // Below threshold → comp = 0x00
+        let payload = b"{\"v\":1,\"kind\":\"x\"}";
+        let framed = compress_payload(payload);
+        assert_eq!(framed[0], FRAMING_VERSION);
+        assert_eq!(framed[1], COMP_NONE);
+        assert_eq!(&framed[2..], payload);
+        assert_eq!(decompress_payload(&framed).unwrap(), payload);
+    }
+
+    #[test]
+    fn framing_round_trip_large_payload_zlib() {
+        // Build a payload that clearly crosses the threshold and is
+        // highly compressible (a repeated string → ~1% of original).
+        let payload: Vec<u8> = "skald ".repeat(500).into_bytes();
+        assert!(payload.len() > COMPRESS_THRESHOLD);
+        let framed = compress_payload(&payload);
+        assert_eq!(framed[0], FRAMING_VERSION);
+        assert_eq!(framed[1], COMP_ZLIB);
+        // Compressed body must be smaller than the original.
+        assert!(framed.len() < payload.len());
+        assert_eq!(decompress_payload(&framed).unwrap(), payload);
+    }
+
+    #[test]
+    fn framing_rejects_bad_version() {
+        let mut bad = vec![0x02, COMP_NONE];
+        bad.extend_from_slice(b"x");
+        assert_eq!(decompress_payload(&bad), Err(FramingError::BadVersion));
+    }
+
+    #[test]
+    fn framing_rejects_bad_comp() {
+        let mut bad = vec![FRAMING_VERSION, 0x02];
+        bad.extend_from_slice(b"x");
+        assert_eq!(decompress_payload(&bad), Err(FramingError::BadComp));
+    }
+
+    #[test]
+    fn framing_rejects_truncated_input() {
+        assert_eq!(decompress_payload(&[]), Err(FramingError::Short));
+        assert_eq!(
+            decompress_payload(&[FRAMING_VERSION]),
+            Err(FramingError::Short)
+        );
+    }
+
+    #[test]
+    fn framing_rejects_corrupt_zlib_body() {
+        let mut bad = vec![FRAMING_VERSION, COMP_ZLIB];
+        bad.extend_from_slice(b"this is not zlib data");
+        assert_eq!(decompress_payload(&bad), Err(FramingError::Zlib));
+    }
+
+    #[test]
+    fn framing_rejects_zlib_bomb_over_limit() {
+        // A tiny compressed frame that decompresses past MAX_DECOMPRESSED_BYTES
+        // must be rejected, not allocated. Zeros compress to a handful of bytes.
+        let huge = vec![0u8; (MAX_DECOMPRESSED_BYTES as usize) + 1];
+        let framed = compress_payload(&huge);
+        assert!(framed.len() < huge.len() / 100, "bomb frame compresses hugely");
+        assert_eq!(decompress_payload(&framed), Err(FramingError::Zlib));
+    }
+
+    #[test]
+    fn framing_accepts_payload_at_limit() {
+        // Exactly at the ceiling must still round-trip.
+        let big = vec![7u8; MAX_DECOMPRESSED_BYTES as usize];
+        let framed = compress_payload(&big);
+        assert_eq!(decompress_payload(&framed).unwrap(), big);
     }
 }

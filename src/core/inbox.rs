@@ -4,9 +4,11 @@ use async_trait::async_trait;
 use serde::Serialize;
 
 use core_api::inbox::{InboxApi, InboxApprovalItem, InboxClarificationItem, InboxSnapshot};
+use core_api::tool::ToolDescriptionLength;
 
 use crate::core::approval::{ApprovalManager, PendingApprovalInfo};
 use crate::core::clarification::{ClarificationManager, PendingClarificationInfo};
+use crate::core::tools::ToolRegistry;
 
 #[derive(Serialize)]
 pub struct InboxItems {
@@ -19,14 +21,17 @@ pub struct InboxItems {
 pub struct Inbox {
     pub approval:  Arc<ApprovalManager>,
     clarification: Arc<ClarificationManager>,
+    /// Used to humanise approval tool calls (`describe`) when building snapshots.
+    tools:         Arc<ToolRegistry>,
 }
 
 impl Inbox {
     pub fn new(
         approval:      Arc<ApprovalManager>,
         clarification: Arc<ClarificationManager>,
+        tools:         Arc<ToolRegistry>,
     ) -> Self {
-        Self { approval, clarification }
+        Self { approval, clarification, tools }
     }
 
     pub async fn list_pending(&self) -> InboxItems {
@@ -55,13 +60,21 @@ impl Inbox {
 impl InboxApi for Inbox {
     async fn list_pending(&self) -> InboxSnapshot {
         let items = self.list_pending().await;
-        let approvals = items.approvals.into_iter().map(|a| InboxApprovalItem {
-            request_id:    a.request_id,
-            tool_name:     a.tool_name,
-            agent_id:      a.agent_id,
-            source:        a.source,
-            context_label: a.context_label,
-            created_at:    a.created_at,
+        let approvals = items.approvals.into_iter().map(|a| {
+            // Humanise the tool call for the card / notification; ship the raw
+            // arguments untruncated so the detail dialog shows exactly what is
+            // being approved (e.g. the full `execute_cmd` command).
+            let summary = self.tools.describe_call(&a.tool_name, &a.arguments, ToolDescriptionLength::Short);
+            InboxApprovalItem {
+                request_id:    a.request_id,
+                tool_name:     a.tool_name,
+                summary,
+                arguments:     a.arguments,
+                agent_id:      a.agent_id,
+                source:        a.source,
+                context_label: a.context_label,
+                created_at:    a.created_at,
+            }
         }).collect();
         let clarifications = items.clarifications.into_iter().map(|c| InboxClarificationItem {
             request_id:        c.request_id,

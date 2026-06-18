@@ -70,7 +70,7 @@ if let Some(t) = skald.transcribe_manager.get().await {
 }
 ```
 
-See [plugins.md](plugins.md) for the `TranscribeManager` API and the `Transcribe` trait.
+See [../plugins.md](../plugins.md) for the `TranscribeManager` API and the `Transcribe` trait.
 
 ---
 

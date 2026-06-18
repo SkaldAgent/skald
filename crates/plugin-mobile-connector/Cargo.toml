@@ -25,3 +25,9 @@ hex                = "0.4"
 base64             = "0.22"
 qrcode             = "0.14"
 image              = { version = "0.25", default-features = false, features = ["png"] }
+# v2 wire transport: prost types match skald-relay-common; `bytes` is the
+# underlying buffer type prost 0.13 generates for `bytes` fields. Versions
+# pinned to match the relay-server so both ends share the same protobuf
+# generator and byte-level types.
+prost               = "0.13"
+bytes               = "1"

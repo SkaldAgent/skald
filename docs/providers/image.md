@@ -236,7 +236,7 @@ an optional `_personal_agent` key for metadata:
 
 Provider id: `comfyui-{filename}` (e.g. `realistic-portrait.json` → `comfyui-realistic-portrait`).
 
-See [comfyui-workflow-format.md](comfyui-workflow-format.md) for the complete
+See [../comfyui-workflow-format.md](../comfyui-workflow-format.md) for the complete
 guide on reading and modifying workflow files.
 
 ---

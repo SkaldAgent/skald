@@ -1,38 +1,6 @@
 # Session & Message Handling
 
-## RunContext Resolution
-
-Each session can have an active **RunContext** that controls approval policy, system prompt injection, file-write pre-authorization, and the effective working directory for tool calls.
-
-Resolution order at handler creation (`get_or_create_handler`):
-
-1. `chat_sessions.run_context` — JSON blob persisted in DB. Set via API, per cron job, by TIC's `tic.run_context` config key, or at session creation: `ChatSessionManager::create_session(agent_id, source, is_interactive, is_ephemeral, run_context)` persists the RC on the row immediately so it is present before the handler is built (the handler reads it once at construction). Project chats use this path via `ChatHub::provision_session`.
-2. `None` — all RunContext methods return their zero value (`tool_group_id()` → `None`, `extra_system_prompt()` → `None`, `is_write_allowed()` → `false`, `effective_working_dir()` → process cwd)
-
-The `RunContext` is stored in `ChatSessionHandler::run_context` (`RwLock<Option<RunContext>>`). The handler calls its applicative methods and never accesses its internal fields directly.
-
-| Method | What the handler uses it for |
-|--------|------------------------------|
-| `tool_group_id()` | Approval rule lookup (passed to `ApprovalManager::check()`) |
-| `extra_system_prompt()` | Injected as dynamic system tail in `build_agent_config` |
-| `is_write_allowed(path)` | Pre-check in `llm_loop.rs` before the approval gate |
-| `effective_working_dir()` | WD injection for file tools and `execute_cmd` in `llm_loop.rs` |
-
-### Runtime Update
-
-`POST /api/sessions/:id/run_context` with body containing the full `RunContext` JSON object (or `null` to clear):
-
-```json
-{
-  "security_group": "cron_restrictive",
-  "system_prompt": ["Always reply in English."],
-  "allow_fs_writes": ["data/output"],
-  "working_directory": "/path/to/project"
-}
-```
-
-- Updates `chat_sessions.run_context` in DB
-- If the handler is live in memory, calls `handler.set_run_context()` immediately (no restart needed)
+**RunContext** (approval policy, system prompt injection, file-write pre-authorization, working directory) is documented separately — see [run-context.md](run-context.md).
 
 ---
 

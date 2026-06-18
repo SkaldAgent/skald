@@ -116,7 +116,7 @@ All tools are registered in `src/main.rs` before `ChatSessionManager` is built.
 
 ## Tool Visibility Filtering (permission groups)
 
-Tools are filtered out of the LLM's tool list when the effective approval rule for the session's **permission group** marks them `Deny`. The group comes from the session's run context (or the built-in `"default"` group). This replaces the removed per-agent `allow_tools` whitelist — see [approval.md](approval.md).
+Tools are filtered out of the LLM's tool list when the effective approval rule for the session's **permission group** marks them `Deny`. The group comes from the session's run context (or the built-in `"default"` group). This replaces the removed per-agent `allow_tools` whitelist — see [approval/index.md](approval/index.md).
 
 **MCP tools are never filtered here** — they pass through regardless of the group. The Approval gate governs MCP tool execution.
 
