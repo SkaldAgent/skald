@@ -108,7 +108,7 @@ export class AgentsPage extends LightElement {
               <span class="agent-card-name">${agent.name}</span>
               <span class="agent-card-id text-muted">${agent.id}</span>
             </div>
-            <p class="agent-card-desc text-muted">${agent.description}</p>
+            <p class="agent-card-desc text-muted">${agent.friendly_description ?? agent.description}</p>
             <div class="agent-card-meta">
               ${agent.strength ? html`
                 <span class="agent-meta-item">
@@ -129,14 +129,31 @@ export class AgentsPage extends LightElement {
     `;
   }
 
+  _renderSection(title, agents) {
+    if (agents.length === 0) return '';
+    return html`
+      <section class="agent-group">
+        <h3 class="agent-group-title">${title}</h3>
+        <div class="agent-grid">
+          ${agents.map(a => this._renderCard(a))}
+        </div>
+      </section>
+    `;
+  }
+
   _renderList() {
     if (this._loading) return html`<div class="text-muted py-4 text-center">Loading…</div>`;
     if (this._error)   return html`<div class="alert alert-danger py-2" style="font-size:0.85rem">${this._error}</div>`;
     if (this._agents.length === 0) return html`<p class="text-muted">No agents found.</p>`;
+    // Group by role: chat entry-points, dispatchable task executors, and
+    // runtime-internal system agents (e.g. tic).
+    const chat   = this._agents.filter(a => a.type === 'chat');
+    const task   = this._agents.filter(a => a.type === 'task');
+    const system = this._agents.filter(a => a.type === 'system');
     return html`
-      <div class="agent-grid">
-        ${this._agents.map(a => this._renderCard(a))}
-      </div>
+      ${this._renderSection('Chat', chat)}
+      ${this._renderSection('Task Executors', task)}
+      ${this._renderSection('System', system)}
     `;
   }
 
@@ -179,7 +196,7 @@ export class AgentsPage extends LightElement {
             ` : ''}
             <div>
               <h2 class="agent-detail-title">${meta.name}</h2>
-              <p class="text-muted mb-0" style="font-size:0.9rem">${meta.description}</p>
+              <p class="text-muted mb-0" style="font-size:0.9rem">${meta.friendly_description ?? meta.description}</p>
             </div>
           </div>
         </div>

@@ -36,16 +36,11 @@ impl ChatSessionHandler {
         if target_id == parent_config.agent_id {
             anyhow::bail!("dispatch_sub_agent: an agent cannot call itself (`{target_id}`)");
         }
-        if target_id == "main" {
-            anyhow::bail!("dispatch_sub_agent: the `main` agent cannot be invoked as a sub-agent");
-        }
-
-        let target_meta = crate::core::agents::load_meta(target_id)
-            .map_err(|e| anyhow::anyhow!("dispatch_sub_agent: agent `{target_id}` not found: {e}"))?;
-
-        if target_meta.is_system_agent {
-            anyhow::bail!("dispatch_sub_agent: agent `{target_id}` is a system agent and cannot be invoked as a sub-agent");
-        }
+        // Only `task` agents are dispatchable: this rejects `chat` (e.g. `main`,
+        // `project-coordinator`) and `system` (e.g. `tic`) agents, and surfaces a
+        // not-found error for unknown ids — all in one gate.
+        let target_meta = crate::core::agents::load_task_meta(target_id)
+            .map_err(|e| anyhow::anyhow!("dispatch_sub_agent: {e}"))?;
 
         let parent_frame = chat_sessions_stack::find_by_id(pool, parent_stack_id).await?
             .ok_or_else(|| anyhow::anyhow!("dispatch_sub_agent: parent stack frame not found"))?;

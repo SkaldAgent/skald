@@ -6,10 +6,30 @@ use crate::config::LlmStrength;
 
 const AGENTS_DIR: &str = "agents";
 
+/// The role an agent plays, declared by the required `type` field in `meta.json`.
+///
+/// - `Chat`: a conversational entry-point the user talks to directly (e.g. `main`,
+///   `project-coordinator`). Not dispatchable as a sub-agent, not a valid task root.
+/// - `Task`: a task executor. Dispatchable by a parent agent **and** a valid root of a
+///   scheduled/async task (e.g. `software-engineer`, `researcher`, `generalist`).
+/// - `System`: a hidden background agent wired into the runtime by id (e.g. `tic`).
+///   Never listed, never user-chattable, never dispatchable from the tool surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentType {
+    Chat,
+    Task,
+    System,
+}
+
 #[derive(Deserialize)]
 struct RawMeta {
     name:          String,
     description:   String,
+    #[serde(default)]
+    friendly_description: Option<String>,
+    #[serde(default)]
+    instructions:  Option<String>,
     #[serde(default)]
     inject_memory: Vec<String>,
     #[serde(default)]
@@ -18,8 +38,9 @@ struct RawMeta {
     scope:         Option<String>,
     #[serde(default)]
     strength:      Option<LlmStrength>,
-    #[serde(default)]
-    is_system_agent: bool,
+    /// Required: declares the agent's role. A `meta.json` without `type` fails to load.
+    #[serde(rename = "type")]
+    agent_type:    AgentType,
     #[serde(default = "default_true")]
     inject_skills: bool,
     #[serde(default)]
@@ -33,7 +54,20 @@ fn default_true() -> bool { true }
 pub struct AgentMeta {
     pub id:            String,
     pub name:          String,
+    /// Routing description for the **orchestrator LLM**: "when should I delegate to this
+    /// agent, and what does it return?". Injected into `<!-- AGENTS_LIST -->` and returned
+    /// by `list_items` (type=agents). Required.
     pub description:   String,
+    /// Human-facing blurb shown to the **user** on the frontend Agents page. When absent
+    /// the frontend falls back to `description`. Applies to every agent type.
+    #[serde(default)]
+    pub friendly_description: Option<String>,
+    /// Note for the **calling LLM** on *how* to invoke this agent for the best result
+    /// (expected inputs, format, gotchas). Kept short. Only meaningful for `task` agents —
+    /// it is surfaced solely via `list_items` (type=agents), which already lists task
+    /// agents only, so no extra gating is needed.
+    #[serde(default)]
+    pub instructions:  Option<String>,
     #[serde(default)]
     pub inject_memory: Vec<String>,
     /// Preferred LLM client name (must exist in the DB, configured via the web app).
@@ -48,11 +82,11 @@ pub struct AgentMeta {
     /// AUTO selection skips clients weaker than this threshold.
     #[serde(default)]
     pub strength:      Option<LlmStrength>,
-    /// When true, this is a background system agent (e.g. TIC).
-    /// It is excluded from `list_items` (type=agents) output and the AGENTS_LIST injection,
-    /// so the main agent cannot see or call it.
-    #[serde(default)]
-    pub is_system_agent: bool,
+    /// The agent's role (`chat` / `task` / `system`). Only `task` agents are listed in
+    /// `list_items` (type=agents) / the AGENTS_LIST injection and are dispatchable or
+    /// runnable as a task root; `chat` and `system` are excluded from those paths.
+    #[serde(rename = "type")]
+    pub agent_type:    AgentType,
     /// When true (the default, including when the key is absent), the skills index
     /// (`skills/index.md`) is injected into this agent's system prompt so it can
     /// discover and use installed skills. Set false for background agents that don't
@@ -90,21 +124,34 @@ pub fn discover() -> Result<Vec<AgentMeta>> {
             continue;
         }
 
-        let raw: RawMeta = serde_json::from_str(
-            &std::fs::read_to_string(&meta_path)
-                .with_context(|| format!("Failed to read {}", meta_path.display()))?,
-        )
-        .with_context(|| format!("Failed to parse {}", meta_path.display()))?;
+        let raw_str = match std::fs::read_to_string(&meta_path) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(agent_id = %id, error = %e, "skipping agent: cannot read meta.json");
+                continue;
+            }
+        };
+        // A single malformed meta.json (e.g. missing the required `type` field) must not
+        // blank the whole roster — warn and skip it, keep discovering the rest.
+        let raw: RawMeta = match serde_json::from_str(&raw_str) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(agent_id = %id, error = %e, "skipping agent: invalid meta.json");
+                continue;
+            }
+        };
 
         let meta = AgentMeta {
             id,
             name:            raw.name,
             description:     raw.description,
+            friendly_description: raw.friendly_description,
+            instructions:    raw.instructions,
             inject_memory:   raw.inject_memory,
             client:          raw.client,
             scope:           raw.scope,
             strength:        raw.strength,
-            is_system_agent: raw.is_system_agent,
+            agent_type:      raw.agent_type,
             inject_skills:   raw.inject_skills,
             icon:            raw.icon,
         };
@@ -130,14 +177,30 @@ pub fn load_meta(agent_id: &str) -> Result<AgentMeta> {
         id:              agent_id.to_string(),
         name:            raw.name,
         description:     raw.description,
+        friendly_description: raw.friendly_description,
+        instructions:    raw.instructions,
         inject_memory:   raw.inject_memory,
         client:          raw.client,
         scope:           raw.scope,
         strength:        raw.strength,
-        is_system_agent: raw.is_system_agent,
+        agent_type:      raw.agent_type,
         inject_skills:   raw.inject_skills,
         icon:            raw.icon,
     })
+}
+
+/// Load metadata for `agent_id` and assert it is a runnable **task** agent.
+/// Errors if the agent does not exist or is a `chat` / `system` agent — i.e. the
+/// single gate for "can this agent be dispatched or run as a task root?".
+pub fn load_task_meta(agent_id: &str) -> Result<AgentMeta> {
+    let meta = load_meta(agent_id)?;
+    if meta.agent_type != AgentType::Task {
+        anyhow::bail!(
+            "agent `{agent_id}` is a {:?} agent and cannot be dispatched or run as a task — only `task` agents can",
+            meta.agent_type
+        );
+    }
+    Ok(meta)
 }
 
 /// Load and resolve the system prompt for `agent_id` from disk.
@@ -189,7 +252,7 @@ fn resolve_includes(content: &str) -> Result<String> {
 fn render_agents_list() -> Result<String> {
     let agents = discover()?;
     let mut out = String::new();
-    for agent in agents.iter().filter(|a| a.id != "main" && !a.is_system_agent) {
+    for agent in agents.iter().filter(|a| a.agent_type == AgentType::Task) {
         out.push_str(&format!("- **{}** — {}\n", agent.id, agent.description));
     }
     Ok(out)

@@ -77,7 +77,7 @@ A persistent conversation about the project, driven by the **`project-coordinato
 writing, events, personal goals — and the coordinator adapts to its nature (read from the injected
 project description). The user talks to one bot that already knows the project; it does everyday
 planning and writing itself and delegates specialized work — research via `researcher`, or code via
-`tech-lead`/`architect`/`engineer` — to sub-agents through `execute_task`.
+`tech-lead`/`software-architect`/`software-engineer` — to sub-agents through `execute_task`.
 
 **Project memory (`SKALD.md`).** The coordinator's `meta.json` declares `"inject_memory": ["$WD/SKALD.md"]`.
 The `$WD` placeholder expands to the session's working directory (the project path), so a `SKALD.md`

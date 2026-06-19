@@ -122,21 +122,21 @@ For `sync` and `async` modes, `single_run` is always `true` (they run once and a
 
 ### `cron` mode
 
-1. LLM calls `execute_task(mode="cron", title, cron, prompt, agent_id?)` → inserted in DB with `enabled=1`, `next_run_at` set to first upcoming fire time
+1. LLM calls `execute_task(mode="cron", title, cron, prompt, agent_id)` → inserted in DB with `enabled=1`, `next_run_at` set to first upcoming fire time
 2. Scheduler tick → `list_due()` returns the job
 3. `run_job()` spawned (see below)
 4. On completion: `hub.notify(...)` emits a completion briefing to the home conversation
 
 ### `sync` mode
 
-1. LLM calls `execute_task(mode="sync", title, prompt, agent_id?)` → LLM tool call blocks
+1. LLM calls `execute_task(mode="sync", title, prompt, agent_id)` → LLM tool call blocks
 2. `add_job_sync()` creates DB record and calls `run_job()` inside `block_in_place`
 3. Agent runs to completion; final assistant message returned inline to the LLM tool call
 4. Job marked disabled (single_run)
 
 ### `async` mode
 
-1. LLM calls `execute_task(mode="async", title, prompt, agent_id?)` → returns `task_id` immediately
+1. LLM calls `execute_task(mode="async", title, prompt, agent_id)` → returns `task_id` immediately
 2. `add_job_async()` creates DB record with `parent_session_id` set to the calling session and `run_context` (JSON blob) inherited from the parent
 3. Agent spawned in background; LLM continues
 4. On completion: `inject_async_result()` sends a synthetic message to the parent session
@@ -218,7 +218,7 @@ Each run always creates a **new ephemeral session**:
 | `source` | `"cron"` |
 | `is_interactive` | `0` |
 | `is_ephemeral` | `1` |
-| `agent_id` | job's `agent_id` (default `"worker"`) |
+| `agent_id` | job's `agent_id` (required at creation; must be a `task` agent) |
 | `run_context` | inherited from `scheduled_jobs.run_context` JSON blob (may be null → falls back to the implicit `"default"` group) |
 
 Sessions are not reused across runs. Each run gets a fresh context.
@@ -245,10 +245,10 @@ For **project tickets**, `ProjectTicketManager.start()` resolves the `run_contex
 
 ## Agent Interaction
 
-Jobs run via the `worker` agent by default (see [agents.md](agents.md)). The worker agent:
+Jobs run via the `task` agent named in `agent_id` (required — no default; see [agents.md](agents.md)). `TaskManager` rejects an empty or non-`task` agent at creation. A typical task agent:
 
 - Executes the task described in the cron prompt
-- Delegates complex work to sub-agents (engineer, researcher, architect)
+- Delegates complex work to sub-agents (software-engineer, researcher, software-architect) via `run_subtask`
 - Calls `ask_user_clarification` when genuinely uncertain — this creates a pending entry in the `ClarificationManager` (visible in Agent Inbox) rather than blocking
 - Its final assistant message is captured for delivery (notification / inline result / async injection)
 

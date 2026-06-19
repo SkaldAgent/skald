@@ -207,11 +207,15 @@ pub async fn create_ticket(
 ) -> Result<(StatusCode, Json<TicketResponse>), ApiError> {
     let rc_json = body.rc_json();
     let rc = rc_json.as_deref().and_then(RunContext::from_db);
+    // Tickets run a task sub-agent — no default. The agent's `type == task` is enforced
+    // when the ticket starts, via TaskManager::spawn_async_job (require_task_agent).
+    let agent_id = body.agent_id.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::bad_request("agent_id is required — pick a task agent for this ticket"))?;
     let ticket = skald.ticket_manager.create(
         p.id,
         &body.title,
         body.description.as_deref().unwrap_or(""),
-        body.agent_id.as_deref().unwrap_or("main"),
+        agent_id,
         rc.as_ref(),
     ).await?;
     Ok((StatusCode::CREATED, Json(ticket.into())))

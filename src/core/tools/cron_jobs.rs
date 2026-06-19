@@ -32,7 +32,7 @@ impl ExecuteTask {
     fn schema() -> Value {
         json!({
             "type": "object",
-            "required": ["mode", "title", "prompt"],
+            "required": ["mode", "title", "prompt", "agent_id"],
             "properties": {
                 "mode": {
                     "type": "string",
@@ -43,7 +43,7 @@ impl ExecuteTask {
                 "description": { "type": "string",  "description": "What this task does" },
                 "cron":        { "type": "string",  "description": "7-field cron expression — required when mode=cron (times in Europe/London). E.g. '0 0 9 * * * *' = every day at 09:00" },
                 "prompt":      { "type": "string",  "description": "Prompt sent to the agent at each run" },
-                "agent_id":    { "type": "string",  "description": "Agent to run (default: worker)" }
+                "agent_id":    { "type": "string",  "description": "Task agent to run (required; e.g. software-engineer, researcher, generalist). Must be a `task` agent — chat/system agents are rejected." }
             }
         })
     }
@@ -54,7 +54,9 @@ impl ExecuteTask {
         let desc     = args["description"].as_str().unwrap_or("").trim().to_string();
         let cron     = args["cron"].as_str().unwrap_or("").trim().to_string();
         let prompt   = args["prompt"].as_str().unwrap_or("").trim().to_string();
-        let agent_id = args["agent_id"].as_str().unwrap_or("worker").trim().to_string();
+        // No default: agent_id is required and validated as a `task` agent inside
+        // TaskManager (require_task_agent) for every mode.
+        let agent_id = args["agent_id"].as_str().unwrap_or("").trim().to_string();
         let rc_id    = run_context.as_deref();
 
         if title.is_empty()  { anyhow::bail!("title is required"); }

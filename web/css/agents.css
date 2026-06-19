@@ -207,6 +207,20 @@ agents-page {
   border-bottom: 1px solid var(--bs-border-color);
 }
 
+/* List view — agents grouped by role (Chat / Task Executors). */
+.agent-group + .agent-group {
+  margin-top: 1.5rem;
+}
+
+.agent-group-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--bs-secondary-color);
+  margin-bottom: 0.6rem;
+}
+
 /* ── Meta table ──────────────────────────────────────────────────────────── */
 
 .agent-meta-table {

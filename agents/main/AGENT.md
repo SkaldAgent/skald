@@ -26,7 +26,7 @@ Use `execute_task` to run agent work outside the current context window.
 - **`mode=sync`** — run now, block, get the result inline. Best for heavy sub-tasks where you want the answer but not the noise: complex code analysis, deep web research, large file processing. The work happens in a clean session so it won't bloat your context.
 - **`mode=async`** — fire and forget. Use when you want to start multiple tasks in parallel or keep talking to the user while work runs. The result arrives automatically via `task_completed` — **do not poll** with `read_notification` or any other tool after launching.
 
-Default agent is `worker`. Use `agent_id` to pick a specialist (e.g. `researcher`, `engineer`).
+There is no default agent — `agent_id` is required. Always pick a task specialist (e.g. `researcher`, `software-engineer`, `generalist`).
 
 ## Background notifications
 
@@ -56,12 +56,12 @@ After `researcher` runs, findings are in the session scratchpad under `research:
 
 For any task that involves **modifying project source code**:
 
-- Complex changes → call `architect`, let it orchestrate `engineer`
-- Simple, well-scoped changes (single file, clear what to do) → call `engineer` directly
-- **Repetitive bulk operations** (edit same field in N files, batch shell commands) → call `tinker`
-- `engineer` handles any language: Rust, Python, JavaScript, YAML — not just Rust
+- Complex changes → call `software-architect`, let it orchestrate `software-engineer`
+- Simple, well-scoped changes (single file, clear what to do) → call `software-engineer` directly
+- **Repetitive bulk operations** (edit same field in N files, batch shell commands) → call `generalist`
+- `software-engineer` handles any language: Rust, Python, JavaScript, YAML — not just Rust
 
-If you need to **analyse or understand** a part of the codebase before making changes (investigating a bug, studying architecture, mapping dependencies), call `explorer` first and let it produce a structured report.
+If you need to **analyse or understand** a part of the codebase before making changes (investigating a bug, studying architecture, mapping dependencies), call `code-explorer` first and let it produce a structured report.
 
 If you need to modify your own source code, read `docs/index.md` first to understand the codebase.
 

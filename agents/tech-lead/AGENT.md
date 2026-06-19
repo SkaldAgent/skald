@@ -52,11 +52,11 @@ For each task, record:
 - **What**: one sentence describing what gets built
 - **Files**: which files will be created or modified (approximate at this stage)
 - **Depends on**: IDs of tasks that must complete first
-- **Delegate to**: `architect` (if it requires exploring existing code) or `engineer` (if well-defined from docs)
+- **Delegate to**: `software-architect` (if it requires exploring existing code) or `software-engineer` (if well-defined from docs)
 
-**When to delegate to `architect`**: the task modifies existing non-trivial code whose structure you cannot fully know from the docs alone (e.g. integrating a new feature into an existing codebase).
+**When to delegate to `software-architect`**: the task modifies existing non-trivial code whose structure you cannot fully know from the docs alone (e.g. integrating a new feature into an existing codebase).
 
-**When to delegate to `engineer`**: the task creates new files from a clear spec, or the exact changes are fully derivable from the documentation (greenfield modules, new screens, new models).
+**When to delegate to `software-engineer`**: the task creates new files from a clear spec, or the exact changes are fully derivable from the documentation (greenfield modules, new screens, new models).
 
 Record the task list with `write_todos` — one todo per task, all `pending` initially. This is your private plan and progress tracker for the turn (it is **not** shared with the sub-agents you dispatch). Do **not** use `update_scratchpad` for the plan: the scratchpad is a shared blackboard and would pollute every sub-agent's context.
 
@@ -81,7 +81,7 @@ Work through the task list. For each task:
 
 Re-send the full list with `write_todos` after every status change so progress stays accurate.
 
-#### Prompting `engineer`
+#### Prompting `software-engineer`
 
 ```
 ## PROJECT CONTEXT
@@ -103,7 +103,7 @@ Re-send the full list with `write_todos` after every status change so progress s
 <brief description of what previous tasks have produced — what types, what APIs, what files exist>
 ```
 
-#### Prompting `architect`
+#### Prompting `software-architect`
 
 ```
 ## PROJECT CONTEXT
@@ -130,7 +130,7 @@ execute_cmd: cd <project_root> && <build_command>
 ```
 
 - **Build green** → run the test command (if one is defined), then proceed to the report
-- **Build errors** → analyse the errors. If they are integration issues between tasks (type mismatches, missing imports, wrong function signatures), fix them yourself or delegate a targeted fix to `engineer` with the exact error output. Maximum **2** integration fix cycles.
+- **Build errors** → analyse the errors. If they are integration issues between tasks (type mismatches, missing imports, wrong function signatures), fix them yourself or delegate a targeted fix to `software-engineer` with the exact error output. Maximum **2** integration fix cycles.
 
 ### Phase 5 — Report
 

@@ -108,7 +108,7 @@ All tools are registered in `src/main.rs` before `ChatSessionManager` is built.
   - **Interactive sessions** (web, Telegram): available to sub-agents only (`depth ≥ 1`); emits `ServerEvent::AgentQuestion`, waits inline
   - **Background sessions** (cron, tic): available at root level (`!is_interactive`); registers with `ClarificationManager`, visible in Agent Inbox; agent suspends until answered
 - `show_mcp_tools` — activates MCP servers for the session (lazy loading); injected as an `InterfaceTool` in `build_agent_config` with per-session state; not available to sub-agents
-- `notify` — queues a notification briefing to the home conversation via `ChatHub`; **injected as an `InterfaceTool` by the caller** (`TicManager` for TIC, `TaskManager` for the worker agent); not in ToolRegistry so ordinary agents cannot call it
+- `notify` — queues a notification briefing to the home conversation via `ChatHub`; **injected as an `InterfaceTool` by the caller** (`TicManager` for TIC, `TaskManager` for background task agents); not in ToolRegistry so ordinary agents cannot call it
 
 **Also not in ToolRegistry:**
 
@@ -141,7 +141,7 @@ Filtering happens in `src/core/session/handler/config.rs` (depth 0) and `agent_d
 | `get_ast_outline` | `tools::ast_outline` | Filesystem | No | No |
 | `execute_cmd` | `tools::exec` | Shell | **Always** | No |
 | `restart` | `tools::restart` | Shell | **Always** | No |
-| `list_items` | `tools::list_items` | Introspection | No | Merged listing for `type` ∈ {mcp, plugins, cron, agents} |
+| `list_items` | `tools::list_items` | Introspection | No | Merged listing for `type` ∈ {mcp, plugins, cron, agents}. For `agents`, each entry carries `id`, `name`, `description`, optional `instructions` (how to call the agent well, present only when set in `meta.json`), and optional `client`. |
 | `register_mcp` | `tools::register_mcp` | Config | No | No |
 | `toggle_item` | `tools::toggle_item` | Config | No | Merged enable/disable for `kind` ∈ {mcp, plugin, cron} |
 | `execute_task` | InterfaceTool (not in registry) | Config | No | Interactive sessions only; `session_id` and `run_context_id` captured in closure at tool-build time; tasks inherit the parent RunContext |

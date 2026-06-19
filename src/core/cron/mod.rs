@@ -176,6 +176,17 @@ impl TaskManager {
         })
     }
 
+    /// Validate that `agent_id` names a runnable task agent (non-empty, exists,
+    /// `type == Task`). Single gate shared by every job-creation entry point so
+    /// cron / sync / async / project-ticket paths all agree — no silent default.
+    fn require_task_agent(agent_id: &str) -> Result<()> {
+        if agent_id.trim().is_empty() {
+            anyhow::bail!("agent_id is required — specify which task agent runs this task (no default)");
+        }
+        crate::core::agents::load_task_meta(agent_id)?;
+        Ok(())
+    }
+
     pub fn add_job(
         &self,
         title:             &str,
@@ -188,6 +199,7 @@ impl TaskManager {
         parent_session_id: Option<i64>,
         run_context:       Option<&str>,
     ) -> Result<ScheduledJob> {
+        Self::require_task_agent(agent_id)?;
         let (first_fire, _is_single, single_run) = if kind == "sync" || kind == "immediate" {
             (None, true, true)
         } else {
@@ -222,6 +234,7 @@ impl TaskManager {
         agent_id:       &str,
         run_context: Option<&str>,
     ) -> Result<String> {
+        Self::require_task_agent(agent_id)?;
         let job = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(scheduled_jobs::create(
                 &self.pool, title, description, "", prompt, agent_id,
@@ -249,6 +262,7 @@ impl TaskManager {
         parent_session_id: i64,
         run_context:       Option<&str>,
     ) -> Result<ScheduledJob> {
+        Self::require_task_agent(agent_id)?;
         let job = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(scheduled_jobs::create(
                 &self.pool, title, description, "", prompt, agent_id,
@@ -282,6 +296,7 @@ impl TaskManager {
         run_context: Option<&str>,
         origin_ref:  &str,
     ) -> Result<scheduled_jobs::ScheduledJob> {
+        Self::require_task_agent(agent_id)?;
         let job = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(scheduled_jobs::create(
                 &self.pool, title, description, "", prompt, agent_id,
@@ -563,12 +578,12 @@ fn build_run_subtask_tool(task_mgr: Arc<TaskManager>, run_context: Option<String
                 "description": "Run a synchronous sub-task and return its result. Blocks until the sub-task completes.",
                 "parameters": {
                     "type": "object",
-                    "required": ["title", "prompt"],
+                    "required": ["title", "prompt", "agent_id"],
                     "properties": {
                         "title":       { "type": "string", "description": "Short name for this sub-task" },
                         "description": { "type": "string", "description": "What this sub-task does" },
                         "prompt":      { "type": "string", "description": "Prompt sent to the agent" },
-                        "agent_id":    { "type": "string", "description": "Agent to use (default: worker)" }
+                        "agent_id":    { "type": "string", "description": "Task agent to run (required; e.g. software-engineer, researcher, generalist)" }
                     }
                 }
             }
@@ -578,7 +593,7 @@ fn build_run_subtask_tool(task_mgr: Arc<TaskManager>, run_context: Option<String
             let title          = args["title"].as_str().unwrap_or("").to_string();
             let desc           = args["description"].as_str().unwrap_or("").to_string();
             let prompt         = args["prompt"].as_str().unwrap_or("").to_string();
-            let agent_id       = args["agent_id"].as_str().unwrap_or("worker").to_string();
+            let agent_id       = args["agent_id"].as_str().unwrap_or("").to_string();
             let run_context = run_context.clone();
             Box::pin(async move {
                 tokio::task::spawn_blocking(move || {

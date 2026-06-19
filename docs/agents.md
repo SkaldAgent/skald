@@ -19,13 +19,27 @@ agents/
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `name` | string | yes | — | Display name |
-| `description` | string | yes | — | Used in `list_items` (type=agents) output and `AGENTS_LIST` directive |
+| `description` | string | yes | — | **Routing** text for the orchestrator LLM ("when to delegate / what it returns"). Used in `list_items` (type=agents) output and the `AGENTS_LIST` directive. |
+| `friendly_description` | string \| null | no | null | Human-facing blurb shown to the **user** on the frontend Agents page. Frontend falls back to `description` when absent. Applies to every agent type. Never sent to the LLM. |
+| `instructions` | string \| null | no | null | Note for the **calling LLM** on *how* to invoke the agent well (expected inputs, format, gotchas). Kept short. Surfaced only in `list_items` (type=agents) output — and only meaningful for `task` agents, since that listing already includes task agents only (no extra gating needed). Not in `AGENTS_LIST`. |
 | `inject_memory` | `string[]` | no | `[]` | Paths to files injected into the system prompt as `<memory_file>` blocks. Relative paths resolve against Skald's process cwd. The `$WD` placeholder expands to the session's effective working directory (RunContext WD, or process cwd when unset) — e.g. `"$WD/SKALD.md"` loads a project-local file. The path **shown** in the block is relative to the working directory when the file is under it, absolute otherwise — so it always resolves back to the same file under the loop's working-directory injection. Missing files inject a `(file not created yet)` placeholder. |
 | `client` | string \| null | no | null | Pin to a specific named LLM model (must exist in DB) |
 | `scope` | string \| null | no | null | Task domain for AUTO client selection |
 | `strength` | LlmStrength \| null | no | null | Minimum LLM capability for AUTO selection |
-| `is_system_agent` | bool | no | `false` | When `true`, excluded from `list_items` (type=agents) output and `AGENTS_LIST` injection. The main agent cannot see or call it. Use for background/system agents (e.g. TIC). |
+| `type` | `"chat"` \| `"task"` \| `"system"` | **yes** | — | The agent's role. `chat`: a user-facing conversational entry-point (e.g. `main`, `project-coordinator`) — not dispatchable, not a task root. `task`: a dispatchable sub-agent **and** valid root of a scheduled/async task. `system`: a hidden background agent wired into the runtime by id (e.g. `tic`) — never listed, never dispatchable from the tool surface. Only `task` agents appear in `list_items` (type=agents) / `AGENTS_LIST` and can be dispatched or run as a task. A `meta.json` without `type` is skipped at discovery (warn) and rejected on direct load. |
 | `inject_skills` | bool | no | `true` | When `true` (the default, **including when the key is absent**), the skills registry (`skills/index.md`) is injected into the system prompt as a `<skills_index>` block so the agent can discover installed skills. Path resolution follows the `inject_memory` rule (relative under the working directory, absolute otherwise). Skipped silently if no skills are installed. Set `false` for background agents that don't need them. |
+
+### Three descriptive fields, three audiences
+
+The three descriptive fields exist because one string would have to serve three readers with different needs:
+
+- **`description`** → the **orchestrator LLM** deciding *whether/when* to delegate (routing).
+- **`friendly_description`** → the **user** browsing the frontend Agents page.
+- **`instructions`** → the **calling LLM** on *how* to drive the agent for the best result.
+
+Keep `instructions` distinct from `AGENT.md`: `AGENT.md` is the agent's *own* system prompt ("who I am, how I think"); `instructions` is outward-facing ("how you, the caller, should ask me, and what I return").
+
+The frontend Agents page (`web/components/agents.js`) groups cards into three sections by `type` — **Chat**, **Task Executors**, and **System** — and shows `friendly_description` (falling back to `description`).
 
 ### Tool restriction
 
@@ -46,33 +60,38 @@ When a session has no run context it uses the built-in **"default"** group. The 
 | Directive | Behavior |
 | --- | --- |
 | `<!-- INCLUDE: path/to/file.md -->` | Replaced with the content of `agents/path/to/file.md` at load time. Supports recursive includes. |
-| `<!-- AGENTS_LIST -->` | Replaced with a bullet list of agents where `id != "main"` and `is_system_agent != true`: `- **id** — description` |
+| `<!-- AGENTS_LIST -->` | Replaced with a bullet list of agents where `type == "task"`: `- **id** — description` |
 | `<!-- KEY -->` (any uppercase name) | Runtime substitution sentinel. Replaced at request time via `SendMessageOptions::system_substitutions`. The agent's system prompt contains `__KEY__` which is swapped for the provided value before the LLM call. |
 
 ---
 
 ## Available Agents
 
-| id | name | scope | strength | system | description |
+The required `type` field declares each agent's role: `chat` (user talks to it directly;
+not dispatchable, not a task root), `task` (dispatchable sub-agent **and** valid task/cron
+root), or `system` (hidden, runtime-wired only). Only `task` agents appear in
+`AGENTS_LIST` / `list_items(type=agents)` and can be dispatched or run as a task.
+
+| id | name | type | scope | strength | description |
 | --- | --- | --- | --- | --- | --- |
-| `main` | Main Assistant | — | — | ✓ | General-purpose; persists notes in `data/memory/index.md` |
-| `architect` | Architect | `reasoning` | `high` | | Plans code changes and delegates to engineer |
-| `engineer` | Engineer | `coding` | `high` | | Writes and modifies source files across any file type |
-| `researcher` | Researcher | `general` | `average` | | Multi-step web research; writes structured Markdown reports to `data/research/` and saves the path to scratchpad |
-| `worker` | Worker | — | — | ✓ | Autonomous background task executor for scheduled jobs. Uses sub-agents for complex work. Ephemeral per run. Not conversational — produces a final response captured as completion notification. |
-| `tic` | TIC | — | — | ✓ | Background event processor; calls `notify` when something is worth surfacing. Ephemeral. `notify` is injected as an `InterfaceTool` by `TicManager`. Tool access is restricted via the run context set from the `tic.run_context` property. |
-| `explorer` | Explorer | `analysis` | `average` | | Studies code, investigates bugs, analyses architecture, produces structured Markdown reports in `data/explorer/`. No implementation. |
-| `blueprint` | Blueprint | `reasoning` | `very_high` | | Transforms project ideas into comprehensive spec documents in `data/`. Never writes code. Saves output path to scratchpad. |
-| `tech-lead` | Tech Lead | `reasoning` | `very_high` | | Reads project documentation, breaks scope into implementation tasks, sequences them by dependency, and orchestrates `architect`/`engineer` sub-agents to deliver end-to-end. Tracks its plan with `write_todos` (private, not `update_scratchpad`) and owns the single authoritative build+test run. |
-| `project-coordinator` | Project Coordinator | `reasoning` | `average` | ✓ | Conversational coordinator for a single project's interactive chat (source `project-{id}`) — **any kind** of project (software, travel, study, writing, personal goals…), adapting to the injected description. Receives the project context via its session `RunContext` (working dir, description, fs-write grants), does everyday planning/writing itself, and delegates specialized work (research, or code via tech-lead/architect/engineer) via `execute_task`. Maintains the project's `SKALD.md` diary. System agent — not callable as a sub-agent or ticket agent. |
+| `main` | Main Assistant | `chat` | — | — | General-purpose; persists notes in `data/memory/index.md` |
+| `project-coordinator` | Project Coordinator | `chat` | `reasoning` | `average` | Conversational coordinator for a single project's interactive chat (source `project-{id}`) — **any kind** of project (software, travel, study, writing, personal goals…), adapting to the injected description. Receives the project context via its session `RunContext` (working dir, description, fs-write grants), does everyday planning/writing itself, and delegates specialized work (research, or code via tech-lead/software-architect/software-engineer) via `execute_task`. Maintains the project's `SKALD.md` diary. |
+| `software-architect` | Software Architect | `task` | `reasoning` | `high` | Plans code changes and delegates to software-engineer |
+| `software-engineer` | Software Engineer | `task` | `coding` | `high` | Writes and modifies source files across any file type |
+| `code-explorer` | Code Explorer | `task` | `reasoning` | `high` | Studies code, investigates bugs, analyses architecture, produces structured Markdown reports in `data/explorer/`. No implementation. |
+| `spec-writer` | Spec Writer | `task` | `reasoning` | `very_high` | Transforms project ideas into comprehensive spec documents in `data/`. Never writes code. Saves output path to scratchpad. |
+| `tech-lead` | Tech Lead | `task` | `reasoning` | `very_high` | Reads project documentation, breaks scope into implementation tasks, sequences them by dependency, and orchestrates `software-architect`/`software-engineer` sub-agents to deliver end-to-end. Tracks its plan with `write_todos` (private, not `update_scratchpad`) and owns the single authoritative build+test run. |
+| `researcher` | Researcher | `task` | `general` | `average` | Multi-step web research; writes structured Markdown reports to `data/research/` and saves the path to scratchpad |
+| `generalist` | Generalist | `task` | `general` | `average` | General-purpose task executor: carries out well-defined work ordered by the calling agent — file edits, shell commands, batch operations. No planning or QA. |
+| `tic` | TIC | `system` | — | — | Background event processor; calls `notify` when something is worth surfacing. Ephemeral. `notify` is injected as an `InterfaceTool` by `TicManager`. Tool access is restricted via the run context set from the `tic.run_context` property. |
 
 
-### Orchestration model (tech-lead + engineer)
+### Orchestration model (tech-lead + software-engineer)
 
 Two conventions keep multi-agent builds efficient and avoid context pollution:
 
-- **Private plan, not shared state.** `tech-lead` records its task plan and progress with `write_todos` — a stateless, per-stack list that lives only in its own tool-result history. It must **not** use `update_scratchpad` for the plan: the scratchpad is a shared blackboard injected into every sub-agent, so a plan written there would pollute each `engineer`'s context. The scratchpad stays reserved for genuine cross-agent communication (e.g. a discovered path or type).
-- **Verify once, at the top.** `engineer` runs only a fast compile-check (e.g. `cargo check`) after writing — never the test suite. `tech-lead` owns the single full build + test run in its integration phase, against the merged result. This replaces the old pattern of N engineers each running a full build+test.
+- **Private plan, not shared state.** `tech-lead` records its task plan and progress with `write_todos` — a stateless, per-stack list that lives only in its own tool-result history. It must **not** use `update_scratchpad` for the plan: the scratchpad is a shared blackboard injected into every sub-agent, so a plan written there would pollute each `software-engineer`'s context. The scratchpad stays reserved for genuine cross-agent communication (e.g. a discovered path or type).
+- **Verify once, at the top.** `software-engineer` runs only a fast compile-check (e.g. `cargo check`) after writing — never the test suite. `tech-lead` owns the single full build + test run in its integration phase, against the merged result. This replaces the old pattern of N engineers each running a full build+test.
 
 ---
 
@@ -81,23 +100,22 @@ Two conventions keep multi-agent builds efficient and avoid context pollution:
 A synchronous sub-agent call (`execute_task` mode=sync / `run_subtask`) is **not** in `ToolRegistry`. It is intercepted in `run_agent_turn` before any registry lookup, then handled by `dispatch_sub_agent` (`src/core/session/handler/agent_dispatch.rs`):
 
 1. Validate `agent_id` and `prompt` args.
-2. Reject self-calls and calls to `main`.
-3. Reject calls to system agents (`meta.json` → `is_system_agent: true`) — they are invisible as sub-agents.
-4. Load target agent's `meta.json`.
-5. Check depth: `parent_frame.depth + 1 <= MAX_AGENT_DEPTH`.
-6. Resolve target client (see below).
-7. Create child `chat_sessions_stack` row (`depth = parent + 1`, `parent_tool_call_id` set).
-8. Load any existing `stack_mcp_grants` for the child stack (restart recovery) → populate `active_mcp_grants`.
-9. Build child `AgentRunConfig` via `for_sub_agent()`, then:
-   - Replace `active_mcp_grants` with the pre-populated arc from step 8.
+2. Reject self-calls.
+3. Load target agent's `meta.json` via `load_task_meta` and reject anything that is not a `task` agent — `chat` (e.g. `main`, `project-coordinator`) and `system` (e.g. `tic`) agents are invisible as sub-agents, and unknown ids surface a not-found error, all in one gate.
+4. Check depth: `parent_frame.depth + 1 <= MAX_AGENT_DEPTH`.
+5. Resolve target client (see below).
+6. Create child `chat_sessions_stack` row (`depth = parent + 1`, `parent_tool_call_id` set).
+7. Load any existing `stack_mcp_grants` for the child stack (restart recovery) → populate `active_mcp_grants`.
+8. Build child `AgentRunConfig` via `for_sub_agent()`, then:
+   - Replace `active_mcp_grants` with the pre-populated arc from step 7.
    - Append `sub_agents_only` tools and `ask_user_clarification`.
-   - Append `run_subtask` (so the child can dispatch its own sub-agents, e.g. `tech-lead` → `architect`/`engineer`) — **only** when `depth + 1 < MAX_AGENT_DEPTH`, since at the limit the call would be rejected anyway. `for_sub_agent()` clears all interface tools (including the root's `execute_task`/`run_subtask` interface tools), so without this re-injection a sub-agent has **no** tool definition to delegate further; the call itself is then intercepted in `run_agent_turn` and routed back through `dispatch_sub_agent`.
+   - Append `run_subtask` (so the child can dispatch its own sub-agents, e.g. `tech-lead` → `software-architect`/`software-engineer`) — **only** when `depth + 1 < MAX_AGENT_DEPTH`, since at the limit the call would be rejected anyway. `for_sub_agent()` clears all interface tools (including the root's `execute_task`/`run_subtask` interface tools), so without this re-injection a sub-agent has **no** tool definition to delegate further; the call itself is then intercepted in `run_agent_turn` and routed back through `dispatch_sub_agent`.
    - Inject `show_mcp_tools` (stack-scoped, `stack_id = Some(child.id)`) as interface tool.
-10. Append prompt as `role = agent` message in child stack.
-11. Emit `AgentStart` event.
-12. **Run the child inline** — `resume_pending_tools` + `run_agent_turn` on the child stack, awaited recursively **in the same task**, holding the **same** `processing` lock and the **same** `CancellationToken` clone.
-13. Delete `stack_mcp_grants` for the child stack; emit `AgentDone`; terminate the child stack frame.
-14. Map the child `TurnOutcome` to the return value: `Final{content}` → `Ok(content)`; `Cancelled` → `Ok("…cancelled")` (the shared token also stops the parent at its next check); `Exhausted` → `Ok("…exceeded rounds")`; `Err` → `Err`.
+9. Append prompt as `role = agent` message in child stack.
+10. Emit `AgentStart` event.
+11. **Run the child inline** — `resume_pending_tools` + `run_agent_turn` on the child stack, awaited recursively **in the same task**, holding the **same** `processing` lock and the **same** `CancellationToken` clone.
+12. Delete `stack_mcp_grants` for the child stack; emit `AgentDone`; terminate the child stack frame.
+13. Map the child `TurnOutcome` to the return value: `Final{content}` → `Ok(content)`; `Cancelled` → `Ok("…cancelled")` (the shared token also stops the parent at its next check); `Exhausted` → `Ok("…exceeded rounds")`; `Err` → `Err`.
 
 The returned string becomes the parent's tool-call result via the normal `Ok(result)` branch in `run_agent_turn` (which calls `chat_llm_tools::complete` and emits `ToolDone`) — so completion logic lives in exactly one place. There is **no** task spawn, no `WaitingChild` signal, and no resume cascade for the sync path.
 

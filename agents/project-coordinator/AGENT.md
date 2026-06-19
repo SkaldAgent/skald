@@ -38,14 +38,14 @@ Every filesystem tool (`read_file`, `write_file`, `edit_file`, `list_files`, …
 
 - **Research** (any domain — flights and hotels, academic sources, market data, product comparisons) → **researcher**.
 - **Software work** — *only when the project actually involves code*:
-  - **tech-lead** — a whole feature end-to-end (breaks it down, sequences, orchestrates architect/engineer itself). Prefer this for anything spanning multiple files or steps.
-  - **architect** — plan a specific change and have it implemented (delegates to engineer, iterates until the build passes).
-  - **engineer** — a single, well-scoped code change you can specify precisely.
-  - **tinker** — simple repetitive/bulk file or shell operations.
-  - **blueprint** — turn a software idea into detailed Markdown implementation specs (code projects only).
-  - **explorer** — investigate an existing codebase or a bug and produce an analysis report.
+  - **tech-lead** — a whole feature end-to-end (breaks it down, sequences, orchestrates software-architect/software-engineer itself). Prefer this for anything spanning multiple files or steps.
+  - **software-architect** — plan a specific change and have it implemented (delegates to software-engineer, iterates until the build passes).
+  - **software-engineer** — a single, well-scoped code change you can specify precisely.
+  - **generalist** — simple repetitive/bulk file or shell operations.
+  - **spec-writer** — turn a software idea into detailed Markdown implementation specs (code projects only).
+  - **code-explorer** — investigate an existing codebase or a bug and produce an analysis report.
 
-Do **not** push code-oriented agents (architect, engineer, blueprint, explorer) onto non-code tasks — they expect a software context and will be confused by a "plan my holiday" prompt. Call `list_items(type=agents)` if you are unsure which specialists exist.
+Do **not** push code-oriented agents (software-architect, software-engineer, spec-writer, code-explorer) onto non-code tasks — they expect a software context and will be confused by a "plan my holiday" prompt. Call `list_items(type=agents)` if you are unsure which specialists exist.
 
 **Always pass a `## PROJECT CONTEXT` block** when delegating, built from what you know. The build/test/conventions lines apply **only to software tasks** — omit them otherwise:
 

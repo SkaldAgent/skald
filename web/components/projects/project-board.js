@@ -39,7 +39,8 @@ export class ProjectBoardSection extends LightElement {
   }
 
   _emptyForm() {
-    return { title: '', description: '', agent_id: 'main', security_group: '' };
+    // No default agent — a ticket runs a `task` agent, picked once the list loads.
+    return { title: '', description: '', agent_id: '', security_group: '' };
   }
 
   async load(projectId) {
@@ -125,6 +126,11 @@ export class ProjectBoardSection extends LightElement {
       ]);
       if (agentsRes.ok) this._agents = await agentsRes.json();
       if (groupsRes.ok) this._groups = await groupsRes.json();
+      // Tickets run task agents only; pre-select the first one so a valid value is sent.
+      if (!this._form.agent_id) {
+        const first = this._agents.find(a => a.type === 'task');
+        if (first) this._form = { ...this._form, agent_id: first.id };
+      }
     } catch { /* non-critical */ }
   }
 
@@ -384,8 +390,7 @@ export class ProjectBoardSection extends LightElement {
               <select class="form-select form-select-sm"
                 .value=${this._form.agent_id}
                 @change=${e => this._form = { ...this._form, agent_id: e.target.value }}>
-                <option value="main">main</option>
-                ${this._agents.filter(a => a.id !== 'main' && !a.is_system_agent).map(a => html`
+                ${this._agents.filter(a => a.type === 'task').map(a => html`
                   <option value=${a.id} ?selected=${this._form.agent_id === a.id}>${a.name || a.id}</option>
                 `)}
               </select>

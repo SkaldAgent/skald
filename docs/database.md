@@ -245,7 +245,7 @@ See [providers/tts.md](providers/tts.md).
 | `description` | TEXT | NOT NULL DEFAULT `''` |
 | `cron` | TEXT | NOT NULL (7-field format) |
 | `prompt` | TEXT | NOT NULL |
-| `agent_id` | TEXT | NOT NULL DEFAULT `'worker'` |
+| `agent_id` | TEXT | NOT NULL DEFAULT `'main'` (column default; in practice always set explicitly — `agent_id` is required at task creation) |
 | `enabled` | INTEGER | NOT NULL DEFAULT 1 |
 | `last_run_at` | TEXT | nullable (RFC3339 datetime) |
 | `next_run_at` | TEXT | nullable (RFC3339); pre-computed next fire time; used by `list_due()` (added via ALTER) |

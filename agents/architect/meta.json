@@ -1,7 +1,0 @@
-{
-  "name": "Architect",
-  "description": "Plans code changes and delegates to engineer.",
-  "scope": "reasoning",
-  "strength": "high",
-  "icon": "icon.png"
-}

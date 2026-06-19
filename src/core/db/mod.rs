@@ -693,5 +693,30 @@ async fn migrate_tables(pool: &SqlitePool) -> Result<()> {
         .await?;
     }
 
+    if version < 13 {
+        // Agent ids were renamed to explicit forms and `worker` was deleted; reassign
+        // existing job/stack rows so they don't orphan to a now-missing agent dir.
+        // `worker` and `tinker` both fold into the new generic executor `generalist`.
+        for (old, new) in [
+            ("engineer",  "software-engineer"),
+            ("architect", "software-architect"),
+            ("explorer",  "code-explorer"),
+            ("blueprint", "spec-writer"),
+            ("tinker",    "generalist"),
+            ("worker",    "generalist"),
+        ] {
+            sqlx::query("UPDATE scheduled_jobs      SET agent_id = ?1 WHERE agent_id = ?2")
+                .bind(new).bind(old).execute(pool).await.ok();
+            sqlx::query("UPDATE chat_sessions_stack SET agent_id = ?1 WHERE agent_id = ?2")
+                .bind(new).bind(old).execute(pool).await.ok();
+        }
+        sqlx::query(
+            "INSERT OR REPLACE INTO config(key, value, updated_at)
+             VALUES('schema_version', '13', datetime('now'))",
+        )
+        .execute(pool)
+        .await?;
+    }
+
     Ok(())
 }

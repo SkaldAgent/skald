@@ -39,7 +39,7 @@ impl Tool for ListItems {
          • `mcp` — MCP servers with status (running, error, disabled), description, friendly_name, and exposed tools.\n\
          • `plugins` — plugins with id, name, description, enabled flag (persisted), and running flag (live).\n\
          • `cron` — scheduled tasks/cron jobs with id, title, cron expression, agent_id, enabled, kind, last/next run.\n\
-         • `agents` — sub-agents available to delegate to (id, name, description, optional client). Do NOT invoke the `main` agent.\n\
+         • `agents` — sub-agents available to delegate to (id, name, description, optional `instructions` on how to call the agent well, optional client). Do NOT invoke the `main` agent.\n\
          To list stored secret names use `list_secrets` instead."
     }
 
@@ -101,8 +101,8 @@ impl Tool for ListItems {
             }
             "agents" => {
                 let mut list = agents::discover()?;
-                // Exclude the root entry point and background system agents.
-                list.retain(|a| a.id != "main" && !a.is_system_agent);
+                // Only dispatchable task agents are listed; chat + system are excluded.
+                list.retain(|a| a.agent_type == agents::AgentType::Task);
                 let arr: Vec<Value> = list
                     .into_iter()
                     .map(|a| {
@@ -110,6 +110,12 @@ impl Tool for ListItems {
                         o.insert("id".into(),          Value::String(a.id));
                         o.insert("name".into(),        Value::String(a.name));
                         o.insert("description".into(), Value::String(a.description));
+                        // `instructions` (how to call the agent well) is surfaced here only,
+                        // and only when set — eager but scoped to task agents (already the
+                        // sole agents listed above).
+                        if let Some(i) = a.instructions {
+                            o.insert("instructions".into(), Value::String(i));
+                        }
                         if let Some(c) = a.client {
                             o.insert("client".into(), Value::String(c));
                         }
