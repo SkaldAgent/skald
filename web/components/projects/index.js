@@ -30,6 +30,11 @@ export class ProjectsPage extends LightElement {
         this._loadCurrent();
       }
     });
+    window.addEventListener('sidebar-open-project', (e) => {
+      this._open = true;
+      this.style.display = 'flex';
+      this._navigateToBoard(e.detail.id);
+    });
   }
 
   _parseHash() {

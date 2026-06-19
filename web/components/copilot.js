@@ -29,21 +29,44 @@ export class AppCopilot extends ChatSession {
     this._onKeydown     = this._onKeydown.bind(this);
     this._onKeyup       = this._onKeyup.bind(this);
     this._onProjectChatOpen = this._onProjectChatOpen.bind(this);
+    this._onCopilotOpen     = this._onCopilotOpen.bind(this);
   }
 
   connectedCallback() {
     super.connectedCallback?.();
     this._checkTranscribe();
-    window.addEventListener('keydown', this._onKeydown);
-    window.addEventListener('keyup',   this._onKeyup);
+    this._restoreState();
+    window.addEventListener('keydown',           this._onKeydown);
+    window.addEventListener('keyup',             this._onKeyup);
     window.addEventListener('project-chat-open', this._onProjectChatOpen);
+    window.addEventListener('copilot-open',      this._onCopilotOpen);
+  }
+
+  _restoreState() {
+    const w = localStorage.getItem('copilot-width');
+    if (w) document.documentElement.style.setProperty('--copilot-width', w);
+    if (localStorage.getItem('copilot-collapsed') === 'true') {
+      this._setCollapsed(true);
+    }
   }
 
   disconnectedCallback() {
     super.disconnectedCallback?.();
-    window.removeEventListener('keydown', this._onKeydown);
-    window.removeEventListener('keyup',   this._onKeyup);
+    window.removeEventListener('keydown',           this._onKeydown);
+    window.removeEventListener('keyup',             this._onKeyup);
     window.removeEventListener('project-chat-open', this._onProjectChatOpen);
+    window.removeEventListener('copilot-open',      this._onCopilotOpen);
+  }
+
+  _onCopilotOpen() {
+    this._setCollapsed(false);
+  }
+
+  _setCollapsed(value) {
+    this._collapsed = value;
+    this.classList.toggle('collapsed', value);
+    localStorage.setItem('copilot-collapsed', value);
+    window.dispatchEvent(new CustomEvent('copilot-collapsed', { detail: { collapsed: value } }));
   }
 
   // ── Tabs ────────────────────────────────────────────────────────────────────
@@ -56,7 +79,7 @@ export class AppCopilot extends ChatSession {
     if (!this._tabs.some(t => t.source === source)) {
       this._tabs = [...this._tabs, { source, label: label || source }];
     }
-    this._collapsed = false;
+    this._setCollapsed(false);
     this._selectTab(source);
   }
 
@@ -143,6 +166,8 @@ export class AppCopilot extends ChatSession {
     this._resizing = false;
     window.removeEventListener('mousemove', this._onResizeMove);
     window.removeEventListener('mouseup',   this._onResizeUp);
+    const w = getComputedStyle(document.documentElement).getPropertyValue('--copilot-width').trim();
+    if (w) localStorage.setItem('copilot-width', w);
   }
 
   // ── Input ─────────────────────────────────────────────────────────────────────
@@ -261,18 +286,7 @@ export class AppCopilot extends ChatSession {
   // ── Render ────────────────────────────────────────────────────────────────────
 
   render() {
-    if (this._collapsed) {
-      return html`
-        <div class="copilot-resize-handle" @mousedown=${(e) => this._startResize(e)}></div>
-        <button
-          class="copilot-expand-btn"
-          title="Open copilot"
-          @click=${() => { this._collapsed = false; }}
-        >
-          <i class="bi bi-stars"></i>
-        </button>
-      `;
-    }
+    if (this._collapsed) return nothing;
 
     return html`
       <div class="copilot-resize-handle" @mousedown=${(e) => this._startResize(e)}></div>
@@ -283,7 +297,7 @@ export class AppCopilot extends ChatSession {
         <button
           class="btn btn-sm btn-outline-secondary ms-auto copilot-collapse-btn"
           title="Collapse copilot"
-          @click=${() => { this._collapsed = true; }}
+          @click=${() => { this._setCollapsed(true); }}
         >
           <i class="bi bi-chevron-right"></i>
         </button>

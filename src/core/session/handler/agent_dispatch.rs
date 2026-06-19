@@ -228,6 +228,49 @@ impl ChatSessionHandler {
             .map(|_| format!("Scratchpad updated: {key}"))
     }
 
+    /// Handles the `write_todos` built-in.
+    ///
+    /// Stateless: the list is not persisted anywhere — it lives only in this
+    /// agent's tool-result history (per-stack, so it is never seen by sub-agents
+    /// or the caller). We just validate/normalise the items and echo back a
+    /// formatted checklist the model re-reads from its own tool result.
+    pub(super) async fn dispatch_write_todos(
+        &self,
+        args: &Value,
+    ) -> anyhow::Result<String> {
+        let items = args["todos"].as_array().ok_or_else(|| {
+            anyhow::anyhow!("`write_todos` requires a `todos` array. Re-send the full list, e.g. [{{\"content\":\"...\",\"status\":\"pending\"}}].")
+        })?;
+        if items.is_empty() {
+            return Err(anyhow::anyhow!("`todos` is empty — send at least one item, or omit the call entirely."));
+        }
+
+        let mut lines = Vec::with_capacity(items.len());
+        let (mut done, mut active, mut pending) = (0usize, 0usize, 0usize);
+        for item in items {
+            let content = item["content"].as_str().unwrap_or("").trim();
+            if content.is_empty() {
+                continue;
+            }
+            // Normalise unknown statuses to `pending`.
+            let marker = match item["status"].as_str() {
+                Some("completed")   => { done   += 1; "x" }
+                Some("in_progress") => { active += 1; "~" }
+                _                   => { pending += 1; " " }
+            };
+            lines.push(format!("[{marker}] {content}"));
+        }
+        if lines.is_empty() {
+            return Err(anyhow::anyhow!("No valid todo items (every `content` was empty)."));
+        }
+
+        Ok(format!(
+            "Todo list ({total}): {done} done, {active} in progress, {pending} pending\n{body}",
+            total = lines.len(),
+            body  = lines.join("\n"),
+        ))
+    }
+
     /// Handles the `ask_user_clarification` built-in.
     ///
     /// Interactive sessions (web, telegram): sends `AgentQuestion` over the WS channel

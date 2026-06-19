@@ -95,6 +95,47 @@ pub(super) fn update_scratchpad_tool_def() -> Value {
     })
 }
 
+/// Tool definition for `write_todos` — a private, per-turn task list the agent
+/// uses to plan and track its own progress.
+///
+/// Unlike `update_scratchpad` (a shared blackboard injected into every agent in
+/// the session), `write_todos` is **stateless**: the list lives only in this
+/// agent's own tool-result history. Because conversation history is per-stack,
+/// it is never visible to sub-agents or to the caller — no DB storage needed.
+/// The agent re-sends the whole list (TodoWrite-style) on every update.
+pub(super) fn write_todos_tool_def() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": tn::WRITE_TODOS,
+            "description": "Record and update your task list for the current turn, to plan multi-step \
+                            work and track progress. Re-send the ENTIRE list on every call (including \
+                            already-completed items with their new status) — this replaces the previous \
+                            list. Keep exactly one item `in_progress` at a time. This list is PRIVATE \
+                            to you: it is not shared with sub-agents you dispatch, nor returned to your \
+                            caller (use `update_scratchpad` instead for notes other agents must see).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "todos": {
+                        "type": "array",
+                        "description": "The full, ordered task list. Re-send it entirely on every update.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": { "type": "string", "description": "Short description of the task." },
+                                "status":  { "type": "string", "enum": ["pending", "in_progress", "completed"], "description": "Current status of this task." }
+                            },
+                            "required": ["content", "status"]
+                        }
+                    }
+                },
+                "required": ["todos"]
+            }
+        }
+    })
+}
+
 /// Tool definition that lets a sub-agent (depth > 0) dispatch a further
 /// synchronous sub-agent. The call is intercepted in `run_agent_turn` and routed
 /// to `dispatch_sub_agent` (the InterfaceTool handler is never reached), so only

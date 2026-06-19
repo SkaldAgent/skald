@@ -45,3 +45,27 @@ app-topbar {
 .topbar-theme-btn i {
   font-size: 0.85rem;
 }
+
+.topbar-copilot-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #6366f1;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  padding: 0;
+  margin-right: 0.25rem;
+}
+
+.topbar-copilot-btn:hover {
+  background: var(--sidebar-hover);
+}
+
+.topbar-copilot-btn i {
+  font-size: 0.9rem;
+}

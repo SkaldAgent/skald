@@ -73,9 +73,11 @@ The view polls every 5 s while any ticket is running. Each ticket links to its s
 ## Interactive project chat
 
 A persistent conversation about the project, driven by the **`project-coordinator`** agent (see
-[agents.md](agents.md)). The user talks to one bot that already knows the project; the coordinator
-delegates non-trivial work to specialist sub-agents (`tech-lead`, `architect`, `engineer`, `qa`,
-`blueprint`, `researcher`) via `execute_task`.
+[agents.md](agents.md)). A project can be of **any kind** — software, but also travel, study,
+writing, events, personal goals — and the coordinator adapts to its nature (read from the injected
+project description). The user talks to one bot that already knows the project; it does everyday
+planning and writing itself and delegates specialized work — research via `researcher`, or code via
+`tech-lead`/`architect`/`engineer` — to sub-agents through `execute_task`.
 
 **Project memory (`SKALD.md`).** The coordinator's `meta.json` declares `"inject_memory": ["$WD/SKALD.md"]`.
 The `$WD` placeholder expands to the session's working directory (the project path), so a `SKALD.md`

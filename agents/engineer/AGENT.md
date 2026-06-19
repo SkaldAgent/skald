@@ -39,9 +39,9 @@ Follow the plan exactly:
 - Make the minimal change that satisfies the plan — do not refactor surrounding code unless instructed
 - Preserve all existing behaviour not mentioned in the plan
 
-### Step 3 — Verify
+### Step 3 — Verify (compile-check only)
 
-After writing, run the build/check command specified in the project context:
+After writing, run **only the fast compile/check command** from the project context — the one that verifies the code compiles (e.g. `cargo check` for Rust, a type-check / build for other stacks):
 
 ```
 execute_cmd: cd <project_root> && <check_command>
@@ -53,7 +53,7 @@ If it reports errors:
 - Re-run the check
 - Do not return with a broken state if you can fix it yourself
 
-If the project context includes a test command and the change warrants it, run tests too.
+**Do not run the test suite.** The orchestrator (e.g. `tech-lead`) runs the full build + tests once, at the end, against the integrated result. Your job is to leave the code **compiling**, not to run tests. Running the suite per task would re-execute it many times over a single project — wasteful and slow. (If you were invoked directly by a human who explicitly asked you to run tests, do so; otherwise compile-check only.)
 
 ### Step 4 — Report
 

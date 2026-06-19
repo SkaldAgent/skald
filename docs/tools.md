@@ -84,6 +84,7 @@ All system tool names are centralised in `src/core/tools/tool_names.rs` as `pub 
 | `tn::CALL_AGENT` | `"call_agent"` |
 | `tn::RESTART` | `"restart"` |
 | `tn::UPDATE_SCRATCHPAD` | `"update_scratchpad"` |
+| `tn::WRITE_TODOS` | `"write_todos"` |
 | `tn::ASK_USER_CLARIFICATION` | `"ask_user_clarification"` |
 | `tn::SHOW_MCP_TOOLS` | `"show_mcp_tools"` |
 | `tn::NOTIFY` | `"notify"` |
@@ -101,7 +102,8 @@ All tools are registered in `src/main.rs` before `ChatSessionManager` is built.
 **Not in ToolRegistry — synthetic tools intercepted in `run_agent_turn`:**
 
 - `call_agent` — delegates to a sub-agent
-- `update_scratchpad` — writes to `session_scratchpad` table; available to all agents
+- `update_scratchpad` — writes to `session_scratchpad` table; **shared** blackboard injected into every agent in the session; available to all agents
+- `write_todos` — **stateless** private task list (TodoWrite-style: the agent re-sends the whole list with statuses on every call); available to all agents. Unlike the scratchpad it is **not** persisted and **not** shared: the formatted checklist lives only in the calling agent's own tool-result history, which is per-stack, so sub-agents and the caller never see it. Handled by `dispatch_write_todos` (`agent_dispatch.rs`); no DB table involved
 - `ask_user_clarification` — pauses and asks the user a question; routing depends on session type:
   - **Interactive sessions** (web, Telegram): available to sub-agents only (`depth ≥ 1`); emits `ServerEvent::AgentQuestion`, waits inline
   - **Background sessions** (cron, tic): available at root level (`!is_interactive`); registers with `ClarificationManager`, visible in Agent Inbox; agent suspends until answered
@@ -153,6 +155,7 @@ Filtering happens in `src/core/session/handler/config.rs` (depth 0) and `agent_d
 | `image_generate_providers_list` | `tools::image_generate` | Introspection | No | No |
 | `image_generate` | `tools::image_generate` | Config | No | No |
 | `update_scratchpad` | synthetic | — | No | No |
+| `write_todos` | synthetic (stateless) | — | No | No — private per-stack list; not shared with sub-agents or caller |
 | `ask_user_clarification` | synthetic | — | No | Interactive: sub-agents only; Background: root level |
 | `show_mcp_tools` | synthetic (per-session) | Config | No | No |
 

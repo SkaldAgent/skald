@@ -8,15 +8,17 @@ export class AppSidebar extends LightElement {
     _tasksSection:  { state: true },
     _inboxCount:    { state: true },
     _debugMode:     { state: true },
+    _recentProjects: { state: true },
   };
 
   constructor() {
     super();
-    this._activePage   = null;
-    this._tasksSection = 'running';
-    this._inboxCount   = 0;
-    this._pollTimer    = null;
-    this._debugMode    = false;
+    this._activePage     = null;
+    this._tasksSection   = 'running';
+    this._inboxCount     = 0;
+    this._pollTimer      = null;
+    this._debugMode      = false;
+    this._recentProjects = [];
   }
 
   connectedCallback() {
@@ -47,6 +49,8 @@ export class AppSidebar extends LightElement {
     this._pollInbox();
     this._pollTimer = setInterval(() => this._pollInbox(), 10000);
     this._loadDebugMode();
+    this._loadRecentProjects();
+    window.addEventListener('project-updated', () => this._loadRecentProjects());
   }
 
   disconnectedCallback() {
@@ -58,6 +62,31 @@ export class AppSidebar extends LightElement {
     try {
       const res = await fetch('/api/dev/debug_mode');
       if (res.ok) this._debugMode = (await res.json()).enabled;
+    } catch { /* ignore */ }
+  }
+
+  async _loadRecentProjects() {
+    try {
+      const res = await fetch('/api/projects');
+      if (!res.ok) return;
+      const projects = await res.json();
+      this._recentProjects = projects
+        .slice()
+        .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))
+        .slice(0, 5);
+    } catch { /* ignore */ }
+  }
+
+  async _openProjectChat(projectId, projectName, e) {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      const res = await fetch(`/api/projects/${projectId}/session`, { method: 'POST' });
+      if (!res.ok) return;
+      const { source } = await res.json();
+      window.dispatchEvent(new CustomEvent('project-chat-open', {
+        detail: { source, label: projectName },
+      }));
     } catch { /* ignore */ }
   }
 
@@ -168,6 +197,26 @@ export class AppSidebar extends LightElement {
     `;
   }
 
+  _renderRecentProjects() {
+    if (!this._recentProjects.length) return nothing;
+    return html`
+      <div class="sidebar-submenu">
+        ${this._recentProjects.map(p => html`
+          <div class="sidebar-project-link"
+               @click=${(e) => { e.preventDefault(); history.pushState({ page: 'projects' }, '', '#projects'); this._applyPage('projects'); window.dispatchEvent(new CustomEvent('sidebar-open-project', { detail: { id: p.id } })); }}>
+            <i class="bi bi-folder2" style="font-size:0.78rem;opacity:0.65;flex-shrink:0"></i>
+            <span class="sidebar-project-name">${p.name}</span>
+            <button class="sidebar-project-chat-btn"
+                    title="Open chat"
+                    @click=${(e) => this._openProjectChat(p.id, p.name, e)}>
+              <i class="bi bi-chat-dots"></i>
+            </button>
+          </div>
+        `)}
+      </div>
+    `;
+  }
+
   render() {
     return html`
       <div class="sidebar-brand">
@@ -183,18 +232,17 @@ export class AppSidebar extends LightElement {
           <i class="bi bi-house-door"></i>
           <span class="sidebar-link-name">Home</span>
         </a>
-        <a href="#" class="sidebar-link ${this._activePage === 'inbox' ? 'active' : ''}"
+
+        <a href="#inbox" class="sidebar-link ${this._activePage === 'inbox' ? 'active' : ''}"
            @click=${(e) => this._togglePage('inbox', e)}>
           <i class="bi bi-inbox"></i>
           <span class="sidebar-link-name">
-            Agent Inbox
+            Inbox
             ${this._inboxCount > 0
               ? html`<span class="badge bg-danger ms-1" style="font-size:0.65rem">${this._inboxCount}</span>`
               : ''}
           </span>
         </a>
-
-        ${this._renderTasksMenu()}
 
         <a href="#projects"
            class="sidebar-link ${this._activePage === 'projects' ? 'active' : ''}"
@@ -202,6 +250,9 @@ export class AppSidebar extends LightElement {
           <i class="bi bi-kanban"></i>
           <span class="sidebar-link-name">Projects</span>
         </a>
+        ${this._renderRecentProjects()}
+
+        ${this._renderTasksMenu()}
 
         <a href="#" class="sidebar-link ${this._activePage === 'models' ? 'active' : ''}"
            @click=${(e) => this._togglePage('models', e)}>
@@ -229,13 +280,6 @@ export class AppSidebar extends LightElement {
           <span class="sidebar-link-name">Config</span>
         </a>
 
-        <a href="#tic"
-           class="sidebar-link ${this._activePage === 'tic' ? 'active' : ''}"
-           @click=${(e) => this._togglePage('tic', e)}>
-          <i class="bi bi-bell"></i>
-          <span class="sidebar-link-name">TIC Sessions</span>
-        </a>
-
         ${this._debugMode ? html`
           <hr class="sidebar-divider" />
           <a href="#llm-requests"
@@ -243,6 +287,12 @@ export class AppSidebar extends LightElement {
              @click=${(e) => this._togglePage('llm-requests', e)}>
             <i class="bi bi-journal-code"></i>
             <span class="sidebar-link-name">LLM Requests</span>
+          </a>
+          <a href="#tic"
+             class="sidebar-link ${this._activePage === 'tic' ? 'active' : ''}"
+             @click=${(e) => this._togglePage('tic', e)}>
+            <i class="bi bi-bell"></i>
+            <span class="sidebar-link-name">TIC Sessions</span>
           </a>
         ` : nothing}
       </nav>

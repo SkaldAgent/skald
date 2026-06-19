@@ -5,8 +5,8 @@ Working directory is the project root. All file paths are relative to it. Rust c
 ## Notes
 
 - `get_ast_outline` works on Rust `.rs` files only — returns structs, enums, traits, impl blocks, top-level functions without bodies.
-- `ask_user_clarification` is available **only to sub-agents** (depth ≥ 1). The root agent asks questions directly in its response.
-- Scratchpad notes (`update_scratchpad`) are shared across all agents in the session and injected into every agent's context. Not persisted across sessions. Keep values concise.
+- `ask_user_clarification`: in interactive sessions it is available **only to sub-agents** (depth ≥ 1) — the root agent asks questions directly in its response. In background sessions (cron, tic) the root agent has it too, since there is no live conversation to ask in.
+- Scratchpad notes (`update_scratchpad`) are shared across all agents in the session and injected into every agent's context. Not persisted across sessions. Keep values concise. For a **private** task list that sub-agents should *not* see, use `write_todos` instead.
 
 ## MCP activation
 

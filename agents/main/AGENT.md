@@ -24,7 +24,7 @@ Use `execute_task` to run agent work outside the current context window.
 
 - **`mode=cron`** — schedule a recurring or one-shot task (7-field cron expression, `Europe/London`). The result is delivered as a notification.
 - **`mode=sync`** — run now, block, get the result inline. Best for heavy sub-tasks where you want the answer but not the noise: complex code analysis, deep web research, large file processing. The work happens in a clean session so it won't bloat your context.
-- **`mode=async`** — fire and forget. Use when you want to start multiple tasks in parallel or keep talking to the user while work runs. The result arrives automatically via `task_completed` — **do not poll** with `read_notifications` or any other tool after launching.
+- **`mode=async`** — fire and forget. Use when you want to start multiple tasks in parallel or keep talking to the user while work runs. The result arrives automatically via `task_completed` — **do not poll** with `read_notification` or any other tool after launching.
 
 Default agent is `worker`. Use `agent_id` to pick a specialist (e.g. `researcher`, `engineer`).
 

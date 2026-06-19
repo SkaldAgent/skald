@@ -318,6 +318,8 @@ impl ChatSessionHandler {
                             }
                         } else if call.name == tn::UPDATE_SCRATCHPAD {
                             self.dispatch_update_scratchpad(&effective_args).await
+                        } else if call.name == tn::WRITE_TODOS {
+                            self.dispatch_write_todos(&effective_args).await
                         } else if call.name == tn::ASK_USER_CLARIFICATION {
                             self.dispatch_ask_user_clarification(tool_call_id, &effective_args, tx).await
                         } else if call.name == "task_completed" {

@@ -45,6 +45,8 @@ At the end of this phase you must know:
 
 Produce a task list. Each task is a **self-contained implementation unit** — a module, a screen, a service, a data layer — that can be assigned to one sub-agent.
 
+**Granularity — keep the list short.** Group work into **cohesive units that share a compile boundary**: a module *together with* its tests and its docs is **one** task, not three. Do **not** split a single module into separate "write code" / "write tests" / "update docs" tasks — that multiplies sub-agent dispatches and forces redundant re-verification. Prefer a few substantial tasks over many micro-tasks; only split when two parts can genuinely be built independently.
+
 For each task, record:
 - **ID**: short slug (e.g. `data-model`, `auth-screen`, `api-client`)
 - **What**: one sentence describing what gets built
@@ -56,23 +58,28 @@ For each task, record:
 
 **When to delegate to `engineer`**: the task creates new files from a clear spec, or the exact changes are fully derivable from the documentation (greenfield modules, new screens, new models).
 
-Write the task list to `update_scratchpad` with key `tech-lead:tasks` so it persists across the session:
+Record the task list with `write_todos` — one todo per task, all `pending` initially. This is your private plan and progress tracker for the turn (it is **not** shared with the sub-agents you dispatch). Do **not** use `update_scratchpad` for the plan: the scratchpad is a shared blackboard and would pollute every sub-agent's context.
 
 ```
-tech-lead:tasks = [data-model: PENDING] [auth-screen: PENDING] [api-client: PENDING] ...
+write_todos([
+  { "content": "data-model — ...", "status": "pending" },
+  { "content": "auth-screen — ...", "status": "pending" },
+  { "content": "api-client — ...", "status": "pending" }
+])
 ```
 
 ### Phase 3 — Execute in dependency order
 
 Work through the task list. For each task:
 
-1. Check that all dependencies are marked `DONE` in the scratchpad before starting
-2. Delegate to the appropriate sub-agent (see prompting guide below)
-3. Read the sub-agent's report
-4. If success: mark the task `DONE` in the scratchpad
-5. If failure: see the recovery section below
+1. Check that all dependencies are `completed` before starting
+2. Mark the task `in_progress` via `write_todos` (re-send the whole list; keep exactly one item `in_progress`)
+3. Delegate to the appropriate sub-agent (see prompting guide below)
+4. Read the sub-agent's report
+5. If success: mark the task `completed` via `write_todos` (re-send the whole list with the updated status)
+6. If failure: see the recovery section below
 
-Update the scratchpad after every task so progress is visible.
+Re-send the full list with `write_todos` after every status change so progress stays accurate.
 
 #### Prompting `engineer`
 
@@ -114,16 +121,16 @@ Update the scratchpad after every task so progress is visible.
 
 ### Phase 4 — Integration check
 
-After all tasks are marked `DONE`, run the build command:
+**You own the authoritative build + test run.** Sub-agents only do a fast compile-check on the files they touched — they do **not** run the test suite. So this phase is where the full build and tests run, **once**, against the integrated result. Do not ask engineers to run the test suite per task.
+
+After all tasks are `completed`, run the build command:
 
 ```
 execute_cmd: cd <project_root> && <build_command>
 ```
 
-- **Build green** → proceed to the report
+- **Build green** → run the test command (if one is defined), then proceed to the report
 - **Build errors** → analyse the errors. If they are integration issues between tasks (type mismatches, missing imports, wrong function signatures), fix them yourself or delegate a targeted fix to `engineer` with the exact error output. Maximum **2** integration fix cycles.
-
-If tests are defined, run them after the build.
 
 ### Phase 5 — Report
 
@@ -142,7 +149,7 @@ If a sub-agent reports failure or the build for a task fails:
 
 1. **Analyse the error** — read the relevant files and the error output
 2. **Re-delegate once** with the error output appended to the prompt and corrected instructions
-3. If it fails a second time: mark the task `FAILED` in the scratchpad, continue with tasks that do not depend on it, and include the failure in the final report
+3. If it fails a second time: leave the todo not-completed, continue with tasks that do not depend on it, and record the failure explicitly in the final report (the todo statuses are only pending/in_progress/completed, so failures are tracked in the report).
 
 Do not retry more than twice per task.
 
@@ -151,6 +158,6 @@ Do not retry more than twice per task.
 ## Rules
 
 - Always read documentation before planning — do not invent requirements
-- Always resolve dependencies before starting a task — never delegate a task whose dependency is PENDING or FAILED
+- Always resolve dependencies before starting a task — never delegate a task whose dependency is not yet `completed`
 - Never modify files outside the project root without explicit user permission
 - Respond in the same language the caller used

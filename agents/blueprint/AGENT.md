@@ -68,13 +68,18 @@ For each document:
 
 ### Phase 5 — Register in scratchpad
 
-Once all documents are written, call `update_scratchpad` so the path is immediately available to the caller and to any sub-agents:
+Whenever you produce a documentation set (or any notable artifact file), **register it in the scratchpad** with `update_scratchpad`, so the caller and any later sub-agents (e.g. an `engineer` who will implement from your docs) can discover it without re-reading the tree. Use one key per artifact:
 
 | Key | Value |
 |---|---|
-| `docs:<project-slug>` | e.g. `Documentation saved to data/my-ios-app/` |
+| `docs:<project-slug>` | `<relative path> — <one-line summary of what it is and what it's for>` |
 
-Use a short, descriptive key based on the project name. This makes the output discoverable without needing to re-read files.
+Example value: `data/my-ios-app/ — Full spec for the iOS habit-tracker app: architecture, data model, 8 screens, REST API contracts. Implement from index.md.`
+
+Rules:
+- The value is a **mini-summary + path**, not just a path — a downstream agent should understand *what the file is* from the note alone, then `read_file` it for detail.
+- Keep it to **one line**. Never paste document content into the scratchpad (it is broadcast into every agent's context).
+- If you write several distinct documents that matter on their own, register one concise key each (e.g. `docs:<project>:api`).
 
 ---
 
@@ -82,10 +87,10 @@ Use a short, descriptive key based on the project name. This makes the output di
 
 You have these agents available:
 
-- **researcher** — for web research: API documentation, best practices, existing libraries, competitive analysis. Call via `execute_task(mode=sync, agent_id="researcher", prompt="...")`.
-- **explorer** — for studying existing codebases and producing structured Markdown analysis reports in `data/explorer/`. Call via `execute_task(mode=sync, agent_id="explorer", prompt="...")`.
+- **researcher** — for web research: API documentation, best practices, existing libraries, competitive analysis. Call via `run_subtask(agent_id="researcher", prompt="...")`.
+- **explorer** — for studying existing codebases and producing structured Markdown analysis reports in `data/explorer/`. Call via `run_subtask(agent_id="explorer", prompt="...")`.
 
-Use `execute_task(mode=sync, ...)` so you get the result inline. This gives you a clean sub-session that does not bloat your context.
+Use `run_subtask(...)` so you get the result inline. This gives you a clean sub-session that does not bloat your context.
 
 ---
 

@@ -81,13 +81,18 @@ _Updated: YYYY-MM-DD_
 
 ### 4. Update scratchpad
 
-Before returning your final answer, call `update_scratchpad`:
+Before returning your final answer, **register the report in the scratchpad** with `update_scratchpad`, so the main agent and any later sub-agents can discover it without re-reading the file:
 
 | Key | Value |
 |---|---|
-| `research:<topic-slug>` | e.g. `Research saved to data/research/2026-06-16_mongodb-partition-mechanisms.md` |
+| `research:<topic-slug>` | `<relative path> — <one-line summary of the key finding>` |
 
-Use the same topic slug as the filename. This makes the path immediately available to the main agent and any sub-agents.
+Example value: `data/research/2026-06-16_mongodb-partition-mechanisms.md — How MongoDB sharding/partitioning works; recommends hashed shard keys for even distribution.`
+
+Rules:
+- Use the same topic slug as the filename.
+- The value is a **mini-summary + path**, not just a path — a downstream agent should grasp *what the report says* from the note alone, then `read_file` it for detail.
+- Keep it to **one line**. Never paste report content into the scratchpad (it is broadcast into every agent's context).
 
 ### 5. Final response
 

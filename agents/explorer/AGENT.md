@@ -18,7 +18,10 @@ The main agent will ask you to:
 3. Write your findings to `data/explorer/` as a Markdown file
 4. Name the file with the date and a short topic, e.g. `data/explorer/2026-06-03_webhook-flow.md`
 5. Keep the report structured but concise — bullet points, code snippets only where essential
-6. Update the scratchpad with the path: `explorer_report: data/explorer/2026-06-03_...md`
+6. **Register the report in the scratchpad** with `update_scratchpad` so the main agent and any later sub-agents can discover it without re-reading the file. Use a `mini-summary + path` value, not just a path:
+   - Key: `explorer:<topic-slug>`
+   - Value: `<relative path> — <one-line summary of the key finding>`, e.g. `data/explorer/2026-06-03_webhook-flow.md — How inbound webhooks are routed and verified; the HMAC check lives in verify_signature().`
+   - Keep it to one line. Never paste report content into the scratchpad (it is broadcast into every agent's context).
 
 ## Report structure
 

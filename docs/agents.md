@@ -63,9 +63,16 @@ When a session has no run context it uses the built-in **"default"** group. The 
 | `tic` | TIC | — | — | ✓ | Background event processor; calls `notify` when something is worth surfacing. Ephemeral. `notify` is injected as an `InterfaceTool` by `TicManager`. Tool access is restricted via the run context set from the `tic.run_context` property. |
 | `explorer` | Explorer | `analysis` | `average` | | Studies code, investigates bugs, analyses architecture, produces structured Markdown reports in `data/explorer/`. No implementation. |
 | `blueprint` | Blueprint | `reasoning` | `very_high` | | Transforms project ideas into comprehensive spec documents in `data/`. Never writes code. Saves output path to scratchpad. |
-| `tech-lead` | Tech Lead | `reasoning` | `very_high` | | Reads project documentation, breaks scope into implementation tasks, sequences them by dependency, and orchestrates `architect`/`engineer` sub-agents to deliver end-to-end. |
-| `project-coordinator` | Project Coordinator | `reasoning` | `average` | ✓ | Conversational coordinator for a single project's interactive chat (source `project-{id}`). Receives the project context via its session `RunContext` (working dir, description, fs-write grants) and delegates non-trivial work to specialist sub-agents via `execute_task`. System agent — not callable as a sub-agent or ticket agent. |
+| `tech-lead` | Tech Lead | `reasoning` | `very_high` | | Reads project documentation, breaks scope into implementation tasks, sequences them by dependency, and orchestrates `architect`/`engineer` sub-agents to deliver end-to-end. Tracks its plan with `write_todos` (private, not `update_scratchpad`) and owns the single authoritative build+test run. |
+| `project-coordinator` | Project Coordinator | `reasoning` | `average` | ✓ | Conversational coordinator for a single project's interactive chat (source `project-{id}`) — **any kind** of project (software, travel, study, writing, personal goals…), adapting to the injected description. Receives the project context via its session `RunContext` (working dir, description, fs-write grants), does everyday planning/writing itself, and delegates specialized work (research, or code via tech-lead/architect/engineer) via `execute_task`. Maintains the project's `SKALD.md` diary. System agent — not callable as a sub-agent or ticket agent. |
 
+
+### Orchestration model (tech-lead + engineer)
+
+Two conventions keep multi-agent builds efficient and avoid context pollution:
+
+- **Private plan, not shared state.** `tech-lead` records its task plan and progress with `write_todos` — a stateless, per-stack list that lives only in its own tool-result history. It must **not** use `update_scratchpad` for the plan: the scratchpad is a shared blackboard injected into every sub-agent, so a plan written there would pollute each `engineer`'s context. The scratchpad stays reserved for genuine cross-agent communication (e.g. a discovered path or type).
+- **Verify once, at the top.** `engineer` runs only a fast compile-check (e.g. `cargo check`) after writing — never the test suite. `tech-lead` owns the single full build + test run in its integration phase, against the merged result. This replaces the old pattern of N engineers each running a full build+test.
 
 ---
 
