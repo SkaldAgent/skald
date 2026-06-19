@@ -217,12 +217,15 @@ By default, injecting all MCP tool definitions into every LLM turn is expensive 
    ```text
    ## MCP servers
 
-   **Available** — call `show_mcp_tools(["name", ...])` to load tools:
-   - `tavily`: tavily_crawl, tavily_extract, tavily_search
-   - `whatsapp`: whatsapp_get_messages, whatsapp_list_chats, whatsapp_send_message
+   **Available** — call `show_mcp_tools(["name"])` to load tools:
 
-   **Active** — tools already loaded in context:
-   - `gmail`: get_message, list_messages, send_message
+   | Server     | Description                              |
+   |------------|------------------------------------------|
+   | `tavily`   | Web search and content extraction        |
+   | `whatsapp` | Send and receive WhatsApp messages       |
+
+   **Active** — tools callable as `mcp__<name>__<tool>`:
+   - `gmail`
    ```
 
 ### `<!-- MCP_LIST -->` Tag

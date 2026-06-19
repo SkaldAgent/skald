@@ -207,7 +207,9 @@ impl Store {
                (namespace_id, client_ed25519_pub, client_x25519_pub, device_token, platform, state, last_seen)
              VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)
              ON CONFLICT(namespace_id, client_ed25519_pub) DO UPDATE SET
-               client_x25519_pub = ?3, device_token = ?4, platform = ?5, state = 'pending', last_seen = ?6",
+               client_x25519_pub = ?3,
+               device_token = CASE WHEN ?4 = '' THEN clients.device_token ELSE ?4 END,
+               platform = ?5, state = 'pending', last_seen = ?6",
         )
         .bind(ns)
         .bind(&ed_pub[..])
@@ -253,6 +255,12 @@ impl Store {
     }
 
     /// Update the client's push token (APNs/FCM rotate it) + last_seen.
+    ///
+    /// An **empty** `device_token` is treated as "no token available right now"
+    /// (e.g. the device connected before its APNs registration completed) and
+    /// must NOT clobber a previously stored, valid token — otherwise every push
+    /// to that client fails with `MissingDeviceToken`. In that case we still
+    /// bump `last_seen` but keep the existing token.
     pub async fn update_client_device_token(
         &self,
         ns: &str,
@@ -260,7 +268,9 @@ impl Store {
         device_token: &str,
     ) -> Result<()> {
         sqlx::query(
-            "UPDATE clients SET device_token = ?3, last_seen = ?4
+            "UPDATE clients
+                SET device_token = CASE WHEN ?3 = '' THEN device_token ELSE ?3 END,
+                    last_seen = ?4
              WHERE namespace_id = ?1 AND client_ed25519_pub = ?2",
         )
         .bind(ns)
@@ -486,3 +496,63 @@ const SCHEMA: &[&str] = &[
     )",
     "CREATE INDEX IF NOT EXISTS idx_queue_dest ON queue(namespace_id, to_pub, id)",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    async fn temp_store() -> Store {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "relay-store-ut-{nanos}-{}-{seq}.db",
+            std::process::id()
+        ));
+        Store::init(&path.to_string_lossy()).await.expect("init store")
+    }
+
+    /// An empty `device_token` (device connected before APNs registration
+    /// finished) must NOT wipe a previously stored, valid token — otherwise
+    /// every push fails with `MissingDeviceToken`.
+    #[tokio::test]
+    async fn empty_device_token_does_not_clobber() {
+        let s = temp_store().await;
+        let ns = "a".repeat(64);
+        let ed = [1u8; 32];
+        let x = [2u8; 32];
+        s.upsert_namespace(&ns, &[9u8; 32]).await.unwrap();
+
+        // Pair with a real token.
+        s.upsert_pending_client(&ns, &ed, &x, "realtoken", "ios").await.unwrap();
+        assert_eq!(
+            s.get_client(&ns, &ed).await.unwrap().unwrap().device_token.as_deref(),
+            Some("realtoken")
+        );
+
+        // A later connect with an empty token keeps the existing one.
+        s.update_client_device_token(&ns, &ed, "").await.unwrap();
+        assert_eq!(
+            s.get_client(&ns, &ed).await.unwrap().unwrap().device_token.as_deref(),
+            Some("realtoken")
+        );
+
+        // A non-empty token still updates.
+        s.update_client_device_token(&ns, &ed, "rotated").await.unwrap();
+        assert_eq!(
+            s.get_client(&ns, &ed).await.unwrap().unwrap().device_token.as_deref(),
+            Some("rotated")
+        );
+
+        // Re-pairing with an empty token also preserves the stored one.
+        s.upsert_pending_client(&ns, &ed, &x, "", "ios").await.unwrap();
+        assert_eq!(
+            s.get_client(&ns, &ed).await.unwrap().unwrap().device_token.as_deref(),
+            Some("rotated")
+        );
+    }
+}

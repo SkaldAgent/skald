@@ -385,49 +385,41 @@ impl MessageBuilder {
     }
 
     fn render_mcp_list(&self, active_mcp_grants: &HashSet<String>) -> String {
-        let all_tools = self.mcp.tools();
+        let all_servers: std::collections::BTreeSet<String> = self.mcp.tools()
+            .into_iter()
+            .map(|t| t.server_name)
+            .collect();
 
-        let mut server_tools: std::collections::BTreeMap<String, Vec<String>> =
-            std::collections::BTreeMap::new();
-        for t in &all_tools {
-            server_tools
-                .entry(t.server_name.clone())
-                .or_default()
-                .push(t.name.clone());
-        }
-        for tools in server_tools.values_mut() {
-            tools.sort();
-        }
-
-        if server_tools.is_empty() {
+        if all_servers.is_empty() {
             return String::new();
         }
 
-        let mut out = String::from(
-            "## MCP servers\n\
-             Once activated, tools are called as `mcp__<server>__<tool>` (e.g. `mcp__gmail__send_message`).\n"
-        );
+        let descriptions = self.mcp.server_descriptions();
 
-        let hidden: Vec<&String> = server_tools.keys()
+        let hidden: Vec<&String> = all_servers.iter()
             .filter(|n| !active_mcp_grants.contains(*n))
             .collect();
-        let active: Vec<&String> = server_tools.keys()
+        let active: Vec<&String> = all_servers.iter()
             .filter(|n| active_mcp_grants.contains(*n))
             .collect();
 
+        let mut out = String::from("## MCP servers\n");
+
         if !hidden.is_empty() {
-            out.push_str("\n**Available** — call `show_mcp_tools([\"name\", ...])` to load tools:\n");
+            out.push_str("\n**Available** — call `show_mcp_tools([\"name\"])` to load tools:\n\n");
+            out.push_str("| Server | Description |\n|--------|-------------|\n");
             for name in &hidden {
-                let tools = server_tools[*name].join(", ");
-                out.push_str(&format!("- `{name}`: {tools}\n"));
+                let desc = descriptions.get(*name)
+                    .and_then(|d| d.as_deref())
+                    .unwrap_or("—");
+                out.push_str(&format!("| `{name}` | {desc} |\n"));
             }
         }
 
         if !active.is_empty() {
-            out.push_str("\n**Active** — tools already loaded in context:\n");
+            out.push_str("\n**Active** — tools callable as `mcp__<name>__<tool>`:\n");
             for name in &active {
-                let tools = server_tools[*name].join(", ");
-                out.push_str(&format!("- `{name}`: {tools}\n"));
+                out.push_str(&format!("- `{name}`\n"));
             }
         }
 

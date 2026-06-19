@@ -863,6 +863,11 @@ async fn forward_message(
     if is_client_dest
         && let Some(client) = state.store.get_client(ns, &to).await?
         && let Some(dt) = client.device_token
+        // An empty token means the device never registered one (or connected
+        // before APNs/FCM registration finished). Pushing with it yields a
+        // `MissingDeviceToken` from Apple, so skip — the queued message is
+        // still drained when the device next opens a WS.
+        && !dt.is_empty()
         && let Some(plat) = Platform::parse(&client.platform)
     {
         let item = PushItem {

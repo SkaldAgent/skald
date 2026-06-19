@@ -297,6 +297,8 @@ The **live senders** are behind the `push-live` cargo feature (default: off):
 
 Credentials: read at boot from `config/apns-key.json` (`{team_id, key_id, private_key}`) plus `APNS_BUNDLE_ID` / `APNS_SANDBOX` env vars. The PEM is already newline-decoded by `serde_json` and passed straight to `jsonwebtoken`. Logs never include the full `device_token` or any payload content — only `short()`-truncated identifiers and `apns-id` for correlation.
 
+**Empty device tokens.** A client may connect (or pair) before its APNs/FCM registration has produced a token, sending an empty `device_token`. The relay treats an empty token as "none right now": `update_client_device_token` / `upsert_pending_client` keep any previously stored token instead of clobbering it (SQL `CASE WHEN ?n = '' THEN <existing> ELSE ?n END`), `forward_message` skips the push when the stored token is empty, and `ApnsPusher::notify` early-returns on an empty token. Without this, an empty token would build `/3/device/` and Apple returns `400 MissingDeviceToken`, silently breaking push routing for that device.
+
 ---
 
 ## `plugin-mobile-connector` — `crates/plugin-mobile-connector/`

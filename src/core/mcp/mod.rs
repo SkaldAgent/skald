@@ -26,6 +26,7 @@ pub struct McpManager {
     pool:            Arc<SqlitePool>,
     servers:         RwLock<HashMap<String, Arc<dyn McpServerClient>>>,
     errors:          RwLock<HashMap<String, String>>,
+    descriptions:    RwLock<HashMap<String, Option<String>>>,
     notification_tx: mpsc::UnboundedSender<McpNotification>,
 }
 
@@ -38,8 +39,9 @@ impl McpManager {
 
         Self {
             pool,
-            servers: RwLock::new(HashMap::new()),
-            errors:  RwLock::new(HashMap::new()),
+            servers:      RwLock::new(HashMap::new()),
+            errors:       RwLock::new(HashMap::new()),
+            descriptions: RwLock::new(HashMap::new()),
             notification_tx,
         }
     }
@@ -114,6 +116,12 @@ impl McpManager {
         }
 
         let cfgs: Vec<_> = rows.iter().map(Self::cfg_from_row).collect();
+        {
+            let mut descs = self.descriptions.write().unwrap();
+            for row in &rows {
+                descs.insert(row.name.clone(), row.description.clone());
+            }
+        }
         let handles: Vec<_> = cfgs.into_iter().map(|cfg| {
             let tx = self.notification_tx.clone();
             tokio::spawn(async move {
@@ -166,6 +174,7 @@ impl McpManager {
 
         let tool_names: Vec<String> = client.tools().iter().map(|t| t.name.clone()).collect();
         self.errors.write().unwrap().remove(&name);
+        self.descriptions.write().unwrap().insert(name.clone(), row.description.clone());
         self.servers.write().unwrap().insert(name, client);
 
         Ok(tool_names)
@@ -175,6 +184,7 @@ impl McpManager {
         crate::core::db::mcp_servers::delete(&self.pool, name).await?;
         self.servers.write().unwrap().remove(name);
         self.errors.write().unwrap().remove(name);
+        self.descriptions.write().unwrap().remove(name);
         Ok(())
     }
 
@@ -222,6 +232,10 @@ impl McpManager {
             .filter(|(name, _)| names.contains(name))
             .flat_map(|(_, s)| s.tools().iter().cloned())
             .collect()
+    }
+
+    pub fn server_descriptions(&self) -> HashMap<String, Option<String>> {
+        self.descriptions.read().unwrap().clone()
     }
 
     pub fn server_infos(&self) -> Vec<Value> {

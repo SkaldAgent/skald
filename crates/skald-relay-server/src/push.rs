@@ -306,6 +306,16 @@ mod live {
     #[async_trait]
     impl Pusher for ApnsPusher {
         async fn notify(&self, device_token: &str, platform: Platform, item: &PushItem) {
+            // Defense in depth: an empty token would build `/3/device/` and get
+            // a `MissingDeviceToken` 400 from Apple. Callers already filter
+            // these out, but never spend a request on a token we know is empty.
+            if device_token.is_empty() {
+                tracing::debug!(
+                    target: "relay::push",
+                    "skipping APNs send: empty device token"
+                );
+                return;
+            }
             // FcmPusher is not implemented yet: this sender only knows APNs.
             if platform != Platform::Ios {
                 tracing::debug!(
