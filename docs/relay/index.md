@@ -31,9 +31,10 @@ The entire architecture exists **only** to solve: (a) bidirectional communicatio
 | Actor | Abbr | Role |
 |-------|------|------|
 | **Skald Agent** | `agent` | The Skald instance. **Namespace owner.** Holds the identity key. Opens a permanent WS connection to the relay. Encrypts/decrypts E2E. |
-| **Mobile Connector Plugin** | — | The crate inside Skald (`crates/plugin-mobile-connector/`) that implements the `agent` role: keys, WS, crypto, pairing, Inbox↔relay routing. It is the bridge to mobile apps; today via relay, in the future also via direct transports (TCP/port-forward). See [server.md](server.md). |
+| **Relay Client** | `agent` impl | `crates/skald-relay-client/`: the **standalone, payload-agnostic** library that implements the `agent` role — keys, WS v2 transport, E2E crypto, anti-replay counters, pairing, device authorization, SQLite persistence. Exchanges opaque decrypted bytes via `RelayEvent`; depends only on `skald-relay-common` (never on Skald/`core-api`). |
+| **Mobile Connector Plugin** | — | The thin **application** crate inside Skald (`crates/plugin-mobile-connector/`) on top of the relay client: it owns the JSON payload schemas, the Inbox↔relay routing, the authorization policy, and the QR endpoint. The bridge to mobile apps; today via relay, in the future also via direct transports (TCP/port-forward). See [server.md](server.md) and [../plugins/mobile-connector.md](../plugins/mobile-connector.md). |
 | **Relay Server** | `relay` | The only centralised component. APNs/FCM bridge, store-and-forward, namespace routing. **Zero-trust on content.** See [server.md](server.md). |
-| **Shared Crate** | — | `crates/skald-relay-common/`: protocol frame types (protobuf) + cryptographic primitives, shared **byte-for-byte** between relay and plugin (no duplication). |
+| **Shared Crate** | — | `crates/skald-relay-common/`: protocol frame types (protobuf) + cryptographic primitives, shared **byte-for-byte** between relay, relay client, and server (no duplication). |
 | **Client** | `client` | Mobile app (iOS/Android). Pairs via QR, encrypts/decrypts E2E, shows Inbox, responds. Implementation documented in the iOS app repository. |
 
 A **namespace** is the isolated zone of one person: their agent + their authorised clients.

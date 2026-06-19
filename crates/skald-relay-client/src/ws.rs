@@ -1,5 +1,5 @@
 //! The permanent agent WebSocket toward the relay, speaking **v2 protobuf**
-//! (data/iOS-app/v2/relay-protocol.md).
+//! (docs/relay/relay-protocol.md).
 //!
 //! A single WS carries everything: challenge-response auth, the `Authorize` set,
 //! outbound E2E `Message`s, and inbound `Message` / `ClientPaired` frames. v2
@@ -28,7 +28,7 @@ use tracing::{debug, info, warn};
 use crate::state::RelayState;
 
 /// Run the reconnecting WS loop until `cancel` fires (relay-protocol.md §8).
-pub async fn run_loop(
+pub(crate) async fn run_loop(
     state: Arc<RelayState>,
     mut outbound_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     cancel: CancellationToken,
@@ -45,7 +45,7 @@ pub async fn run_loop(
                 backoff_step = 0;
             }
             Err(e) => {
-                warn!(plugin = "mobile-connector", error = %e, "relay connection ended");
+                warn!(crate_name = "skald-relay-client", error = %e, "relay connection ended");
             }
         }
 
@@ -56,7 +56,7 @@ pub async fn run_loop(
         let delay = backoff_delay(backoff_step);
         backoff_step = backoff_step.saturating_add(1);
         state.set_connected(false);
-        debug!(plugin = "mobile-connector", secs = delay.as_secs_f64(), "reconnect backoff");
+        debug!(crate_name = "skald-relay-client", secs = delay.as_secs_f64(), "reconnect backoff");
         tokio::select! {
             _ = cancel.cancelled() => return,
             _ = tokio::time::sleep(delay) => {}
@@ -78,7 +78,7 @@ async fn connect_once(
     cancel: &CancellationToken,
 ) -> Result<()> {
     let url = state.relay_url();
-    info!(plugin = "mobile-connector", %url, "connecting to relay");
+    info!(crate_name = "skald-relay-client", %url, "connecting to relay");
 
     let (ws_stream, _resp) = tokio::select! {
         _ = cancel.cancelled() => return Ok(()),
@@ -112,7 +112,7 @@ async fn connect_once(
             hex::encode(state.identity().namespace_id_raw())
         ));
     }
-    info!(plugin = "mobile-connector", "relay auth ok, namespace verified");
+    info!(crate_name = "skald-relay-client", "relay auth ok, namespace verified");
     state.set_connected(true);
 
     // 4. Send the current authorize set from the DB (empty on first run).
@@ -122,7 +122,7 @@ async fn connect_once(
     let clients: Vec<prost::bytes::Bytes> = authorized
         .iter()
         .filter_map(|h| hex::decode(h).ok())
-        .map(|b| prost::bytes::Bytes::from(b))
+        .map(prost::bytes::Bytes::from)
         .collect();
     let authorize = RelayFrame {
         frame: Some(Frame::Authorize(Authorize { clients })),
@@ -137,13 +137,13 @@ async fn connect_once(
                 return Ok(());
             }
 
-            // Outbound: already-encoded protobuf frames queued by pairing / inbox
-            // broadcast / revoke. The channel carries `Vec<u8>` ready to be
-            // shipped as a binary WS frame.
+            // Outbound: already-encoded protobuf frames queued by pairing / send
+            // / revoke. The channel carries `Vec<u8>` ready to be shipped as a
+            // binary WS frame.
             maybe = outbound_rx.recv() => {
                 match maybe {
                     Some(bytes) => sink.send(WsMessage::Binary(bytes.into())).await?,
-                    None => return Ok(()), // channel closed → plugin stopping
+                    None => return Ok(()), // channel closed → client stopping
                 }
             }
 
@@ -230,30 +230,30 @@ async fn handle_incoming(state: &Arc<RelayState>, data: &[u8]) {
     let frame = match RelayFrame::decode(data) {
         Ok(f) => f,
         Err(e) => {
-            warn!(plugin = "mobile-connector", error = %e, "malformed protobuf frame dropped");
+            warn!(crate_name = "skald-relay-client", error = %e, "malformed protobuf frame dropped");
             return;
         }
     };
     let Some(f) = frame.frame else {
-        debug!(plugin = "mobile-connector", "empty relay frame dropped");
+        debug!(crate_name = "skald-relay-client", "empty relay frame dropped");
         return;
     };
     match f {
         Frame::Message(m) => {
             // Validate lengths before handing off to the E2E layer.
             if m.peer.len() != 32 || m.nonce.len() != 12 {
-                warn!(plugin = "mobile-connector", "message with wrong peer/nonce length dropped");
+                warn!(crate_name = "skald-relay-client", "message with wrong peer/nonce length dropped");
                 return;
             }
             let mut from = [0u8; 32];
             from.copy_from_slice(&m.peer);
             let mut nonce = [0u8; 12];
             nonce.copy_from_slice(&m.nonce);
-            state.handle_inbound_message(&from, &nonce, &m.ciphertext).await;
+            state.handle_inbound_message(&from, &nonce, &m.ciphertext, m.live).await;
         }
         Frame::ClientPaired(cp) => {
             if cp.client_ed25519_pub.len() != 32 || cp.client_x25519_pub.len() != 32 {
-                warn!(plugin = "mobile-connector", "client_paired with wrong pubkey length dropped");
+                warn!(crate_name = "skald-relay-client", "client_paired with wrong pubkey length dropped");
                 return;
             }
             let mut ed = [0u8; 32];
@@ -262,39 +262,37 @@ async fn handle_incoming(state: &Arc<RelayState>, data: &[u8]) {
             x.copy_from_slice(&cp.client_x25519_pub);
             // Decode the protobuf `Platform` enum to the lowercase string the DB
             // expects. The wire value defaults to `0` (`UNSPECIFIED`) — the helper
-            // maps that to `"unknown"` and the caller logs the loss.
+            // maps that to `"unknown"`.
             let platform = platform_i32_to_str(cp.platform);
             state.handle_client_paired(&ed, &x, platform).await;
         }
         Frame::AuthorizeOk(aok) => {
-            debug!(plugin = "mobile-connector", authorized = aok.authorized, "authorize_ok");
+            debug!(crate_name = "skald-relay-client", authorized = aok.authorized, "authorize_ok");
         }
         Frame::PairingReady(_) | Frame::PairingStopOk(_) => {}
         Frame::PresenceEvent(pe) => {
             debug!(
-                plugin = "mobile-connector",
+                crate_name = "skald-relay-client",
                 pubkey = %hex::encode(&pe.pubkey),
                 status = pe.status,
                 "presence event"
             );
         }
         Frame::PresenceList(pl) => {
-            debug!(plugin = "mobile-connector", online = pl.online.len(), "presence list");
+            debug!(crate_name = "skald-relay-client", online = pl.online.len(), "presence list");
         }
         Frame::PeerOffline(po) => {
             // Expected backstop for route-or-fail live sends (relay-protocol.md
-            // §3): the targeted `inbox_request` reply went `live=true` but the
-            // requester dropped in the meantime. A normal protocol event, not an
-            // error — the client re-requests on reconnect. (A future evolution
-            // may retry on `PresenceEvent{ONLINE}`.)
+            // §3): a `live=true` send found the peer gone. A normal protocol
+            // event, not an error.
             debug!(
-                plugin = "mobile-connector",
+                crate_name = "skald-relay-client",
                 peer = %hex::encode(&po.peer),
                 "peer offline for live send; dropping"
             );
         }
         Frame::Error(e) => {
-            warn!(plugin = "mobile-connector", code = %e.code, message = %e.message, "relay error frame");
+            warn!(crate_name = "skald-relay-client", code = %e.code, message = %e.message, "relay error frame");
         }
         // Server-to-client or handshake frames the agent never expects inbound.
         Frame::Challenge(_)
@@ -305,15 +303,13 @@ async fn handle_incoming(state: &Arc<RelayState>, data: &[u8]) {
         | Frame::PairingStart(_)
         | Frame::PairingStop(_)
         | Frame::PresenceRequest(_) => {
-            warn!(plugin = "mobile-connector", "unexpected relay→agent frame dropped");
+            warn!(crate_name = "skald-relay-client", "unexpected relay→agent frame dropped");
         }
     }
 }
 
 /// Map a protobuf `Platform` enum wire value to the lowercase string the DB
-/// stores in the `platform` column. Mirrors
-/// `skald-relay-server::ws::platform_str_to_i32` in reverse. Unknown values
-/// become `"unknown"` and the caller logs the loss.
+/// stores in the `platform` column. Unknown values become `"unknown"`.
 fn platform_i32_to_str(v: i32) -> &'static str {
     if v == Platform::Ios as i32 {
         "ios"

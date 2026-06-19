@@ -2856,23 +2856,17 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
- "base64",
- "bytes",
  "chrono",
  "core-api",
- "ed25519-dalek",
- "futures-util",
  "hex",
  "image",
- "prost",
  "qrcode",
  "rand 0.9.4",
  "serde",
  "serde_json",
+ "skald-relay-client",
  "skald-relay-common",
- "sqlx",
  "tokio",
- "tokio-tungstenite",
  "tokio-util",
  "tracing",
 ]
@@ -4007,6 +4001,30 @@ dependencies = [
  "tree-sitter-swift",
  "tree-sitter-typescript",
  "tree-sitter-yaml",
+]
+
+[[package]]
+name = "skald-relay-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "chrono",
+ "ed25519-dalek",
+ "futures-util",
+ "hex",
+ "prost",
+ "rand 0.9.4",
+ "serde",
+ "serde_json",
+ "skald-relay-common",
+ "skald-relay-server",
+ "sqlx",
+ "tokio",
+ "tokio-tungstenite",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]

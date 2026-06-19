@@ -1,11 +1,15 @@
 //! Agent identity: the 32-byte seed and the keys derived from it.
 //!
-//! The seed is the only persistent secret (plugin.md §9). It lives on the
-//! filesystem at `data/relay/seed` with `0600` permissions and is generated on
+//! The seed is the only persistent secret (crypto.md §9). When sourced from a
+//! path it lives on the filesystem with `0600` permissions and is generated on
 //! first use. All Ed25519 / X25519 key material and the `namespace_id` are
 //! derived from it at runtime via `skald-relay-common` (crypto.md §3-7), never
 //! persisted — so the byte-for-byte interop with the reference vectors is
 //! inherited from the shared crate.
+//!
+//! The seed location is supplied by the caller via [`SeedSource`] (no more
+//! CWD-coupled `const`). The plugin passes `SeedSource::Path("data/relay/seed")`
+//! to preserve the existing identity on upgrade.
 
 use std::path::{Path, PathBuf};
 
@@ -13,9 +17,7 @@ use anyhow::{Context, Result};
 use rand::RngCore;
 use skald_relay_common::crypto::{self, DerivedKeys};
 
-/// Relative path (under the process working dir) of the seed file.
-const SEED_DIR: &str = "data/relay";
-const SEED_FILE: &str = "data/relay/seed";
+use crate::config::SeedSource;
 
 /// The agent's cryptographic identity, derived from the persistent seed.
 pub struct Identity {
@@ -27,14 +29,20 @@ pub struct Identity {
 }
 
 impl Identity {
-    /// Load the seed from disk, generating it (0600) on first use, then derive
-    /// all key material and the namespace id.
-    pub fn load_or_create() -> Result<Self> {
-        let seed = load_or_create_seed(Path::new(SEED_FILE))?;
-        Ok(Self::from_seed(&seed))
+    /// Build an identity from a [`SeedSource`]: for `Bytes` this is pure
+    /// in-memory derivation; for `Path` it loads (or generates + persists
+    /// `0600`) the seed at the given path, preserving any existing identity.
+    pub fn from_source(source: &SeedSource) -> Result<Self> {
+        match source {
+            SeedSource::Bytes(seed) => Ok(Self::from_seed(seed)),
+            SeedSource::Path(p) => {
+                let seed = load_or_create_seed(p)?;
+                Ok(Self::from_seed(&seed))
+            }
+        }
     }
 
-    /// Build an identity from a raw seed (used by `load_or_create` and tests).
+    /// Build an identity from a raw seed (used by `from_source` and tests).
     pub fn from_seed(seed: &[u8; 32]) -> Self {
         let keys = crypto::derive_keys(seed);
         let (ns_raw, ns_hex) = crypto::namespace_id(&keys.ed25519_pub);
@@ -84,15 +92,21 @@ fn load_or_create_seed(path: &Path) -> Result<[u8; 32]> {
         );
     }
 
-    // First run: generate and persist.
-    std::fs::create_dir_all(PathBuf::from(SEED_DIR))
-        .with_context(|| format!("creating seed dir {SEED_DIR}"))?;
+    // First run: create the parent dir (defaulting to "." if the path has no
+    // parent, e.g. a bare filename) and persist a fresh seed.
+    let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("creating seed dir {}", dir.display()))?;
 
     let mut seed = [0u8; 32];
     rand::rng().fill_bytes(&mut seed);
     write_secret_file(path, &seed)
         .with_context(|| format!("writing seed file {}", path.display()))?;
-    tracing::info!(plugin = "mobile-connector", "generated new relay seed at {}", path.display());
+    tracing::info!(
+        crate_name = "skald-relay-client",
+        "generated new relay seed at {}",
+        path.display()
+    );
     Ok(seed)
 }
 
@@ -125,5 +139,14 @@ mod tests {
             id.namespace_id_hex(),
             "f7d340d3c3f0b0052fa904ba60ebd38a0f7e7d10672ac80648991a2c632c9e58"
         );
+    }
+
+    #[test]
+    fn from_source_bytes_matches_from_seed() {
+        let seed: [u8; 32] = (0u8..32).collect::<Vec<_>>().try_into().unwrap();
+        let a = Identity::from_source(&SeedSource::Bytes(seed)).expect("bytes");
+        let b = Identity::from_seed(&seed);
+        assert_eq!(a.ed25519_pub(), b.ed25519_pub());
+        assert_eq!(a.namespace_id_hex(), b.namespace_id_hex());
     }
 }

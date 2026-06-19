@@ -1,11 +1,12 @@
 //! Persistence for authorized devices and their anti-replay counters
-//! (plugin.md §9). The plugin does NOT open its own SQLite file: it reuses
-//! Skald's shared `SqlitePool` from the `PluginContext` and namespaces its one
-//! table with the `relay_` prefix.
+//! (crypto.md §9). The client does NOT open its own SQLite file: it reuses
+//! Skald's shared `SqlitePool` (passed into `RelayClient::new`) and namespaces
+//! its one table with the `relay_` prefix.
 //!
-//! Counters MUST survive restarts (plugin.md §9 "⚠️"): a `send_counter` reset to
-//! 0 would reuse an AES-GCM nonce under the same key, and a `recv_counter` reset
-//! would re-open the replay window. So both are columns here, not in-memory.
+//! Counters MUST survive restarts (crypto.md §9 "⚠️"): a `send_counter` reset
+//! to 0 would reuse an AES-GCM nonce under the same key, and a `recv_counter`
+//! reset would re-open the replay window. So both are columns here, not
+//! in-memory.
 
 use anyhow::Result;
 use chrono::Utc;
@@ -14,7 +15,7 @@ use sqlx::{Row, SqlitePool};
 /// Authorization state of a paired device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientState {
-    /// Paired but not yet confirmed by the human (plugin.md §6).
+    /// Paired but not yet confirmed by the human (relay-protocol.md §6).
     Pending,
     /// Confirmed — receives Inbox snapshots and may answer.
     Authorized,
@@ -29,6 +30,7 @@ impl ClientState {
         }
     }
 
+    #[allow(clippy::should_implement_trait)] // small internal mapper, not the std trait
     pub fn from_str(s: &str) -> ClientState {
         match s {
             "authorized" => ClientState::Authorized,
@@ -57,7 +59,7 @@ pub struct ClientRow {
     pub last_seen: Option<i64>,
 }
 
-/// Create the `relay_clients` table if missing (idempotent — called on reload).
+/// Create the `relay_clients` table if missing (idempotent — called on start).
 pub async fn init(pool: &SqlitePool) -> Result<()> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS relay_clients (
@@ -78,7 +80,7 @@ pub async fn init(pool: &SqlitePool) -> Result<()> {
 }
 
 /// Insert (or replace) a freshly paired client with counters reset to 0 and
-/// state = Pending (plugin.md §6 step 7c).
+/// state = Pending (relay-protocol.md §6 step 7c).
 pub async fn upsert_paired(
     pool: &SqlitePool,
     ed25519_pub: &[u8; 32],
@@ -128,7 +130,7 @@ pub async fn set_device_info(pool: &SqlitePool, ed25519_pub: &[u8; 32], device_i
 /// Atomically reserve the next send counter for a client and return it.
 ///
 /// The new value is persisted BEFORE the caller seals/sends a message
-/// (plugin.md §8): even if the process dies right after, the counter never
+/// (crypto.md §8): even if the process dies right after, the counter never
 /// regresses, so no AES-GCM nonce is ever reused. Returns the counter value to
 /// embed in the nonce.
 pub async fn next_send_counter(pool: &SqlitePool, ed25519_pub: &[u8; 32]) -> Result<u64> {
@@ -149,7 +151,7 @@ pub async fn next_send_counter(pool: &SqlitePool, ed25519_pub: &[u8; 32]) -> Res
     Ok(next as u64)
 }
 
-/// Persist a newly-seen receive counter after a valid `open` (plugin.md §8).
+/// Persist a newly-seen receive counter after a valid `open` (crypto.md §8).
 pub async fn set_recv_counter(pool: &SqlitePool, ed25519_pub: &[u8; 32], counter: u64) -> Result<()> {
     sqlx::query("UPDATE relay_clients SET recv_counter = ?, last_seen = ? WHERE ed25519_pub = ?")
         .bind(counter as i64)
@@ -161,10 +163,18 @@ pub async fn set_recv_counter(pool: &SqlitePool, ed25519_pub: &[u8; 32], counter
 }
 
 /// Delete a client and all its derived state (keys/counters/device_info) on
-/// revoke (plugin.md §7).
+/// revoke (relay-protocol.md §7).
 pub async fn delete(pool: &SqlitePool, ed25519_pub: &[u8; 32]) -> Result<()> {
     sqlx::query("DELETE FROM relay_clients WHERE ed25519_pub = ?")
         .bind(ed25519_pub.as_slice())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Delete every client row (used by `clear_all`). Does NOT drop the table.
+pub async fn delete_all(pool: &SqlitePool) -> Result<()> {
+    sqlx::query("DELETE FROM relay_clients")
         .execute(pool)
         .await?;
     Ok(())
@@ -232,4 +242,61 @@ fn to_array(bytes: &[u8]) -> [u8; 32] {
     let n = bytes.len().min(32);
     out[..n].copy_from_slice(&bytes[..n]);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn mem_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.expect("pool");
+        init(&pool).await.expect("init");
+        pool
+    }
+
+    #[tokio::test]
+    async fn next_send_counter_is_monotonic() {
+        let pool = mem_pool().await;
+        let ed = [1u8; 32];
+        let x = [2u8; 32];
+        upsert_paired(&pool, &ed, &x, None).await.expect("upsert");
+
+        let c1 = next_send_counter(&pool, &ed).await.expect("next1");
+        let c2 = next_send_counter(&pool, &ed).await.expect("next2");
+        let c3 = next_send_counter(&pool, &ed).await.expect("next3");
+        assert_eq!(c1, 1);
+        assert_eq!(c2, 2);
+        assert_eq!(c3, 3, "send counter must be strictly monotonic");
+
+        // The persisted value survives a fresh connection to the same DB file
+        // is not testable with :memory:; instead assert the in-DB value.
+        let row = get(&pool, &ed).await.expect("get").expect("row");
+        assert_eq!(row.send_counter, 3);
+    }
+
+    #[tokio::test]
+    async fn upsert_resets_counters_on_repair() {
+        let pool = mem_pool().await;
+        let ed = [3u8; 32];
+        upsert_paired(&pool, &ed, &[4u8; 32], None).await.expect("upsert");
+        next_send_counter(&pool, &ed).await.expect("bump");
+        next_send_counter(&pool, &ed).await.expect("bump");
+        // Re-pairing the same device resets counters to 0.
+        upsert_paired(&pool, &ed, &[5u8; 32], Some("ios")).await.expect("re-upsert");
+        let c = next_send_counter(&pool, &ed).await.expect("next after re-pair");
+        assert_eq!(c, 1, "re-pairing must reset the send counter");
+    }
+
+    #[tokio::test]
+    async fn delete_all_clears_rows() {
+        let pool = mem_pool().await;
+        upsert_paired(&pool, &[1u8; 32], &[2u8; 32], None).await.expect("upsert");
+        upsert_paired(&pool, &[3u8; 32], &[4u8; 32], None).await.expect("upsert");
+        assert_eq!(list_all(&pool).await.unwrap().len(), 2);
+        delete_all(&pool).await.expect("delete_all");
+        assert_eq!(list_all(&pool).await.unwrap().len(), 0, "delete_all must clear every row");
+        // Table still usable afterwards (init not required again).
+        upsert_paired(&pool, &[1u8; 32], &[2u8; 32], None).await.expect("upsert post-clear");
+        assert_eq!(list_all(&pool).await.unwrap().len(), 1);
+    }
 }

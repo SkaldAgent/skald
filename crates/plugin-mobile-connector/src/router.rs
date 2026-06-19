@@ -19,12 +19,13 @@ use axum::Router;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
-use crate::pairing::SessionState;
-use crate::state::RelayState;
+use skald_relay_client::SessionState;
 
-/// Shared cell type: an `Arc` to a `Mutex` holding the (optional) live state.
+use crate::app::RelayApp;
+
+/// Shared cell type: an `Arc` to a `Mutex` holding the (optional) live app.
 /// Cloned cheaply and safely shared between the plugin and the router.
-type StateCell = Arc<Mutex<Option<Arc<RelayState>>>>;
+type StateCell = Arc<Mutex<Option<Arc<RelayApp>>>>;
 
 #[derive(Deserialize)]
 struct QrQuery {
@@ -49,13 +50,13 @@ async fn pairing_qr(
         return png_response(render_placeholder("QR non valido"));
     };
 
-    // Dynamically resolve the *current* RelayState (same one tools use).
-    let state = match cell.lock().await.as_ref() {
+    // Dynamically resolve the *current* RelayApp (same one tools use).
+    let app = match cell.lock().await.as_ref() {
         Some(s) => Arc::clone(s),
         None => return png_response(render_placeholder("Plugin non attivo")),
     };
 
-    match state.lookup_pairing(&code) {
+    match app.client().lookup_pairing(&code) {
         Some((qr, SessionState::Active)) => {
             // Encode the normative QrCodeData JSON into the QR.
             match serde_json::to_string(&qr) {

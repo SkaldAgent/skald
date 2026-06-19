@@ -6,7 +6,12 @@ the namespace owner and the sole authority over authorized devices. Skald is
 never exposed on the internet: only this plugin connects out, and only to the
 relay.
 
-- Crate: `crates/plugin-mobile-connector`
+- Crate: `crates/plugin-mobile-connector` — the **application** layer (thin).
+- Networking: `crates/skald-relay-client` — the **standalone, payload-agnostic**
+  relay client (WS v2 transport, E2E crypto, anti-replay counters, pairing,
+  device authorization, SQLite persistence). It depends only on
+  `skald-relay-common` (never on `core-api`), so it is reusable and unit/
+  integration-tested in isolation. See [Crate split](#crate-split-skald-relay-client).
 - Shared crypto + protobuf: `crates/skald-relay-common` (byte-for-byte interop
   with the reference vectors in [relay/test-vectors.md](../relay/test-vectors.md))
 - **Protocol documentation** (canonical, in English):
@@ -18,20 +23,53 @@ relay.
 
 ---
 
-## Module map
+## Crate split: skald-relay-client
+
+The plugin is the **application** layer; all networking lives in the standalone
+`skald-relay-client` crate. The boundary is **payload-agnostic**: the client
+exchanges opaque decrypted `Vec<u8>` payloads keyed by device pubkey and emits
+inbound traffic as `RelayEvent`s; it never interprets the JSON. The plugin
+consumes `client.events()`, applies the JSON schemas (`payloads.rs`) and the
+`InboxApi`, and calls `client.send(dest, bytes, live)`.
+
+Consequences of the split:
+
+- **Authorization policy stays in the plugin.** On `RelayEvent::ClientPaired`,
+  the client has already derived the `aes_key`, persisted the device as Pending,
+  and consumed the pairing token. The plugin's event loop decides: if
+  `require_device_confirmation` it notifies; otherwise it calls
+  `client.authorize(ed)` and then `broadcast_inbox()`.
+- **`client.authorize()` is payload-agnostic** — it does NOT push an Inbox
+  snapshot. The plugin sends the snapshot after authorizing (both the auto path
+  and the `RelayAgent::authorize_client` tool path).
+- **v2 framing (`compress/decompress_payload`) is transport** — handled inside
+  the client, so the plugin only ever sees clean JSON.
+- **Identity seed** is injected via `SeedSource::Path("data/relay/seed")` (same
+  relative path as before) so existing identities/devices survive the upgrade.
+
+### Module map — `skald-relay-client` (networking)
 
 | Module | Role |
 |---|---|
-| `identity.rs` | Seed load/generate (`data/relay/seed`, `0600`) + derived Ed25519/X25519 keys + `namespace_id` |
-| `db.rs` | `relay_clients` table — devices + anti-replay counters (atomic counter helpers) |
+| `config.rs` | `RelayClientConfig` + `SeedSource` (`Bytes` / `Path`) |
+| `events.rs` | `RelayEvent` (`Connected`/`Disconnected`/`Message`/`ClientPaired`/`ClientRevoked`), broadcast |
+| `identity.rs` | Seed load/generate (`0600`, injected path) + derived Ed25519/X25519 keys + `namespace_id` |
+| `db.rs` | `relay_clients` table — devices + anti-replay counters (atomic counter helpers, `delete_all`) |
 | `pairing.rs` | In-memory single-window pairing sessions (`code → session`) + `QrCodeData` |
+| `state.rs` | Networking-only runtime: per-client `aes_key` cache, seal/open, counters, emits events |
+| `ws.rs` | Permanent reconnecting agent WebSocket (v2 binary transport). Challenge → `Auth` → role dispatch → forward loop |
+| `client.rs` | `RelayClient` — the public façade (`new`/`start`/`shutdown`/`send`/pairing/authorize/revoke/`clear_all`/`events`) |
+
+### Module map — `plugin-mobile-connector` (application)
+
+| Module | Role |
+|---|---|
 | `payloads.rs` | E2E JSON payload schemas (`inbox_update`, `notification`, client responses incl. `inbox_request`). Zlib-compressible per v2 framing.md |
-| `state.rs` | Shared runtime: pairing policy, per-client `aes_key` cache, seal/open, Inbox application. Presence tracking per namespace |
-| `ws.rs` | Permanent reconnecting agent WebSocket (v2 binary transport). Challenge → protobuf `Auth` decode → role dispatch → forward loop. Handles presence events and live (`Message.live=true`) dispatch for `inbox_request` pulls |
-| `router.rs` | The QR-code HTTP endpoint (`/pairingqrcode`) |
+| `app.rs` | `RelayApp`: Inbox dispatch (`broadcast_inbox`/`apply_client_payload`), authorization policy, the `events()` consumer loop |
+| `router.rs` | The QR-code HTTP endpoint (`/pairingqrcode`), resolves the current `RelayApp` → `client.lookup_pairing` |
 | `agent.rs` | `RelayAgent` control trait (pairing, list, authorize, revoke) |
 | `tools.rs` | The three LLM tools, registered in the main crate's `ToolRegistry` |
-| `lib.rs` | `MobileConnectorPlugin` (`Plugin` + `RelayAgent`), lifecycle, bus subscriber |
+| `lib.rs` | `MobileConnectorPlugin` (`Plugin` + `RelayAgent`), lifecycle, bus subscriber, `RelayClient`/`RelayApp` wiring |
 
 ---
 

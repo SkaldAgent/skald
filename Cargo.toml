@@ -15,6 +15,7 @@ members = [
     "crates/plugin-elevenlabs",
     "crates/skald-relay-common",
     "crates/skald-relay-server",
+    "crates/skald-relay-client",
     "crates/plugin-mobile-connector",
 ]
 resolver = "2"

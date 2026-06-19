@@ -1,7 +1,7 @@
-//! In-memory pairing window (plugin.md §5, §6).
+//! In-memory pairing window (relay-protocol.md §5, §6).
 //!
 //! A pairing session is transient (≤ TTL) and is NEVER persisted: it holds a
-//! live `pairing_token` whose bytes must not touch disk (plugin.md §9). The map
+//! live `pairing_token` whose bytes must not touch disk (crypto.md §9). The map
 //! `code → session` is single-window, latest-wins: a new `start_pairing`
 //! supersedes the previous session.
 //!
@@ -28,8 +28,8 @@ pub enum SessionState {
     Superseded,
 }
 
-/// The JSON object encoded INSIDE the QR (plugin.md §5). Field order/encoding is
-/// normative: all 32-byte values are lowercase hex (64 chars).
+/// The JSON object encoded INSIDE the QR (relay-protocol.md §5). Field
+/// order/encoding is normative: all 32-byte values are lowercase hex (64 chars).
 #[derive(Debug, Clone, Serialize)]
 pub struct QrCodeData {
     pub v: u8,
@@ -161,5 +161,68 @@ impl PairingStore {
         let now = Utc::now().timestamp_millis();
         let map = self.inner.lock().unwrap();
         map.get(code).map(|s| (s.qr.clone(), s.effective_state(now)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store_with_active() -> (PairingStore, StartedPairing) {
+        let s = PairingStore::new();
+        let started = s.start("wss://relay", "ns", &[1u8; 32], &[2u8; 32], 300);
+        (s, started)
+    }
+
+    #[test]
+    fn single_window_latest_wins() {
+        let (s, first) = store_with_active();
+        let _second = s.start("wss://relay", "ns", &[1u8; 32], &[2u8; 32], 300);
+        let (_, state) = s.lookup(&first.code).expect("first session present");
+        assert_eq!(state, SessionState::Superseded, "opening a new window supersedes the old one");
+    }
+
+    #[test]
+    fn consume_by_token_marks_consumed() {
+        let (s, started) = store_with_active();
+        let token = started.token;
+        let (_, state) = s.lookup(&started.code).expect("present");
+        assert_eq!(state, SessionState::Active);
+
+        assert!(s.consume_by_token(&token));
+        let (_, state) = s.lookup(&started.code).expect("present");
+        assert_eq!(state, SessionState::Consumed);
+    }
+
+    #[test]
+    fn consume_with_wrong_token_is_noop() {
+        let (s, _started) = store_with_active();
+        assert!(!s.consume_by_token(&[0u8; 32]));
+    }
+
+    #[test]
+    fn stop_pairing_supersedes_active() {
+        let (s, started) = store_with_active();
+        s.supersede_all();
+        let (_, state) = s.lookup(&started.code).expect("present");
+        assert_eq!(state, SessionState::Superseded);
+    }
+
+    #[test]
+    fn lookup_unknown_code_is_none() {
+        let s = PairingStore::new();
+        assert!(s.lookup("nope").is_none());
+    }
+
+    #[test]
+    fn expired_active_session_reports_superseded() {
+        let (s, started) = store_with_active();
+        // Construct a session already in the past by inserting manually.
+        let mut session = s.inner.lock().unwrap();
+        let entry = session.get_mut(&started.code).expect("present");
+        entry.expires_at = Utc::now().timestamp_millis() - 1;
+        drop(session);
+        let (_, state) = s.lookup(&started.code).expect("present");
+        assert_eq!(state, SessionState::Superseded, "expiry folds into Superseded");
     }
 }
