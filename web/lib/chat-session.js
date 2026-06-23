@@ -308,6 +308,15 @@ export class ChatSession extends LightElement {
         this._waiting  = false;
         break;
 
+      case 'client_selected':
+        // Backend is the single source of truth for the pinned model. Updates
+        // arrive here regardless of which client (dropdown, /model command,
+        // another tab) originated the change — so the dropdown/select stays
+        // in sync. We set the field directly; Lit re-renders because
+        // `_selectedClient` is `state: true`.
+        this._selectedClient = msg.client;
+        break;
+
       case 'llm_failed':
         this._waiting = false;
         this._pushError(`LLM unavailable. Tried: ${msg.tried.join(', ')}. ${msg.last_error}`);
@@ -375,13 +384,24 @@ export class ChatSession extends LightElement {
     this._waiting = true;
 
     if (this._ws?.readyState === WebSocket.OPEN) {
-      this._ws.send(JSON.stringify({
-        content,
-        client: this._selectedClient,
-      }));
+      this._ws.send(JSON.stringify({ content }));
     } else {
       this._pushError('Not connected — reconnecting, please retry.');
       this._waiting = false;
+    }
+  }
+
+  /**
+   * Pin a client (model) for the current source. Mirrors the state locally for
+   * instant feedback, then notifies the backend, which is the single source of
+   * truth — it broadcasts `client_selected` back to every client of the source
+   * (this tab included), so the dropdown/select re-syncs from authoritative
+   * state. Pass `'auto'` to clear the pin.
+   */
+  _selectClient(client) {
+    this._selectedClient = client;
+    if (this._ws?.readyState === WebSocket.OPEN) {
+      this._ws.send(JSON.stringify({ type: 'select_client', client }));
     }
   }
 

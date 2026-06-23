@@ -358,7 +358,7 @@ export class AppCopilot extends ChatSession {
                       ${this._providers.map(p => html`
                         <button
                           class="copilot-model-item ${p === this._selectedClient ? 'active' : ''}"
-                          @click=${() => { this._selectedClient = p; this._modelOpen = false; }}
+                          @click=${() => { this._selectClient(p); this._modelOpen = false; }}
                         >${p}</button>
                       `)}
                     </div>

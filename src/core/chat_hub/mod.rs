@@ -20,7 +20,7 @@ use crate::core::session::handler::ChatSessionHandler;
 use crate::core::session::manager::ChatSessionManager;
 use crate::core::tools::tool_names as tn;
 
-pub use core_api::chat_hub::{ChatHubApi, SendMessageOptions};
+pub use core_api::chat_hub::{ChatHubApi, ModelCommandOutcome, SendMessageOptions};
 
 pub const HOME_SOURCE_KEY:     &str = "source_home";
 pub const DEFAULT_HOME_SOURCE: &str = "web";
@@ -72,6 +72,11 @@ pub struct ChatHub {
     me:          OnceLock<Weak<Self>>,
     /// Shutdown token, used to stop lazily-spawned source consumers.
     shutdown:    CancellationToken,
+    /// Per-source pinned LLM client (e.g. set via `/model` or the web dropdown).
+    /// Keyed by source id; value is a `client_names()` entry (`"auto"` or a
+    /// model name). When absent the caller AUTO-resolves. In-memory only: a
+    /// server restart clears all pins (intentional for the MVP).
+    selected_clients: Mutex<HashMap<String, String>>,
 }
 
 impl ChatHub {
@@ -94,6 +99,7 @@ impl ChatHub {
             inboxes:  Mutex::new(HashMap::new()),
             me:       OnceLock::new(),
             shutdown: shutdown.clone(),
+            selected_clients: Mutex::new(HashMap::new()),
         });
         // Store a weak self-reference for lazily-spawned source consumers.
         let _ = hub.me.set(Arc::downgrade(&hub));
@@ -353,6 +359,91 @@ impl ChatHub {
         crate::core::db::session_mcp_grants::revoke_all(&self.db, session_id).await?;
         info!(source_id, session_id, "ChatHub: MCP grants reset");
         Ok(())
+    }
+
+    // ── Per-source pinned LLM client ─────────────────────────────────────────
+    //
+    // Backend-owned state: every UI mutation (Telegram `/model`, web `/model`,
+    // web dropdown change) funnels through `set_selected_client`, which then
+    // broadcasts `ClientSelected` to all clients of the source. The web dropdown
+    // and mobile select read this event to stay in sync — the backend is the
+    // single source of truth. Pattern is intentionally generic so future
+    // per-source toggles (e.g. reasoning level) can mirror it.
+
+    /// Returns `(models, default)` — `models` is the ordered list of usable
+    /// client names (`"auto"` first, then models by priority/name), `default`
+    /// is the configured default client name.
+    pub async fn list_clients(&self) -> (Vec<String>, String) {
+        let mgr = self.session_mgr.llm_manager();
+        (mgr.client_names().await, mgr.default_name().await)
+    }
+
+    /// Returns the client name pinned for the source, or `None` when unset
+    /// (the caller should fall back to AUTO resolution).
+    pub async fn get_selected_client(&self, source_id: &str) -> Option<String> {
+        self.selected_clients.lock().await.get(source_id).cloned()
+    }
+
+    /// Pin a client name for the source and broadcast `ClientSelected`.
+    /// `client` should be a `list_clients()` entry (`"auto"` or a model name).
+    pub async fn set_selected_client(&self, source_id: &str, client: String) {
+        info!(source_id, client = %client, "ChatHub: selected client set");
+        self.selected_clients.lock().await.insert(source_id.to_string(), client.clone());
+        self.emit(GlobalEvent {
+            source:     Some(source_id.to_string()),
+            session_id: None,
+            event:      ServerEvent::ClientSelected { client },
+        });
+    }
+
+    /// Clear any pinned client for the source (revert to AUTO) and broadcast
+    /// `ClientSelected { client: "auto" }`.
+    pub async fn clear_selected_client(&self, source_id: &str) {
+        info!(source_id, "ChatHub: selected client cleared (auto)");
+        self.selected_clients.lock().await.remove(source_id);
+        self.emit(GlobalEvent {
+            source:     Some(source_id.to_string()),
+            session_id: None,
+            event:      ServerEvent::ClientSelected { client: "auto".to_string() },
+        });
+    }
+
+    /// Snapshot of the model list with the per-source current selection marked.
+    /// Returns `(index, name, is_current)` tuples so call sites can render
+    /// HTML (Telegram) or Markdown (web) without re-querying the LLM manager
+    /// or the pin store.
+    pub async fn list_clients_marked(&self, source_id: &str) -> Vec<(usize, String, bool)> {
+        let (models, _default) = self.list_clients().await;
+        let current = self.get_selected_client(source_id).await
+            .unwrap_or_else(|| "auto".to_string());
+        models.into_iter()
+            .enumerate()
+            .map(|(i, name)| (i, name.clone(), name == current))
+            .collect()
+    }
+
+    /// Apply a `/model {arg}` command: resolve the argument, mutate the
+    /// per-source pinned client (broadcasting `ClientSelected`), return a
+    /// structured outcome. Business logic is centralised here so Telegram and
+    /// web share a single code path; only the formatting differs.
+    pub async fn apply_model_command(
+        &self,
+        source_id: &str,
+        arg: &str,
+    ) -> ModelCommandOutcome {
+        let (models, _default) = self.list_clients().await;
+        match core_api::chat_hub::resolve_list_arg(&models, arg) {
+            Ok(Some(client)) => {
+                let name = client.clone();
+                self.set_selected_client(source_id, client).await;
+                ModelCommandOutcome::Set(name)
+            }
+            Ok(None) => {
+                self.clear_selected_client(source_id).await;
+                ModelCommandOutcome::Cleared
+            }
+            Err(msg) => ModelCommandOutcome::Error(msg),
+        }
     }
 
     /// Cancel the active LLM turn for the source's session, clearing any pending
@@ -635,5 +726,36 @@ impl ChatHubApi for ChatHub {
 
     async fn reset_mcp(&self, source_id: &str) -> anyhow::Result<()> {
         self.reset_mcp(source_id).await
+    }
+
+    async fn list_clients(&self) -> (Vec<String>, String) {
+        self.list_clients().await
+    }
+
+    async fn get_selected_client(&self, source_id: &str) -> Option<String> {
+        self.get_selected_client(source_id).await
+    }
+
+    async fn set_selected_client(&self, source_id: &str, client: String) {
+        self.set_selected_client(source_id, client).await;
+    }
+
+    async fn clear_selected_client(&self, source_id: &str) {
+        self.clear_selected_client(source_id).await;
+    }
+
+    async fn list_clients_marked(
+        &self,
+        source_id: &str,
+    ) -> Vec<(usize, String, bool)> {
+        self.list_clients_marked(source_id).await
+    }
+
+    async fn apply_model_command(
+        &self,
+        source_id: &str,
+        arg: &str,
+    ) -> ModelCommandOutcome {
+        self.apply_model_command(source_id, arg).await
     }
 }

@@ -6,8 +6,6 @@ use serde_json::Value;
 #[derive(Deserialize)]
 pub struct ClientMessage {
     pub content: String,
-    /// Reserved: selects a named LLM client from config.
-    pub client:  Option<String>,
 }
 
 /// Typed data push from remote clients (iOS app, etc.).
@@ -179,6 +177,13 @@ pub enum ServerEvent {
     TurnRunning {
         running: bool,
     },
+    /// The selected LLM client (model) for a source changed. Broadcast to every
+    /// client of the source so dropdowns/selects stay in sync. `client` is a
+    /// `client_names()` entry (typically `"auto"` or a model name). Driven by
+    /// `ChatHub::set_selected_client` — the backend is the single source of truth.
+    ClientSelected {
+        client: String,
+    },
 }
 
 impl ServerEvent {
@@ -210,6 +215,7 @@ impl ServerEvent {
             Self::NewSession         { .. } => "new_session",
             Self::UserMessage        { .. } => "user_message",
             Self::TurnRunning        { .. } => "turn_running",
+            Self::ClientSelected     { .. } => "client_selected",
         }
     }
 }

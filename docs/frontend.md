@@ -63,6 +63,7 @@ All events are JSON objects with a `"type"` tag (snake_case).
 | `user_message` | `content` | User message broadcast to other clients of the same source |
 | `new_session` | `session_id` | Session was cleared (`/new`, `/clear`); clients reset their message list |
 | `turn_running` | `running` | Sent to a client on (re)connect: whether a turn is in flight for its session, so a reloaded page restores the SEND→STOP button |
+| `client_selected` | `client` | The pinned LLM client for the source changed (`/model` command or dropdown change). Clients update their dropdown/select to match — the backend is the single source of truth |
 
 ---
 
@@ -75,6 +76,8 @@ The web copilot supports the following slash commands, intercepted server-side i
 |---|---|---|
 | `/new` | Create a new chat session (handled client-side, clears context) |
 | `/help` | Show available commands |
+| `/models` | List available LLM models ordered by priority (numbered `0..N`, index 0 is `auto`) |
+| `/model <N\|name\|auto>` | Pin the model for this chat by index, name (substring allowed), or reset to `auto`. The web dropdown and the `/model` command share the same backend state (`ChatHub.selected_clients[source]`); changes from either mutate the SOT and broadcast `ClientSelected`, so all open tabs/mobile update in sync. Cleared on server restart |
 | `/context` | Show last turn's token usage (`↑X tok · ↓Y tok`) |
 | `/cost` | Show total spend for this session in USD (sync sub-agents included; async tasks excluded). `None` → "no cost recorded" when the provider does not report pricing |
 | `/compact` | Force context compaction (bypasses the token threshold) |

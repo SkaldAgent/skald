@@ -86,7 +86,7 @@ export class ChatPage extends ChatSession {
               <select
                 class="form-select form-select-sm chat-page-provider-select"
                 .value=${this._selectedClient ?? ''}
-                @change=${(e) => { this._selectedClient = e.target.value; }}
+                @change=${(e) => { this._selectClient(e.target.value); }}
               >
                 ${this._providers.map(p => html`
                   <option value=${p} ?selected=${p === this._selectedClient}>${p}</option>

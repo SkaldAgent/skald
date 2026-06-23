@@ -80,6 +80,8 @@ This means there is no restart needed after editing the file — authorization t
 |---|---|---|
 | `/new` or `/clear` | Create a new chat session (clears LLM context) |
 | `/stop` | Interrupt the agent mid-turn (clears pending approvals and clarifications) |
+| `/models` | List available LLM models ordered by priority (numbered `0..N`, index 0 is `auto`) |
+| `/model <N\|name\|auto>` | Pin the model for this chat by index, name (substring allowed), or reset to `auto`. State is held in `ChatHub.selected_clients["telegram"]` and broadcast to all clients of the source via `ClientSelected`. Cleared on server restart |
 | `/context` | Show last turn's token usage (`↑X tok · ↓Y tok`) |
 | `/cost` | Show total spend for this session in USD (sync sub-agents included; async tasks excluded) |
 | `/compact` | Force context compaction (bypasses the token threshold) |

@@ -12,7 +12,7 @@ use serde_json::Value;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
-use crate::core::chat_hub::SendMessageOptions;
+use crate::core::chat_hub::{ModelCommandOutcome, SendMessageOptions};
 use crate::core::events::{ClientMessage, GlobalEvent, ServerEvent};
 use crate::core::skald::Skald;
 
@@ -34,6 +34,8 @@ const HELP_TEXT: &str = "\
 **Available commands**\n\n\
 **/clear** — start a new conversation\n\
 **/new** — alias for /clear\n\
+**/models** — list available LLM models, ordered by priority\n\
+**/model <N|name|auto>** — select the model for this chat\n\
 **/context** — show last turn's token usage\n\
 **/cost** — show total spend for this session (USD)\n\
 **/compact** — force context compaction\n\
@@ -108,6 +110,7 @@ async fn handle_socket(mut socket: WebSocket, skald: Arc<Skald>, source: String)
                 if handle_approval_msg(&text, &skald.chat_hub).await { continue; }
                 if handle_question_answer_msg(&text, &session_handler).await { continue; }
                 if handle_data_msg(&text, &skald) { continue; }
+                if handle_select_client_msg(&text, &source, &skald.chat_hub).await { continue; }
 
                 // ── /sethome ──────────────────────────────────────────────────
                 let client_msg: ClientMessage = match serde_json::from_str(&text) {
@@ -240,6 +243,36 @@ async fn handle_socket(mut socket: WebSocket, skald: Arc<Skald>, source: String)
                     continue;
                 }
 
+                if cmd == "/models" {
+                    let items = skald.chat_hub.list_clients_marked(&source).await;
+                    let content = format_models_md(&items);
+                    let _ = socket.send(to_msg(&ServerEvent::Done {
+                        message_id:    0,
+                        stack_id:      0,
+                        content,
+                        input_tokens:  None,
+                        output_tokens: None,
+                    })).await;
+                    continue;
+                }
+
+                if let Some(arg) = cmd.strip_prefix("/model").map(str::trim) {
+                    let outcome = skald.chat_hub.apply_model_command(&source, arg).await;
+                    let content = match outcome {
+                        ModelCommandOutcome::Set(name)  => format!("✅ Model set: **{name}**"),
+                        ModelCommandOutcome::Cleared    => "✅ Model reset to **auto**.".to_string(),
+                        ModelCommandOutcome::Error(msg) => format!("⚠️ {msg}"),
+                    };
+                    let _ = socket.send(to_msg(&ServerEvent::Done {
+                        message_id:    0,
+                        stack_id:      0,
+                        content,
+                        input_tokens:  None,
+                        output_tokens: None,
+                    })).await;
+                    continue;
+                }
+
                 // ── Unknown command ───────────────────────────────────────────
                 // Any other `/...` prompt is an unrecognised command — never
                 // forward it to the LLM. Reply with a not-found notice + help.
@@ -267,7 +300,11 @@ async fn handle_socket(mut socket: WebSocket, skald: Arc<Skald>, source: String)
                 });
 
                 let opts = SendMessageOptions {
-                    client_name:          client_msg.client.clone(),
+                    // The web dropdown is now a view of backend state; the pinned
+                    // client lives in ChatHub.selected_clients[source]. The web
+                    // `/model` command and the dropdown both flow through
+                    // set_selected_client, which broadcasts ClientSelected.
+                    client_name:          skald.chat_hub.get_selected_client(&source).await,
                     extra_system_context: Some(WEB_FORMAT_CONTEXT.to_string()),
                     ..Default::default()
                 };
@@ -360,6 +397,27 @@ async fn handle_question_answer_msg(
     true
 }
 
+/// Returns true if the message was a select_client event from the web dropdown
+/// (caller should `continue`). Mutates the backend's per-source pinned client
+/// via `set_selected_client`, which broadcasts `ClientSelected` to every client
+/// of the source (so all open tabs/mobile update).
+async fn handle_select_client_msg(
+    text:     &str,
+    source:   &str,
+    chat_hub: &Arc<crate::core::chat_hub::ChatHub>,
+) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(text) else { return false };
+    if v["type"].as_str() != Some("select_client") { return false }
+    let Some(client) = v["client"].as_str() else { return false };
+    let client = client.to_string();
+    if client == "auto" {
+        chat_hub.clear_selected_client(source).await;
+    } else {
+        chat_hub.set_selected_client(source, client).await;
+    }
+    true
+}
+
 /// Returns true if the message was an inbound data push (caller should `continue`).
 /// Dispatches `{"type":"data","stream":"...","payload":{...}}` to the appropriate manager.
 fn handle_data_msg(text: &str, skald: &Arc<Skald>) -> bool {
@@ -396,4 +454,20 @@ fn handle_data_msg(text: &str, skald: &Arc<Skald>) -> bool {
 
 fn to_msg(event: &ServerEvent) -> Message {
     Message::Text(event.to_json().into())
+}
+
+// ── /models formatter (Markdown, web-specific) ───────────────────────────────
+//
+// Business logic for `/model` lives in `ChatHub::apply_model_command`; the
+// `/models` listing uses `ChatHub::list_clients_marked` and only needs
+// rendering. A future `/reasonings` can mirror this thin formatter.
+
+fn format_models_md(items: &[(usize, String, bool)]) -> String {
+    let mut text = String::from("**Available models**\n\n");
+    for (i, name, is_current) in items {
+        let marker = if *is_current { "●" } else { "○" };
+        text.push_str(&format!("{marker} `{i:2}`  {name}\n"));
+    }
+    text.push_str("\nUse `/model N`, `/model name`, or `/model auto`.");
+    text
 }

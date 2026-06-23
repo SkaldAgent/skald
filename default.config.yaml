@@ -33,7 +33,7 @@ llm:
   max_tool_rounds: 100
   datetime:
     enabled: true
-    round_minutes: 10  # Help with KV cache (instead of 10:54, it will pass 10:50 to the LLM)
+    round_minutes: 60  # Help with KV cache (instead of 10:54, it will pass 10:50 to the LLM)
 
   # ── Tool result size limit ──────────────────────────────────────────────────
   # When set, tool results from *previous* turns that exceed this character

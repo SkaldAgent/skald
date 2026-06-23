@@ -4,7 +4,7 @@ use teloxide::prelude::*;
 use teloxide::types::{ChatAction, ParseMode};
 use tracing::{error, info};
 
-use core_api::chat_hub::{ChatHubApi as _, SendMessageOptions};
+use core_api::chat_hub::{ModelCommandOutcome, SendMessageOptions};
 use core_api::location::GpsCoord;
 
 use super::TELEGRAM_FORMAT_CONTEXT;
@@ -17,6 +17,8 @@ const HELP_TEXT: &str = "<b>Available commands</b>\n\n\
      /clear — start a new conversation\n\
      /new — alias for /clear\n\
      /stop — interrupt the agent mid-turn\n\
+     /models — list available LLM models, ordered by priority\n\
+     /model &lt;N|name|auto&gt; — select the model for this chat\n\
      /context — show last turn's token usage\n\
      /cost — show total spend for this session (USD)\n\
      /compact — force context compaction\n\
@@ -70,11 +72,15 @@ pub(crate) fn classify_message(msg: &Message) -> Option<IncomingEvent> {
 
     let text = msg.text()?;
 
-    if let Some(entity) = msg.parse_entities().and_then(|mut v| {
-        v.retain(|e| matches!(e.kind(), teloxide::types::MessageEntityKind::BotCommand));
-        v.into_iter().next()
-    }) {
-        let full = entity.text().trim_start_matches('/');
+    // A command is any message that *starts* with '/'. We deliberately do NOT
+    // rely on teloxide's BotCommand entities: those are emitted for every
+    // "/token" anywhere in the text, so a normal sentence containing a "/path"
+    // (e.g. "stop /usr/bin/foo") would be misclassified as a command. A leading
+    // slash is the only signal. Arguments are parsed from the message `text`
+    // (not `entity.text()`, which spans only "/model" and would drop the arg).
+    // An unknown command is handled by the dispatcher, which replies with help.
+    if text.starts_with('/') {
+        let full = text.trim_start_matches('/');
         let mut parts = full.splitn(2, ' ');
         let name = parts.next().unwrap_or("").to_ascii_lowercase();
         let name = name.split('@').next().unwrap_or(&name).to_string();
@@ -154,6 +160,12 @@ pub(crate) async fn message_handler(
         }
         IncomingEvent::Command { ref name, .. } if name == "resetmcp" => {
             handle_reset_mcp(&bot, chat_id, &shared).await;
+        }
+        IncomingEvent::Command { ref name, .. } if name == "models" => {
+            handle_list_models(&bot, chat_id, &shared).await;
+        }
+        IncomingEvent::Command { ref name, ref args, .. } if name == "model" => {
+            handle_set_model(&bot, chat_id, args, &shared).await;
         }
         // Any other command is unknown — never forward a `/...` prompt to the LLM.
         IncomingEvent::Command { ref name, .. } => {
@@ -301,6 +313,46 @@ async fn handle_stop(bot: &Bot, chat_id: ChatId, shared: &Arc<TgShared>) {
     bot.send_message(chat_id, "⏹ Agent stopped.").await.ok();
 }
 
+// ── /models and /model commands ──────────────────────────────────────────────
+//
+// Business logic (resolve arg, mutate pin, broadcast) lives in
+// `ChatHub::apply_model_command` / `ChatHub::list_clients_marked`. Here we only
+// format for Telegram (HTML) and send via the bot — same pattern the web WS
+// handler uses with Markdown.
+
+async fn handle_list_models(bot: &Bot, chat_id: ChatId, shared: &Arc<TgShared>) {
+    let items = shared.chat_hub.list_clients_marked("telegram").await;
+    let mut text = String::from("<b>Available models</b>\n\n");
+    for (i, name, is_current) in &items {
+        let marker = if *is_current { "●" } else { "○" };
+        text.push_str(&format!(
+            "{} <code>{:2}</code>  {}\n",
+            marker,
+            i,
+            super::helpers::escape_html(name)
+        ));
+    }
+    text.push_str("\nUse <code>/model N</code>, <code>/model name</code>, or <code>/model auto</code>.");
+    bot.send_message(chat_id, text)
+        .parse_mode(ParseMode::Html)
+        .await
+        .ok();
+}
+
+async fn handle_set_model(bot: &Bot, chat_id: ChatId, args: &[String], shared: &Arc<TgShared>) {
+    let arg = args.first().cloned().unwrap_or_default();
+    let outcome = shared.chat_hub.apply_model_command("telegram", &arg).await;
+    let text = match outcome {
+        ModelCommandOutcome::Set(name)  => format!("✅ Model set: <b>{}</b>", super::helpers::escape_html(&name)),
+        ModelCommandOutcome::Cleared    => "✅ Model reset to <b>auto</b>.".to_string(),
+        ModelCommandOutcome::Error(msg) => format!("⚠️ {}", super::helpers::escape_html(&msg)),
+    };
+    bot.send_message(chat_id, text)
+        .parse_mode(ParseMode::Html)
+        .await
+        .ok();
+}
+
 // ── LLM dispatch ─────────────────────────────────────────────────────────────
 
 async fn handle_llm_message(
@@ -314,7 +366,9 @@ async fn handle_llm_message(
     // The persistent_forwarder (spawned once in start()) is always subscribed
     // to the "telegram" broadcast channel and will pick up all events for this
     // turn — including Done → send to Telegram.  No per-message subscription needed.
+    let client_name = shared.chat_hub.get_selected_client("telegram").await;
     let opts = SendMessageOptions {
+        client_name,
         extra_system_context: Some(TELEGRAM_FORMAT_CONTEXT.to_string()),
         tail_reminder:        Some(super::TELEGRAM_FORMAT_REMINDER.to_string()),
         interface_tools:      super::tools::interface_tools(bot, chat_id, &*shared.tts).await,
