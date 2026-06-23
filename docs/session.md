@@ -120,13 +120,9 @@ Called by `ChatHub::resume()` (routed through the global event bus) when the cli
 
 ## resume_pending_tools
 
-Called at the start of `handle_message` (and by the REST endpoint after a manual resolve). Finds any `pending` tool calls left from a previous interrupted session, re-runs them through the approval gate, executes approved ones, and fails rejected or denied ones — so `run_agent_turn` sees complete history and can continue cleanly.
+Called at the start of `handle_message` (and by the REST endpoint after a manual resolve). Finds any `running`/`pending` tool calls left from a previous interrupted session, re-runs them through the approval gate, executes approved ones, and rejects denied ones — so `run_agent_turn` sees complete history and can continue cleanly. Takes the turn's `token` so a `/stop` during resume cancels cleanly.
 
-Tool dispatch order (same as `run_agent_turn`):
-
-1. MCP tool (name contains `:`).
-2. Memory tool (`config.memory_tools`).
-3. Built-in tool registry.
+**Rehydration = re-run from intent.** Each pending row is `(name, args, status)`; the live future was never serialized. The tool is reconstructed with the same `build_execution(name, args) → ToolExecution` used by the live loop and re-run from the start via `drive_execution`. This uniformly covers registry / memory / image / interface / MCP tools (previously only memory + registry were handled). `cancelled`/`rejected` rows are terminal and are **not** re-run.
 
 `restart` is handled as a special case: it marks the call `done` in the DB before calling `std::process::exit(-1)`.
 
@@ -160,10 +156,11 @@ Takes the per-turn `token: &CancellationToken` by value-clone from the caller. F
    - Emit `ToolStart` event (with original LLM-provided args, before WD injection).
    - **Working directory injection**: clone args into `effective_args`; if `RunContext.effective_working_dir()` is set, resolve relative `path` args to absolute and inject `workdir` into `execute_cmd` args (if the LLM didn't already set one).
    - **allow_fs_writes pre-check**: if the tool is a file-write tool, call `RunContext.is_write_allowed(path)` on the effective path; if true, skip `ApprovalManager` entirely and treat as `Allow`.
-   - Run approval gate on `effective_args` (see below).
-   - Dispatch tool using `effective_args`: sync sub-agent (`execute_task` mode=sync / `run_subtask`) → `dispatch_sub_agent` (recursive, inline); `execute_cmd` → `exec::run_from_args` wrapped in `tokio::select!` against the token (drop kills the shell via `kill_on_drop`); `update_scratchpad` → `db::scratchpad::upsert`; `ask_user_clarification` → emit `AgentQuestion`, await answer; MCP tool → `McpManager`; interface tool → closure in `AgentRunConfig`; otherwise → `ToolRegistry`.
-   - On success: `ToolDone` event, status → `done`.
-   - On error: `ToolError` event, status → `failed`.
+   - Run approval gate on `effective_args` (see below). On `Deny` / reject → `ToolRejected` event, status → `rejected`.
+   - Dispatch tool using `effective_args`. **Special, non-cancellable paths** stay inline and return a plain `Result<String>`: sync sub-agent (`execute_task` mode=sync / `run_subtask`) → `dispatch_sub_agent` (recursive, inline); `update_scratchpad`/`write_todos`; `ask_user_clarification` → emit `AgentQuestion`, await answer; `task_completed` stub. **Everything else** (built-in registry incl. `execute_cmd`, memory/image tools, MCP, interface tools) goes through the **unified cancellable path**: `build_execution(name, args) → ToolExecution`, driven by `drive_execution(exec, token)`. See [Tool execution lifecycle](tools.md#tool-execution-lifecycle).
+   - On `Completed`: `ToolDone` event, status → `done` (+ `FileChanged` for file-write tools).
+   - On `Failed`: `ToolError` event, status → `failed`.
+   - On `Cancelled` (a `/stop` hit the tool mid-flight): `ToolCancelled` event, status → `cancelled`, and the turn returns `TurnOutcome::Cancelled`. The execution's `stop()` was called (e.g. dropping the work future kills an `execute_cmd` child via `kill_on_drop`), so the tool aborts **immediately** instead of running to completion.
 6. Loop back — next round rebuilds context with tool results included.
 7. If all rounds exhausted: return `Exhausted`.
 

@@ -51,7 +51,7 @@ async fn create_tables(pool: &SqlitePool) -> Result<()> {
             agent_id         TEXT    NOT NULL DEFAULT 'main',
             is_interactive   INTEGER NOT NULL DEFAULT 1,
             is_ephemeral     INTEGER NOT NULL DEFAULT 0,
-            run_context_id   TEXT,
+            run_context      TEXT,
             created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
         )",
     )
@@ -100,7 +100,7 @@ async fn create_tables(pool: &SqlitePool) -> Result<()> {
             name       TEXT    NOT NULL,
             arguments  TEXT,
             result     TEXT,
-            status     TEXT    NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'pending', 'done', 'failed')),
+            status     TEXT    NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'pending', 'done', 'failed', 'cancelled', 'rejected')),
             created_at TEXT    NOT NULL DEFAULT (datetime('now'))
         )",
     )
@@ -143,9 +143,6 @@ async fn create_tables(pool: &SqlitePool) -> Result<()> {
     )
     .execute(pool)
     .await?;
-
-    let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN description TEXT").execute(pool).await;
-    let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN friendly_name TEXT").execute(pool).await;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS llm_providers (
@@ -200,6 +197,10 @@ async fn create_tables(pool: &SqlitePool) -> Result<()> {
             single_run         INTEGER NOT NULL DEFAULT 0,
             running_session_id INTEGER,
             kind               TEXT    NOT NULL DEFAULT 'cron',
+            parent_session_id  INTEGER REFERENCES chat_sessions(id),
+            run_context        TEXT,
+            running_since      TEXT,
+            origin_ref         TEXT,
             created_at         TEXT    NOT NULL DEFAULT (datetime('now'))
         )",
     )
@@ -293,6 +294,7 @@ async fn create_tables(pool: &SqlitePool) -> Result<()> {
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             provider_id  INTEGER NOT NULL REFERENCES llm_providers(id),
             model_id     TEXT    NOT NULL,
+            voice_id     TEXT,
             name         TEXT    NOT NULL UNIQUE,
             description  TEXT,
             instructions TEXT,
@@ -395,6 +397,8 @@ async fn create_tables(pool: &SqlitePool) -> Result<()> {
             error_text       TEXT,
             input_tokens     INTEGER,
             output_tokens    INTEGER,
+            cache_read_tokens     INTEGER,
+            cache_creation_tokens INTEGER,
             duration_ms      INTEGER NOT NULL DEFAULT 0,
             created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
         )",
@@ -491,8 +495,18 @@ async fn create_tables(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
-/// Incremental migrations tracked via the `config` table (key = `schema_version`).
-/// Each migration runs exactly once. New migrations increment the version number.
+/// Schema migrations tracked via the `config` table (key = `schema_version`).
+///
+/// Versions 1–16 were collapsed into the baseline schema produced by
+/// `create_tables`: a brand-new database is created directly at the final shape,
+/// so it is simply stamped at the baseline. A database that already ran the
+/// historical migrations is at >= 16 and is left untouched.
+///
+/// To add a NEW migration, append `if version < 17 { … }` (then 18, …) below the
+/// baseline stamp, each block ending by bumping `schema_version` — exactly as the
+/// old per-version blocks did.
+const BASELINE_SCHEMA_VERSION: u32 = 16;
+
 async fn migrate_tables(pool: &SqlitePool) -> Result<()> {
     let version: u32 = sqlx::query_scalar::<_, String>(
         "SELECT value FROM config WHERE key='schema_version'",
@@ -502,235 +516,20 @@ async fn migrate_tables(pool: &SqlitePool) -> Result<()> {
     .and_then(|v| v.parse().ok())
     .unwrap_or(0);
 
-    if version < 1 {
+    // Fresh DB: create_tables already produced the fully-compacted v16 schema,
+    // so just stamp the baseline without running any historical migration.
+    if version < BASELINE_SCHEMA_VERSION {
         sqlx::query(
             "INSERT OR REPLACE INTO config(key, value, updated_at)
-             VALUES('schema_version', '1', datetime('now'))",
+             VALUES('schema_version', ?1, datetime('now'))",
         )
+        .bind(BASELINE_SCHEMA_VERSION.to_string())
         .execute(pool)
         .await?;
     }
 
-    if version < 2 {
-        sqlx::query(
-            "ALTER TABLE tts_models ADD COLUMN voice_id TEXT",
-        )
-        .execute(pool)
-        .await
-        .ok(); // ok() — column may already exist if re-running on a new DB
-        sqlx::query(
-            "INSERT OR REPLACE INTO config(key, value, updated_at)
-             VALUES('schema_version', '2', datetime('now'))",
-        )
-        .execute(pool)
-        .await?;
-    }
-
-    if version < 3 {
-        sqlx::query("ALTER TABLE llm_requests ADD COLUMN cache_read_tokens     INTEGER")
-            .execute(pool).await.ok();
-        sqlx::query("ALTER TABLE llm_requests ADD COLUMN cache_creation_tokens INTEGER")
-            .execute(pool).await.ok();
-        sqlx::query(
-            "INSERT OR REPLACE INTO config(key, value, updated_at)
-             VALUES('schema_version', '3', datetime('now'))",
-        )
-        .execute(pool)
-        .await?;
-    }
-
-    if version < 4 {
-        sqlx::query(
-            "ALTER TABLE scheduled_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'cron'",
-        )
-        .execute(pool)
-        .await
-        .ok();
-        sqlx::query(
-            "INSERT OR REPLACE INTO config(key, value, updated_at)
-             VALUES('schema_version', '4', datetime('now'))",
-        )
-        .execute(pool)
-        .await?;
-    }
-
-    if version < 5 {
-        sqlx::query("ALTER TABLE approval_rules ADD COLUMN group_id TEXT")
-            .execute(pool).await.ok();
-        sqlx::query("ALTER TABLE chat_sessions ADD COLUMN run_context_id TEXT")
-            .execute(pool).await.ok();
-        sqlx::query(
-            "INSERT OR REPLACE INTO config(key, value, updated_at)
-             VALUES('schema_version', '5', datetime('now'))",
-        )
-        .execute(pool)
-        .await?;
-    }
-
-    if version < 6 {
-        // Rename legacy kind 'immediate' → 'sync'
-        sqlx::query("UPDATE scheduled_jobs SET kind = 'sync' WHERE kind = 'immediate'")
-            .execute(pool).await.ok();
-        // Add parent_session_id for async tasks (which session to inject the result into)
-        sqlx::query(
-            "ALTER TABLE scheduled_jobs ADD COLUMN parent_session_id INTEGER REFERENCES chat_sessions(id)",
-        )
-        .execute(pool).await.ok();
-        sqlx::query(
-            "INSERT OR REPLACE INTO config(key, value, updated_at)
-             VALUES('schema_version', '6', datetime('now'))",
-        )
-        .execute(pool)
-        .await?;
-    }
-
-    if version < 7 {
-        sqlx::query(
-            "ALTER TABLE scheduled_jobs ADD COLUMN run_context_id TEXT",
-        )
-        .execute(pool).await.ok();
-        sqlx::query(
-            "INSERT OR REPLACE INTO config(key, value, updated_at)
-             VALUES('schema_version', '7', datetime('now'))",
-        )
-        .execute(pool)
-        .await?;
-    }
-
-    if version < 8 {
-        sqlx::query(
-            "ALTER TABLE scheduled_jobs ADD COLUMN running_since TEXT",
-        )
-        .execute(pool).await.ok();
-        sqlx::query(
-            "INSERT OR REPLACE INTO config(key, value, updated_at)
-             VALUES('schema_version', '8', datetime('now'))",
-        )
-        .execute(pool)
-        .await?;
-    }
-
-    if version < 9 {
-        // Flatten run_context_id: copy tool_group_id from run_contexts into the
-        // referencing columns, then drop the now-obsolete run_contexts table.
-        // run_context_id now stores a tool_permission_groups id directly.
-        sqlx::query(
-            "UPDATE chat_sessions
-             SET run_context_id = (
-                 SELECT tool_group_id FROM run_contexts
-                 WHERE  id = chat_sessions.run_context_id
-             )
-             WHERE run_context_id IS NOT NULL",
-        )
-        .execute(pool)
-        .await
-        .ok();
-
-        sqlx::query(
-            "UPDATE scheduled_jobs
-             SET run_context_id = (
-                 SELECT tool_group_id FROM run_contexts
-                 WHERE  id = scheduled_jobs.run_context_id
-             )
-             WHERE run_context_id IS NOT NULL",
-        )
-        .execute(pool)
-        .await
-        .ok();
-
-        sqlx::query("DROP TABLE IF EXISTS run_contexts")
-            .execute(pool)
-            .await
-            .ok();
-
-        sqlx::query(
-            "INSERT OR REPLACE INTO config(key, value, updated_at)
-             VALUES('schema_version', '9', datetime('now'))",
-        )
-        .execute(pool)
-        .await?;
-    }
-
-    if version < 10 {
-        // Rename run_context_id → run_context on both tables and convert
-        // the column to a JSON blob (RunContext struct). Existing values are
-        // cleared because the old plain group-id string is not valid JSON.
-        sqlx::query("ALTER TABLE chat_sessions  RENAME COLUMN run_context_id TO run_context")
-            .execute(pool).await.ok();
-        sqlx::query("ALTER TABLE scheduled_jobs RENAME COLUMN run_context_id TO run_context")
-            .execute(pool).await.ok();
-        sqlx::query("UPDATE chat_sessions  SET run_context = NULL")
-            .execute(pool).await.ok();
-        sqlx::query("UPDATE scheduled_jobs SET run_context = NULL")
-            .execute(pool).await.ok();
-
-        sqlx::query(
-            "INSERT OR REPLACE INTO config(key, value, updated_at)
-             VALUES('schema_version', '10', datetime('now'))",
-        )
-        .execute(pool)
-        .await?;
-    }
-
-    if version < 11 {
-        sqlx::query("ALTER TABLE scheduled_jobs ADD COLUMN origin_ref TEXT")
-            .execute(pool).await.ok();
-        sqlx::query(
-            "INSERT OR REPLACE INTO config(key, value, updated_at)
-             VALUES('schema_version', '11', datetime('now'))",
-        )
-        .execute(pool)
-        .await?;
-    }
-
-    if version < 12 {
-        sqlx::query("ALTER TABLE projects DROP COLUMN agent_id")
-            .execute(pool).await.ok();
-        sqlx::query(
-            "INSERT OR REPLACE INTO config(key, value, updated_at)
-             VALUES('schema_version', '12', datetime('now'))",
-        )
-        .execute(pool)
-        .await?;
-    }
-
-    if version < 13 {
-        // Agent ids were renamed to explicit forms and `worker` was deleted; reassign
-        // existing job/stack rows so they don't orphan to a now-missing agent dir.
-        // `worker` and `tinker` both fold into the new generic executor `generalist`.
-        for (old, new) in [
-            ("engineer",  "software-engineer"),
-            ("architect", "software-architect"),
-            ("explorer",  "code-explorer"),
-            ("blueprint", "spec-writer"),
-            ("tinker",    "generalist"),
-            ("worker",    "generalist"),
-        ] {
-            sqlx::query("UPDATE scheduled_jobs      SET agent_id = ?1 WHERE agent_id = ?2")
-                .bind(new).bind(old).execute(pool).await.ok();
-            sqlx::query("UPDATE chat_sessions_stack SET agent_id = ?1 WHERE agent_id = ?2")
-                .bind(new).bind(old).execute(pool).await.ok();
-        }
-        sqlx::query(
-            "INSERT OR REPLACE INTO config(key, value, updated_at)
-             VALUES('schema_version', '13', datetime('now'))",
-        )
-        .execute(pool)
-        .await?;
-    }
-
-    if version < 14 {
-        // Per-request cost in USD, reported by providers that bill per-call
-        // (OpenRouter returns it under usage.cost). NULL for providers that don't.
-        sqlx::query("ALTER TABLE chat_history ADD COLUMN cost REAL")
-            .execute(pool).await.ok();
-        sqlx::query(
-            "INSERT OR REPLACE INTO config(key, value, updated_at)
-             VALUES('schema_version', '14', datetime('now'))",
-        )
-        .execute(pool)
-        .await?;
-    }
+    // Future migrations go here, e.g.:
+    // if version < 17 { … ; bump schema_version to '17' }
 
     Ok(())
 }

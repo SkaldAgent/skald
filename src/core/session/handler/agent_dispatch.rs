@@ -157,7 +157,7 @@ impl ChatSessionHandler {
         // `processing` lock and sharing the same cancellation token. The returned
         // string becomes the parent tool call's result, which `run_agent_turn`
         // persists and emits as `ToolDone` — so completion lives in one place.
-        let _ = self.resume_pending_tools(child.id, &child_config, tx).await;
+        let _ = self.resume_pending_tools(child.id, &child_config, token, tx).await;
         let outcome = self.run_agent_turn(child.id, &child_config, token, tx).await;
 
         if let Err(e) = stack_mcp_grants::delete_for_stack(pool, child.id).await {

@@ -75,6 +75,7 @@ regex              = "1"
 glob               = "0.3"
 libc               = "0.2"
 base64             = "0.22"
+sha2               = "0.10"
 notify             = "8"
 honcho-client            = { path = "crates/honcho-client" }
 llm-client               = { path = "crates/llm-client" }

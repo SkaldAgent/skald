@@ -54,7 +54,10 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde_json::Value;
 
-pub use core_api::tool::{Tool, ToolCategory, ToolDescriptionLength, truncate_label};
+pub use core_api::tool::{
+    drive_execution, ExecutionOutcome, SimpleExecution, Tool, ToolCategory,
+    ToolDescriptionLength, ToolExecution, truncate_label,
+};
 
 
 pub const MAX_LABEL_SHORT: usize = 60;
@@ -170,5 +173,12 @@ impl ToolRegistry {
             Some(tool) => tool.execute_async(args).await,
             None       => anyhow::bail!("Unknown tool: {name}"),
         }
+    }
+
+    /// Start a [`ToolExecution`] for a registered tool, or `None` if `name` is not
+    /// in the registry (MCP / interface tools are handled by the caller). The
+    /// returned handle borrows the registry, which outlives the turn.
+    pub fn run(&self, name: &str, args: Value) -> Option<Box<dyn ToolExecution + '_>> {
+        self.tools.get(name).map(|tool| tool.run(args))
     }
 }

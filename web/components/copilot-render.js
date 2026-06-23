@@ -176,6 +176,10 @@ export function renderTool(host, msg) {
       ? html`<span class="spinner-border spinner-border-sm text-warning" role="status" title="In attesa di approvazione"></span>`
     : msg.status === 'done'
       ? html`<i class="bi bi-check-circle-fill text-success"></i>`
+    : msg.status === 'cancelled'
+      ? html`<i class="bi bi-slash-circle-fill text-secondary" title="Interrotto dall'utente"></i>`
+    : msg.status === 'rejected'
+      ? html`<i class="bi bi-shield-fill-x text-warning" title="Negato dalle policy"></i>`
       : html`<i class="bi bi-x-circle-fill text-danger"></i>`;
 
   return html`

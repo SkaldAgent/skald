@@ -57,6 +57,17 @@ pub enum ServerEvent {
         tool_call_id: i64,
         error:        String,
     },
+    /// A tool call was stopped by the user via `/stop`. DB status: cancelled.
+    /// Distinct from `ToolError`: a cancellation is deliberate, not a failure.
+    ToolCancelled {
+        tool_call_id: i64,
+    },
+    /// A tool call was denied by an approval policy or a human. DB status: rejected.
+    /// Distinct from `ToolError`: a denial is a policy decision, not a failure.
+    ToolRejected {
+        tool_call_id: i64,
+        reason:       String,
+    },
     /// A sub-agent stack frame was opened.
     AgentStart {
         stack_id:            i64,
@@ -207,6 +218,8 @@ impl ServerEvent {
             Self::ToolStart      { .. } => "tool_start",
             Self::ToolDone       { .. } => "tool_done",
             Self::ToolError      { .. } => "tool_error",
+            Self::ToolCancelled  { .. } => "tool_cancelled",
+            Self::ToolRejected   { .. } => "tool_rejected",
             Self::AgentStart     { .. } => "agent_start",
             Self::AgentDone      { .. } => "agent_done",
             Self::Done           { .. } => "done",

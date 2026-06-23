@@ -23,12 +23,29 @@
 //! (same path model as `GET /api/file`), so absolute paths are used as-is and
 //! relative paths resolve against Skald's process CWD (the data root).
 //!
-//! One OS watcher per subscription per connection (no cross-connection
+//! One OS watcher per watched file per connection (no cross-connection
 //! sharing). On disconnect every watcher is dropped and the OS resources are
 //! released automatically.
+//!
+//! ## LaTeX dependency-aware watching
+//!
+//! When subscribing to a `.tex` / `.latex` source, the server expands the
+//! single path into the full dependency set discovered via the `LatexCompiler`'s
+//! `.fls` sidecar (every `\input`'ed fragment, custom `.sty` / `.cls`,
+//! `.bib`, images, etc.). One OS watcher is installed per dependency. Any
+//! change to any of them is forwarded to the client as a `changed` event for
+//! the original `.tex` path — so the file viewer does not need to know about
+//! the dependency graph.
+//!
+//! The dependency set is re-synced whenever the main `.tex` changes (or any of
+//! its dependencies does): the watchers for that path are dropped and
+//! re-installed with the fresh `.fls` content, so newly-added `\input`s are
+//! picked up automatically. On the very first subscribe, when no compile has
+//! happened yet, only the main `.tex` itself is watched; once the viewer's
+//! first compile writes the `.fls`, the next change event triggers the re-sync.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::{
@@ -49,9 +66,9 @@ use crate::core::tools::fs as fs_tools;
 
 pub async fn handler(
     ws: WebSocketUpgrade,
-    State(_skald): State<Arc<Skald>>,
+    State(skald): State<Arc<Skald>>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket))
+    ws.on_upgrade(move |socket| handle_socket(socket, skald))
 }
 
 #[derive(Deserialize)]
@@ -60,15 +77,17 @@ struct ClientMsg {
     path: String,
 }
 
-async fn handle_socket(mut socket: WebSocket) {
+async fn handle_socket(mut socket: WebSocket, skald: Arc<Skald>) {
     info!("file-watch WS connected");
 
     // Single mpsc into which every watcher callback forwards via an unbounded
     // sender (unbounded so the sync callback never blocks).
     let (change_tx, mut change_rx) = mpsc::unbounded_channel::<String>();
 
-    // original_path -> watcher (dropping the watcher un-watches the path).
-    let mut watchers: HashMap<String, RecommendedWatcher> = HashMap::new();
+    // original_path -> watchers (dropping the vec un-watches every path).
+    // A vec per subscription because LaTeX sources expand to one watcher per
+    // dependency.
+    let mut watchers: HashMap<String, Vec<RecommendedWatcher>> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -93,14 +112,17 @@ async fn handle_socket(mut socket: WebSocket) {
                                     ).await;
                                     continue;
                                 }
-                                if let Err(err) = install_watcher(&parsed.path, &change_tx, &mut watchers) {
-                                    let _ = send_json(&mut socket,
-                                        json!({ "type": "error", "path": parsed.path, "error": err })
-                                    ).await;
-                                } else {
-                                    let _ = send_json(&mut socket,
-                                        json!({ "type": "subscribed", "path": parsed.path })
-                                    ).await;
+                                match install_watcher(&parsed.path, &change_tx, &mut watchers, &skald) {
+                                    Ok(()) => {
+                                        let _ = send_json(&mut socket,
+                                            json!({ "type": "subscribed", "path": parsed.path })
+                                        ).await;
+                                    }
+                                    Err(err) => {
+                                        let _ = send_json(&mut socket,
+                                            json!({ "type": "error", "path": parsed.path, "error": err })
+                                        ).await;
+                                    }
                                 }
                             }
                             "unsubscribe" => {
@@ -127,6 +149,15 @@ async fn handle_socket(mut socket: WebSocket) {
                     if send_json(&mut socket, json!({ "type": "changed", "path": p })).await.is_err() {
                         break;
                     }
+                    // For LaTeX sources, the dependency set may have changed
+                    // (e.g. a new \input was added, or the first compile just
+                    // wrote the .fls). Drop & re-install the watchers for that
+                    // path so they reflect the current dependency graph.
+                    if is_latex_path(&p) {
+                        if watchers.remove(&p).is_some() {
+                            let _ = install_watcher(&p, &change_tx, &mut watchers, &skald);
+                        }
+                    }
                 }
             }
         }
@@ -135,39 +166,74 @@ async fn handle_socket(mut socket: WebSocket) {
     info!("file-watch WS disconnected");
 }
 
-/// Create a `RecommendedWatcher` for `user_path`, install it, and store it in
-/// `watchers` keyed by the original (un-resolved) path. Returns an error
-/// string on failure so the caller can report it to the client.
+/// Create one `RecommendedWatcher` per watched path and store them in
+/// `watchers` keyed by the original (un-resolved) `user_path`. Returns an
+/// error string on failure so the caller can report it to the client.
+///
+/// For `.tex` / `.latex` sources the single user path is expanded into the
+/// full dependency set via `LatexCompiler::watch_paths_for` (every
+/// `\input`'ed file, custom `.sty`/`.cls`, `.bib`, images, etc.). All events
+/// for any dependency are forwarded to the client as a `changed` event for
+/// the original `.tex` path.
 fn install_watcher(
     user_path: &str,
     change_tx: &mpsc::UnboundedSender<String>,
-    watchers: &mut HashMap<String, RecommendedWatcher>,
+    watchers: &mut HashMap<String, Vec<RecommendedWatcher>>,
+    skald: &Skald,
 ) -> Result<(), String> {
     let abs: PathBuf = fs_tools::resolve(user_path).map_err(|e| e.to_string())?;
-    let tx_for_cb = change_tx.clone();
-    let original_path = user_path.to_string();
 
-    let mut watcher = RecommendedWatcher::new(
-        move |res: notify::Result<notify::Event>| {
-            // Any event on the watched path triggers a change notification.
-            // We don't inspect the event kind — reload on the client side
-            // re-reads the file and naturally handles create/modify/remove.
-            if res.is_ok() {
-                if tx_for_cb.send(original_path.clone()).is_err() {
-                    // channel closed — receiver dropped (WS disconnected).
+    let paths_to_watch: Vec<PathBuf> = if is_latex_path(user_path) {
+        skald.latex_compiler.watch_paths_for(&abs)
+    } else {
+        vec![abs]
+    };
+
+    let mut installed: Vec<RecommendedWatcher> = Vec::with_capacity(paths_to_watch.len());
+
+    for path in paths_to_watch {
+        let tx_for_cb = change_tx.clone();
+        let original_path = user_path.to_string();
+
+        let mut watcher = RecommendedWatcher::new(
+            move |res: notify::Result<notify::Event>| {
+                // Any event on the watched path triggers a change notification.
+                // We don't inspect the event kind — reload on the client side
+                // re-reads the file and naturally handles create/modify/remove.
+                if res.is_ok() {
+                    if tx_for_cb.send(original_path.clone()).is_err() {
+                        // channel closed — receiver dropped (WS disconnected).
+                    }
                 }
-            }
-        },
-        Config::default(),
-    )
-    .map_err(|e| format!("watcher create failed: {e}"))?;
+            },
+            Config::default(),
+        )
+        .map_err(|e| format!("watcher create failed: {e}"))?;
 
-    watcher
-        .watch(&abs, RecursiveMode::NonRecursive)
-        .map_err(|e| format!("watch install failed: {e}"))?;
+        // Skip non-existent paths gracefully: a dependency may have been
+        // removed since the .fls was last written. The next compile will
+        // refresh the .fls and the watcher set will be re-synced.
+        if path.exists() {
+            watcher
+                .watch(&path, RecursiveMode::NonRecursive)
+                .map_err(|e| format!("watch install failed for {}: {e}", path.display()))?;
+        }
 
-    watchers.insert(user_path.to_string(), watcher);
+        installed.push(watcher);
+    }
+
+    watchers.insert(user_path.to_string(), installed);
     Ok(())
+}
+
+/// True for `.tex` / `.latex` extensions — sources that trigger the
+/// dependency-aware watcher expansion.
+fn is_latex_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| matches!(e.to_ascii_lowercase().as_str(), "tex" | "latex"))
+        .unwrap_or(false)
 }
 
 async fn send_json(socket: &mut WebSocket, value: serde_json::Value) -> Result<(), axum::Error> {

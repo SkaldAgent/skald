@@ -62,6 +62,35 @@ pub async fn fail(pool: &SqlitePool, id: i64, error: &str) -> anyhow::Result<()>
     Ok(())
 }
 
+/// Marks a tool call as `cancelled` — stopped by the user via `/stop`.
+/// Terminal and distinct from `failed`: a cancellation is deliberate, not an
+/// error, and is **not** picked up by `pending_for_stack` (never re-run on
+/// restart, unlike an interrupted `running` call).
+pub async fn cancel(pool: &SqlitePool, id: i64, note: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE chat_llm_tools SET result = ?, status = 'cancelled' WHERE id = ?",
+    )
+    .bind(note)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Marks a tool call as `rejected` — denied by an approval policy or a human.
+/// Terminal and distinct from `failed`: a denial is a policy decision, not an
+/// error, and is not re-run on restart.
+pub async fn reject(pool: &SqlitePool, id: i64, reason: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE chat_llm_tools SET result = ?, status = 'rejected' WHERE id = ?",
+    )
+    .bind(reason)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// All `running` or `pending` tool calls for a stack frame — used to resume interrupted sessions.
 /// `running`: tool was executing when the session was interrupted (re-execute).
 /// `pending`: tool was waiting for explicit user approval or clarification (re-gate or re-ask).

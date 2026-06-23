@@ -15,16 +15,19 @@ use crate::core::tools::tool_names::SHOW_FILE_TO_USER;
 ///
 /// When called, it emits a `ServerEvent::OpenFile` to the source's connected
 /// clients. The frontend routes it: HTML opens in a new browser tab, everything
-/// else (markdown / code / images) opens in the file-viewer page.
+/// else (Markdown / code / raster images / SVG / PDF / LaTeX — which is compiled
+/// to PDF server-side) opens in the file-viewer page.
 pub fn make_tool(hub: Arc<ChatHub>, source: String) -> InterfaceTool {
     let definition = json!({
         "type": "function",
         "function": {
             "name": SHOW_FILE_TO_USER,
             "description": "Show a file to the user by opening it in their interface. \
-                             Markdown, code and images open in the file viewer; HTML opens in a \
-                             new browser tab. Use this to surface a file you created or found so \
-                             the user can look at it directly. One file per call. \
+                             Supports Markdown, source code, plain text, raster images \
+                             (PNG/JPG/GIF/WebP/…), SVG, PDF, and LaTeX (.tex — compiled \
+                             to PDF automatically on the server). HTML files open in a \
+                             new browser tab. Use this to surface a file you created or \
+                             found so the user can look at it directly. One file per call. \
                              The file must already exist on disk.",
             "parameters": {
                 "type": "object",

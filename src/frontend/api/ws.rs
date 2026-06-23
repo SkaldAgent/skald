@@ -30,8 +30,10 @@ e.g. <img src=\"URL\" style=\"max-width:480px\">. \
 The URL returned by image_generate already points to the correct endpoint — use it as-is. \
 Do NOT append \".png\" or any extension to the URL.\n\
 \n\
-FILES: To let the user look at a file directly, call show_file_to_user(path). It opens the file \
-in their viewer (HTML opens in a new browser tab). Prefer this over pasting long file contents into chat.";
+FILES: To let the user look at a file directly, call show_file_to_user(path). Supported: \
+Markdown, source code, images (PNG/JPG/GIF/WebP/SVG), PDF, and LaTeX (.tex — auto-compiled \
+to PDF server-side). HTML opens in a new browser tab. Prefer this over pasting long file \
+contents into chat.";
 
 const HELP_TEXT: &str = "\
 **Available commands**\n\n\

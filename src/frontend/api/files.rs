@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use std::sync::Arc;
 use crate::core::skald::Skald;
+use crate::core::latex::CompileError;
 use crate::core::tools::fs as fs_tools;
 use super::ApiError;
 
@@ -40,20 +41,39 @@ pub async fn list_files(State(_state): State<Arc<Skald>>) -> Result<Json<Vec<Fil
 #[derive(Deserialize)]
 pub struct FileQuery {
     pub path: String,
+    /// When `true` and `path` points at a `.tex` / `.latex` file, compile it
+    /// to PDF via `latexmk` and return the PDF bytes instead of the raw
+    /// source. Other file types ignore this flag.
+    #[serde(rename = "compile-latex", default)]
+    pub compile_latex: bool,
 }
 
 /// Serve a file's raw bytes with a `Content-Type` derived from its extension.
 ///
 /// Raw bytes (not `read_to_string`) so binary formats — images, PDFs — work; the
 /// frontend file viewer reads text via `res.text()` and binaries via `res.blob()`.
+///
+/// With `?compile-latex=true` a `.tex` source is compiled to PDF (see
+/// [`crate::core::latex::LatexCompiler`]); the response is then
+/// `application/pdf`. Compilation failures yield `422 Unprocessable Entity`
+/// with the textual `latexmk` log in the body, so the caller can fall back to
+/// showing the raw source.
 pub async fn get_file(
-    State(_state): State<Arc<Skald>>,
+    State(state): State<Arc<Skald>>,
     Query(q): Query<FileQuery>,
 ) -> Response {
     let abs = match fs_tools::resolve(&q.path) {
         Ok(p)  => p,
         Err(_) => return (StatusCode::BAD_REQUEST, format!("Invalid path: {}", q.path)).into_response(),
     };
+
+    if q.compile_latex && is_latex(&q.path) {
+        return match state.latex_compiler.compile(&abs).await {
+            Ok(pdf) => pdf_response(pdf.bytes),
+            Err(err) => compile_error_response(err),
+        };
+    }
+
     match tokio::fs::read(&abs).await {
         Ok(bytes) => {
             let mut response = bytes.into_response();
@@ -65,6 +85,57 @@ pub async fn get_file(
         }
         Err(_) => (StatusCode::NOT_FOUND, format!("File not found: {}", q.path)).into_response(),
     }
+}
+
+/// Build a `200 OK` response carrying PDF bytes with the canonical
+/// `application/pdf` content type and inline disposition.
+fn pdf_response(bytes: Vec<u8>) -> Response {
+    let mut response = bytes.into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/pdf"),
+    );
+    response
+}
+
+/// Map a [`CompileError`] to an HTTP status that lets the frontend react:
+/// `ToolMissing` → `501 Not Implemented`, `Timeout` → `504 Gateway Timeout`,
+/// `Failed` → `422 Unprocessable Entity` (body = log), `Io` → `500`.
+///
+/// The body is always plain text so the viewer can show it directly.
+fn compile_error_response(err: CompileError) -> Response {
+    let (status, body): (StatusCode, String) = match err {
+        CompileError::ToolMissing => (
+            StatusCode::NOT_IMPLEMENTED,
+            "latexmk is not installed on the server.".to_string(),
+        ),
+        CompileError::Timeout => (
+            StatusCode::GATEWAY_TIMEOUT,
+            "LaTeX compilation aborted due to timeout.".to_string(),
+        ),
+        CompileError::Failed { log } => (StatusCode::UNPROCESSABLE_ENTITY, log),
+        CompileError::Io(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("I/O error during compilation: {e}"),
+        ),
+    };
+    let mut response = body.into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    (status, response).into_response()
+}
+
+/// True for `.tex` / `.latex` extensions — i.e. inputs worth compiling.
+fn is_latex(path: &str) -> bool {
+    matches!(
+        Path::new(path).extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
+        Some("tex") | Some("latex")
+    )
 }
 
 /// Best-effort `Content-Type` from a file extension. Known binary types get their
@@ -86,6 +157,7 @@ fn content_type_for(path: &str) -> &'static str {
         "ico"          => "image/x-icon",
         "svg"          => "image/svg+xml",
         "pdf"          => "application/pdf",
+        "tex" | "latex" => "application/x-tex",
         "html" | "htm" => "text/html; charset=utf-8",
         _              => "text/plain; charset=utf-8",
     }

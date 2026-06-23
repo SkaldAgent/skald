@@ -53,7 +53,7 @@ All events are JSON objects with a `"type"` tag (snake_case).
 | `pending_write` | `request_id`, `tool_call_id`, `path`, `old_content`, `new_content` | Approval required for write/command |
 | `agent_question` | `request_id`, `tool_call_id`, `title`, `question`, `suggested_answers` | Sub-agent needs user clarification |
 | `file_changed` | `path` | A tool wrote to a file |
-| `open_file` | `path` | Agent-driven file open: markdown/text/image route to the `<file-viewer-page>`; HTML files open in a new browser tab (rendered as a `text/html` blob — relative paths inside the HTML do not resolve). Emitted by the `show_file_to_user` interface tool (SPA-only, injected in `ws.rs`; `path` normalised relative to the project root) |
+| `open_file` | `path` | Agent-driven file open: the file viewer supports Markdown, source code, plain text, raster images (PNG/JPG/GIF/WebP/…), SVG, PDF, and LaTeX (`.tex` / `.latex` — compiled to PDF automatically on the server). HTML files open in a new browser tab (rendered as a `text/html` blob — relative paths inside the HTML do not resolve). Emitted by the `show_file_to_user` interface tool (SPA-only, injected in `ws.rs`; `path` normalised relative to the project root) |
 | `done` | `message_id`, `stack_id`, `content`, `input_tokens`, `output_tokens` | Turn complete, final response |
 | `truncated` | `output_tokens` | LLM hit token limit (`finish_reason=length`) |
 | `error` | `message` | Fatal error (session handler failed) |
@@ -159,7 +159,7 @@ Cancel message (abort current turn): `{"type":"cancel"}`
 | `web/components/sidebar.js` | `<app-sidebar>` | Navigation sidebar; polls `/api/inbox` every 10 s for badge count |
 | `web/components/topbar.js` | `<app-topbar>` | Top navigation bar |
 | `web/components/editor.js` | (removed) | The legacy `<app-main>` editor panel was removed. Use `<file-viewer>` (see [File Viewer](#file-viewer)) instead |
-| `web/components/file-viewer-page.js` | `<file-viewer-page>` | Top-level page that previews files (markdown / code / images / PDF) in the main workspace. Opened by `window.openFile(path)` (which sets `#file_viewer?path=...`). Currently shows preview only — editor + watcher tabs planned |
+| `web/components/file-viewer-page.js` | `<file-viewer-page>` | Top-level page that previews files (markdown / code / images / SVG / PDF / LaTeX) in the main workspace. Opened by `window.openFile(path)` (which sets `#file_viewer?path=...`). Currently shows preview only — editor + watcher tabs planned |
 | `web/components/cron-jobs.js` | `<cron-jobs-page>` | Cron job management UI — columns: Title (+ one-shot badge), Cron, Agent, Last run, Next run, Enabled, Actions |
 | `web/components/agent-inbox.js` | `<agent-inbox-page>` | Unified inbox for pending approvals and clarifications from background sessions; polls `/api/inbox` every 8 s when open |
 | `web/components/models-hub.js` | `<models-hub-page>` | Models hub — 3-card landing page (LLM / Transcription / Image Generation) with live model counts; internal navigation to sub-sections |
@@ -228,10 +228,22 @@ client can match it against the path it asked to watch.
 ### Implementation notes
 
 - **Backend** (`src/frontend/api/file_watch.rs`): one `notify::RecommendedWatcher`
-  per subscription per connection. On disconnect every watcher is dropped and
-  OS resources are released automatically. Path resolution uses
+  per watched file per connection (one watcher per file — for a LaTeX source
+  that means one per dependency, see below). On disconnect every watcher is
+  dropped and OS resources are released automatically. Path resolution uses
   `fs_tools::resolve` (same as `GET /api/file`), so absolute paths are used
   as-is and relative paths resolve against Skald's process CWD.
+- **LaTeX dependency watching**: when subscribing to a `.tex` / `.latex`
+  source, the server expands the single path into the full dependency set
+  discovered via `LatexCompiler::watch_paths_for()` (which reads the cached
+  `.fls` recorder file — see [LaTeX](#latex) below). One OS watcher is
+  installed per dependency; any change to any of them is forwarded to the
+  client as a `changed` event for the original `.tex` path. The dependency
+  set is re-synced on every change event (watchers dropped and re-installed
+  with the fresh `.fls`), so newly-added `\input`s are picked up
+  automatically. On the very first subscribe, when no compile has happened
+  yet, only the main `.tex` itself is watched; once the viewer's first
+  compile writes the `.fls`, the next change event triggers the re-sync.
 - **Frontend** (`web/lib/file-watcher.js`): singleton `fileWatcher` with a
   single persistent connection, ref-counting per path (multiple consumers of
   the same path share one OS watcher and one subscribe message),
@@ -322,15 +334,90 @@ Path resolution is delegated to the backend via `GET /api/file?path=<enc>`
 work. The viewer reads text kinds via `res.text()` and binary kinds via
 `res.blob()` → object URL.
 
+A query parameter `?compile-latex=true` switches the handler into LaTeX mode
+when `path` is a `.tex` / `.latex` file: instead of returning the raw source,
+the server runs `latexmk -xelatex` (via `LatexCompiler` in
+`src/core/latex/`) and returns the resulting PDF (`application/pdf`). Compiled
+PDFs are cached under `<tmp>/skald-latex/` in a **dependency-aware** way:
+
+- `<path-hash>.fls` — the `.fls` recorder file from the last compile of that
+  source (keyed by SHA-256 of the source's absolute path). Lists every file TeX
+  actually read.
+- `<deps-hash>.pdf` — the compiled PDF (keyed by SHA-256 of every
+  user-controlled input's contents, sorted by path).
+
+On each request the compiler first re-derives `deps-hash` from the cached
+`.fls` and serves the matching PDF without invoking `latexmk` if it exists.
+This means a change to any `\input`'ed fragment, custom `.sty` / `.cls`
+package, `.bib`, or `\includegraphics` target invalidates the cache correctly
+even when the main `.tex` file is unchanged. Inputs under system TeX
+distribution paths (`/usr/local/texlive`, `/Library/TeX`, …) and TeX
+auxiliary outputs (`.aux`, `.log`, `.fls`, `.synctex.gz`, …) are filtered out
+of the dependency set — they only change on a distro upgrade, which is rare
+and easy to handle by clearing the cache. Failures produce a non-2xx response
+with the textual `latexmk` log in the body:
+
+| Outcome | Status | Body |
+|---|---|---|
+| Compiled (or cache hit) | `200` | PDF bytes (`application/pdf`) |
+| Compilation error | `422` | `latexmk` log (`text/plain`) |
+| `latexmk` not installed | `501` | Explanatory message |
+| Compile timeout (> 30s) | `504` | Explanatory message |
+
 ### Supported kinds
 
 | Kind | Extensions | Rendering |
 |---|---|---|
 | **Markdown** | `.md`, `.markdown` | `renderMarkdown()` (marked + DOMPurify) via `unsafeHTML`. Relative `<img>` sources are rewritten (`rewriteMarkdownAssets`) to `/api/file?path=<dir-of-md + src>` so images referenced relative to the file load from disk; external/`data:`/root-relative URLs are left untouched |
-| **Image** | `.png .jpg .jpeg .gif .webp .svg .bmp .ico .avif` | `<img>` loaded as a Blob from `/api/file` (object URL) |
+| **Image** | `.png .jpg .jpeg .gif .webp .bmp .ico .avif` | `<img>` loaded as a Blob from `/api/file` (object URL) |
+| **SVG** | `.svg` | `<iframe sandbox="allow-same-origin">` to a Blob object URL. Rendered in a sandboxed iframe (not `<img>`): the SVG root fills the iframe viewport so viewBox-only files scale correctly, and `allow-scripts` is withheld so any embedded `<script>` cannot execute. `allow-same-origin` is required for the iframe to read the blob: URL |
 | **PDF** | `.pdf` | `<iframe>` to a Blob object URL — the browser's native PDF viewer |
+| **LaTeX** | `.tex`, `.latex` | On open, the viewer first requests `?compile-latex=true`; on `200` it renders the resulting PDF in an `<iframe>` (same path as a native `.pdf`). On any non-2xx response (compilation error, missing `latexmk`, timeout) it falls back to showing the raw source as a `<pre><code>` block, with the failure log available in a collapsible banner. The file watcher installs one OS watcher per dependency discovered via the `.fls` recorder file (`\input`'ed fragments, custom `.sty` / `.cls`, `.bib`, images, etc.) — so saving any of them triggers an automatic recompile. Requires `latexmk` with `xelatex` on the server's `PATH` (e.g. MacTeX / TeX Live). See the [LaTeX compile & cache](#latex-compile--cache) section below for the full dependency-aware algorithm. |
 | **Text/code** | `.txt .rs .js .ts .py .json .yml .toml .sh .sql .go .html .css .vue ...` (see `TEXT_EXTS` in the source) | `<pre><code>` block, monospace, horizontal scroll |
 | **Binary/unknown** | anything else | Placeholder: "Preview not available for this file type." |
+
+### LaTeX compile & cache
+
+The `.tex` kind is special: it is the only kind where the server produces a
+derived artefact (PDF) on demand rather than serving the raw file. The
+`LatexCompiler` in `src/core/latex/` orchestrates `latexmk -xelatex` and
+maintains a dependency-aware cache so:
+
+- saving any `\input`'ed fragment, custom `.sty` / `.cls`, `.bib`, or
+  `\includegraphics` target invalidates the cache correctly (even when the
+  main `.tex` is unchanged);
+- unchanged inputs are served without recompiling.
+
+Two artefacts live under `<tmp>/skald-latex/`:
+
+| Artefact          | Key                                            | Purpose                                          |
+|-------------------|------------------------------------------------|--------------------------------------------------|
+| `<path-hash>.fls` | SHA-256 of the `.tex` absolute path            | Last-known input list for that source            |
+| `<deps-hash>.pdf` | SHA-256 of every user-controlled input's bytes | The compiled PDF for that exact content state    |
+
+Per request:
+
+1. Read `<path-hash>.fls` (the recorder file produced by the last compile).
+   Missing → fresh compile.
+2. Filter out system TeX paths (`/usr/local/texlive`, `/Library/TeX`, …) and
+   auxiliary artefacts (`.aux`, `.log`, `.fls`, `.synctex.gz`, …).
+3. Hash every remaining input's contents, derive `<deps-hash>`.
+4. If `<deps-hash>.pdf` exists → cache hit, serve it.
+5. Otherwise → run `latexmk` in a per-compile scratch directory with
+   `-output-directory=<tmp>/skald-latex/<path-key>-<pid>-<ns>/`, capture the
+   new `.fls`, overwrite the `<path-hash>.fls` sidecar, save the PDF as
+   `<deps-hash>.pdf`, serve.
+
+The file watcher (`/api/file/watch`) re-syncs its OS watchers on every change
+event for a `.tex` source — dropping the per-dependency watchers and
+re-installing them with the fresh `.fls`, so newly-added `\input`s are picked
+up automatically. On the very first subscribe (no `.fls` yet), only the main
+`.tex` is watched; once the first compile writes the sidecar, the next change
+event triggers the re-sync.
+
+Limitations: system TeX distribution files are excluded from the dependency
+hash (they only change on a distro upgrade — clear the cache directory to
+force a rebuild); shell-escape inputs (`\input{|"command"}`) are not tracked.
 
 ### Mobile
 
@@ -360,8 +447,9 @@ The page is the foundation for several follow-up phases (tracked separately):
 | `web/lib/open-file.js` | Defines and registers `window.openFile`; sets `location.hash` |
 | `web/components/file-viewer-page.js` | `<file-viewer-page>` Lit page — hash routing, fetch, kind-based rendering, watcher integration |
 | `web/lib/file-watcher.js` | Singleton client for `/api/file/watch` — ref-counting, auto-reconnect, re-subscribe |
-| `web/css/file-viewer.css` | Page + content styling (markdown, code, image, state) |
-| `src/frontend/api/file_watch.rs` | `/api/file/watch` WS handler — `notify::RecommendedWatcher` per subscription |
+| `web/css/file-viewer.css` | Page + content styling (markdown, code, image, LaTeX compile-error banner, state) |
+| `src/frontend/api/file_watch.rs` | `/api/file/watch` WS handler — `notify::RecommendedWatcher` per watched file (one per LaTeX dependency for `.tex` sources) |
+| `src/core/latex/mod.rs`, `src/core/latex/compiler.rs` | `LatexCompiler` — `latexmk -xelatex` invocation, SHA-256 content cache, error mapping. Called by `get_file` when `?compile-latex=true` |
 
 ---
 

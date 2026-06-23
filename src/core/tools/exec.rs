@@ -83,14 +83,22 @@ impl Tool for ExecuteCmd {
             tokio::runtime::Handle::current().block_on(run_from_args(&args))
         })
     }
+
+    /// Genuinely async so the unified `ToolExecution` path can race it against the
+    /// /stop token: on cancel the `SimpleExecution` drops this future and
+    /// `kill_on_drop(true)` kills the spawned shell process. (The sync `execute`
+    /// above — which blocks a worker thread — would not be cancellable.)
+    fn execute_async<'a>(&'a self, args: Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + 'a>> {
+        Box::pin(async move { run_from_args(&args).await })
+    }
 }
 
 /// Parse + run a shell command from tool arguments, as an awaitable future.
 ///
-/// Used by the LLM loop so the call can be wrapped in `tokio::select!` against a
-/// cancellation token: on cancel the future is dropped and `kill_on_drop(true)`
-/// kills the child process. `Tool::execute` runs this synchronously via
-/// `block_in_place` for the non-cancellable resume/registry path.
+/// Driven by `ExecuteCmd::execute_async` through the unified `ToolExecution`
+/// path: on /stop the `SimpleExecution` drops this future and `kill_on_drop(true)`
+/// kills the child process. `Tool::execute` runs it synchronously via
+/// `block_in_place` only as a non-cancellable fallback.
 pub async fn run_from_args(args: &Value) -> Result<String> {
     let (command, workdir, timeout_secs) = parse_args(args)?;
     run(command, workdir, timeout_secs).await

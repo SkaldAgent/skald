@@ -9,7 +9,10 @@ use crate::core::chat_event_bus::ToolCallEvent;
 use crate::core::chatbot::{ChatOptions, LlmTurn};
 use crate::core::db::{chat_history, chat_llm_tools};
 use crate::core::events::ServerEvent;
-use crate::core::tools::{is_file_read_tool, is_file_write_tool, ToolDescriptionLength};
+use crate::core::tools::{
+    drive_execution, is_file_read_tool, is_file_write_tool, ExecutionOutcome,
+    SimpleExecution, ToolDescriptionLength, ToolExecution,
+};
 use crate::core::run_context::RunContext;
 
 use super::{ApprovalDecision, ChatSessionHandler, TurnOutcome};
@@ -246,16 +249,16 @@ impl ChatSessionHandler {
                             GateResult::Deny => {
                                 let msg = "Tool call denied by approval policy.".to_string();
                                 info!(session_id = self.session_id, tool = %call.name, tool_call_id, "approval: denied");
-                                chat_llm_tools::fail(pool, tool_call_id, &msg).await?;
-                                tx.send(ServerEvent::ToolError { tool_call_id, error: msg }).await.ok();
+                                chat_llm_tools::reject(pool, tool_call_id, &msg).await?;
+                                tx.send(ServerEvent::ToolRejected { tool_call_id, reason: msg }).await.ok();
                                 continue;
                             }
                             GateResult::Require => {
                             if self.auto_deny_approvals.load(Ordering::Relaxed) {
                                 let msg = "Tool call auto-denied: this session does not support approval requests.".to_string();
                                 info!(session_id = self.session_id, tool = %call.name, tool_call_id, "auto_deny_approvals: denied");
-                                chat_llm_tools::fail(pool, tool_call_id, &msg).await?;
-                                tx.send(ServerEvent::ToolError { tool_call_id, error: msg }).await.ok();
+                                chat_llm_tools::reject(pool, tool_call_id, &msg).await?;
+                                tx.send(ServerEvent::ToolRejected { tool_call_id, reason: msg }).await.ok();
                                 continue;
                             }
 
@@ -284,8 +287,8 @@ impl ChatSessionHandler {
                                         } else {
                                             format!("User rejected this tool call. Reason: {note}")
                                         };
-                                        chat_llm_tools::fail(pool, tool_call_id, &msg).await?;
-                                        tx.send(ServerEvent::ToolError { tool_call_id, error: msg }).await.ok();
+                                        chat_llm_tools::reject(pool, tool_call_id, &msg).await?;
+                                        tx.send(ServerEvent::ToolRejected { tool_call_id, reason: msg }).await.ok();
                                         continue;
                                     }
                                     Err(_) => {
@@ -313,41 +316,52 @@ impl ChatSessionHandler {
                             unsafe { libc::_exit(-1) }
                         }
 
-                        let dispatch_result: anyhow::Result<String> = if
+                        // Special, non-cancellable dispatch paths return a plain
+                        // `Result<String>`. The unified `ToolExecution` path
+                        // (registry / memory / image / interface / MCP) returns an
+                        // `ExecutionOutcome` and is the only one that can be
+                        // `Cancelled` mid-flight — `drive_execution` races it
+                        // against the /stop token so ANY tool aborts immediately.
+                        let outcome: ExecutionOutcome = if
                             (call.name == "execute_task" && effective_args["mode"].as_str() == Some("sync") && effective_args.get("agent_id").is_some())
                             || call.name == tn::RUN_SUBTASK
                         {
-                            self.dispatch_sub_agent(stack_id, config, tool_call_id, &effective_args, token, tx).await
-                        } else if call.name == tn::EXECUTE_CMD {
-                            // Cancellable path: a /stop drops this future, and
-                            // `kill_on_drop(true)` kills the spawned shell process.
-                            tokio::select! {
-                                _ = token.cancelled() => Err(anyhow::anyhow!("execute_cmd interrotto dall'utente")),
-                                r = crate::core::tools::exec::run_from_args(&effective_args) => r,
-                            }
+                            plain_outcome(self.dispatch_sub_agent(stack_id, config, tool_call_id, &effective_args, token, tx).await)
                         } else if call.name == tn::UPDATE_SCRATCHPAD {
-                            self.dispatch_update_scratchpad(&effective_args).await
+                            plain_outcome(self.dispatch_update_scratchpad(&effective_args).await)
                         } else if call.name == tn::WRITE_TODOS {
-                            self.dispatch_write_todos(&effective_args).await
+                            plain_outcome(self.dispatch_write_todos(&effective_args).await)
                         } else if call.name == tn::ASK_USER_CLARIFICATION {
-                            self.dispatch_ask_user_clarification(tool_call_id, &effective_args, tx).await
+                            match self.dispatch_ask_user_clarification(tool_call_id, &effective_args, tx).await {
+                                Ok(answer) => ExecutionOutcome::Completed(answer),
+                                Err(err) => {
+                                    // WS disconnected while waiting for a clarification answer.
+                                    // Tool stays 'pending' in DB — resume_pending_tools re-dispatches on reconnect.
+                                    if matches!(err.downcast_ref::<super::AgentFlowSignal>(), Some(super::AgentFlowSignal::QuestionChannelClosed)) {
+                                        warn!(session_id = self.session_id, tool_call_id, "clarification channel closed — aborting turn (tool stays pending)");
+                                        return Ok(TurnOutcome::Cancelled);
+                                    }
+                                    ExecutionOutcome::Failed(err.to_string())
+                                }
+                            }
                         } else if call.name == "task_completed" {
                             // Defensive stub: if the LLM somehow calls this itself, return a hint.
                             // Real delivery is via inject_async_result (synthetic message from the system).
                             let task_id = effective_args["task_id"].as_i64().unwrap_or(0);
-                            Ok(format!(r#"{{"status":"not_ready","task_id":{task_id},"message":"This tool is invoked by the system, not by you. Do not call it again — the result will arrive automatically as a new message in this conversation."}}"#))
-                        } else if let Some(tool) = config.interface_tools.iter().find(|t| t.name() == call.name) {
-                            (tool.handler)(effective_args.clone()).await
-                        } else if let Some(tool) = config.memory_tools.iter().find(|t| t.name() == call.name) {
-                            tool.execute_async(effective_args.clone()).await
-                        } else if let Some(tool) = config.image_tools.iter().find(|t| t.name() == call.name) {
-                            tool.execute_async(effective_args.clone()).await
+                            ExecutionOutcome::Completed(format!(r#"{{"status":"not_ready","task_id":{task_id},"message":"This tool is invoked by the system, not by you. Do not call it again — the result will arrive automatically as a new message in this conversation."}}"#))
                         } else {
-                            self.execute_tool(&call.name, effective_args.clone()).await
+                            // Unified cancellable path. The execution owns its
+                            // in-flight state and its own stop(); on /stop the work
+                            // future is dropped (aborting I/O / killing the child)
+                            // and the tool is recorded as Cancelled, not Failed.
+                            match self.build_execution(&call.name, effective_args.clone(), config) {
+                                Some(exec) => drive_execution(exec.as_ref(), token).await,
+                                None        => ExecutionOutcome::Failed(format!("Unknown tool: {}", call.name)),
+                            }
                         };
 
-                        match dispatch_result {
-                            Ok(result) => {
+                        match outcome {
+                            ExecutionOutcome::Completed(result) => {
                                 debug!(session_id = self.session_id, tool = %call.name, tool_call_id, result_len = result.len(), "tool done");
                                 chat_llm_tools::complete(pool, tool_call_id, &result).await?;
                                 if is_file_write_tool(&call.name) {
@@ -364,14 +378,7 @@ impl ChatSessionHandler {
                                     status:    "done".to_string(),
                                 });
                             }
-                            Err(err) => {
-                                // WS disconnected while waiting for a clarification answer.
-                                // Tool stays 'pending' in DB — resume_pending_tools re-dispatches on reconnect.
-                                if matches!(err.downcast_ref::<super::AgentFlowSignal>(), Some(super::AgentFlowSignal::QuestionChannelClosed)) {
-                                    warn!(session_id = self.session_id, tool_call_id, "clarification channel closed — aborting turn (tool stays pending)");
-                                    return Ok(TurnOutcome::Cancelled);
-                                }
-                                let msg = err.to_string();
+                            ExecutionOutcome::Failed(msg) => {
                                 warn!(session_id = self.session_id, tool = %call.name, tool_call_id, error = %msg, "tool failed");
                                 chat_llm_tools::fail(pool, tool_call_id, &msg).await?;
                                 tx.send(ServerEvent::ToolError { tool_call_id, error: msg.clone() }).await.ok();
@@ -382,6 +389,16 @@ impl ChatSessionHandler {
                                     status:    "failed".to_string(),
                                 });
                             }
+                            ExecutionOutcome::Cancelled => {
+                                // A /stop hit this tool mid-flight. Record it as
+                                // cancelled (not failed), emit the dedicated event,
+                                // and end the turn — the sticky token cancels the
+                                // rest of the round by construction.
+                                info!(session_id = self.session_id, tool = %call.name, tool_call_id, "tool cancelled by user");
+                                chat_llm_tools::cancel(pool, tool_call_id, "Interrotto dall'utente.").await?;
+                                tx.send(ServerEvent::ToolCancelled { tool_call_id }).await.ok();
+                                return Ok(TurnOutcome::Cancelled);
+                            }
                         }
                     }
                 }
@@ -390,6 +407,52 @@ impl ChatSessionHandler {
 
         Ok(TurnOutcome::Exhausted)
         }) // end Box::pin
+    }
+
+    /// Builds a [`ToolExecution`] for a single tool call, covering every tool that
+    /// flows through the unified (cancellable) dispatch path: interface tools,
+    /// memory/image tools, MCP tools, and the built-in registry (incl.
+    /// `execute_cmd`). Returns `None` only for an unknown tool name. The handle
+    /// borrows `self` and `config`, both of which outlive the turn.
+    pub(super) fn build_execution<'a>(
+        &'a self,
+        name:   &str,
+        args:   serde_json::Value,
+        config: &'a AgentRunConfig,
+    ) -> Option<Box<dyn ToolExecution + 'a>> {
+        // Interface tools (closures injected per-interface, e.g. show_mcp_tools).
+        if let Some(tool) = config.interface_tools.iter().find(|t| t.name() == name) {
+            return Some(Box::new(SimpleExecution::new((tool.handler)(args))));
+        }
+        // Memory + image tools (registered ad-hoc on the config).
+        if let Some(tool) = config.memory_tools.iter().find(|t| t.name() == name) {
+            return Some(tool.run(args));
+        }
+        if let Some(tool) = config.image_tools.iter().find(|t| t.name() == name) {
+            return Some(tool.run(args));
+        }
+        // MCP tools (`server::tool`). Clone the Arc so the work future is 'static.
+        if let Some((srv, mcp_tool)) = crate::core::mcp::parse_mcp_tool_name(name) {
+            let mcp      = std::sync::Arc::clone(&self.mcp);
+            let srv      = srv.to_string();
+            let mcp_tool = mcp_tool.to_string();
+            let fut: std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send>> =
+                Box::pin(async move { mcp.call(&srv, &mcp_tool, args).await });
+            return Some(Box::new(SimpleExecution::new(fut)));
+        }
+        // Built-in registry tools (incl. execute_cmd, whose SimpleExecution kills
+        // the child via kill_on_drop when the work future is dropped on /stop).
+        self.tools.run(name, args)
+    }
+}
+
+/// Maps a plain dispatch `Result<String>` to an [`ExecutionOutcome`]. Used by the
+/// non-cancellable special paths (sub-agent, scratchpad, todos), which can only
+/// complete or fail — never `Cancelled`.
+fn plain_outcome(result: anyhow::Result<String>) -> ExecutionOutcome {
+    match result {
+        Ok(s)  => ExecutionOutcome::Completed(s),
+        Err(e) => ExecutionOutcome::Failed(e.to_string()),
     }
 }
 

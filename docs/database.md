@@ -108,12 +108,17 @@ recent row is used; older rows are retained for historical reference.
 | `name` | TEXT | NOT NULL |
 | `arguments` | TEXT | nullable (JSON string) |
 | `result` | TEXT | nullable |
-| `status` | TEXT | NOT NULL DEFAULT `pending` CHECK(`pending` \| `done` \| `failed`) |
+| `status` | TEXT | NOT NULL DEFAULT `running` CHECK(`running` \| `pending` \| `done` \| `failed` \| `cancelled` \| `rejected`) |
 | `created_at` | TEXT | NOT NULL |
 
-- `pending` → tool call recorded but not yet executed (or app crashed mid-execution)
+- `running` → tool is executing (or app crashed mid-execution — re-run on resume)
+- `pending` → blocked on a human approval / clarification (re-gate / re-ask on resume)
 - `done` → result is in `result` column
-- `failed` → error message is in `result` column
+- `failed` → tool/runtime error message is in `result` column
+- `cancelled` → stopped by the user via `/stop` (terminal, **not** re-run on resume) — distinct from `failed`
+- `rejected` → denied by an approval policy or a human (terminal) — distinct from `failed`
+
+The richer in-memory `ToolExecutionState` maps onto these strings (see [tools.md](tools.md#tool-execution-lifecycle)). The table is created directly with the full 6-value `CHECK` constraint; `cancelled`/`rejected` (distinct from `failed`) were historically added by a table rebuild in schema versions 15–16, now folded into the baseline (see [Migration Pattern](#migration-pattern)).
 
 Index: `idx_tools_message ON chat_llm_tools(message_id)`
 
@@ -459,43 +464,33 @@ Primary key: `(session_id, key)`.
 
 ## Migration Pattern
 
-Additive column migrations use a versioned system in `migrate_tables()`. A `schema_version` key in the `config` table tracks the current version; each version block runs its `ALTER TABLE` statements then bumps the version.
+`migrate_tables()` tracks the schema with a `schema_version` key in the `config` table.
+
+**Versions 1–16 have been collapsed into the baseline.** `create_tables()` now builds every table directly at its final (post-v16) shape, so a brand-new database needs no migrations — `migrate_tables()` just stamps it at `BASELINE_SCHEMA_VERSION = 16`. A database that already ran the historical migrations is at version ≥ 16 and is left untouched.
 
 ```rust
+const BASELINE_SCHEMA_VERSION: u32 = 16;
+
 async fn migrate_tables(pool: &SqlitePool) -> Result<()> {
     let version: u32 = /* read config.schema_version, default 0 */;
 
-    if version < 1 {
-        // ... bump to 1
+    // Fresh DB: create_tables already produced the full v16 schema → stamp baseline.
+    if version < BASELINE_SCHEMA_VERSION {
+        // INSERT OR REPLACE schema_version = 16
     }
-    if version < 2 {
-        sqlx::query("ALTER TABLE tts_models ADD COLUMN voice_id TEXT")
-            .execute(pool).await.ok(); // .ok() — no-op if column already exists
-        // bump to 2
-    }
+
+    // Future migrations go here:
+    // if version < 17 { sqlx::query("ALTER TABLE …").execute(pool).await.ok(); /* bump to 17 */ }
+
+    Ok(())
 }
 ```
 
-`.ok()` on the ALTER makes the block idempotent. **Renaming columns, changing types, or dropping columns is not supported** — those require a new migration strategy.
+### Adding a new migration
 
-### Schema version history
+Append an `if version < 17 { … }` block (then 18, …) below the baseline stamp. Use `.ok()` on each `ALTER TABLE` to stay idempotent, then bump `schema_version`. **Renaming columns, changing types, or dropping columns is not supported** by a plain `ALTER` — those need a single-transaction table rebuild (as the old v15/v16 did for `chat_llm_tools`).
 
-| Version | Change |
-| ------- | ------ |
-| 1 | Initial (no-op bump — establishes versioning) |
-| 2 | `tts_models`: added `voice_id TEXT` (speaker voice, separate from generation model) |
-| 3 | `llm_requests`: added `cache_read_tokens` and `cache_creation_tokens` INTEGER |
-| 4 | `scheduled_jobs`: added `kind TEXT NOT NULL DEFAULT 'cron'` to distinguish cron jobs from immediate tasks |
-| 5 | `approval_rules`: added `group_id TEXT`; `chat_sessions`: added `run_context_id TEXT` |
-| 6 | `scheduled_jobs`: renamed `kind='immediate'` → `kind='sync'`; added `parent_session_id INTEGER` FK for async result delivery |
-| 7 | `scheduled_jobs`: added `run_context_id TEXT` — inherited from the creating session; applied to the child session at run time |
-| 8 | `scheduled_jobs`: added `running_since TEXT` — timestamp set when a job starts running; used for monitoring in-flight jobs |
-| 9 | Flattened `run_contexts` table: copied `tool_group_id` into `chat_sessions.run_context_id` and `scheduled_jobs.run_context_id`; dropped `run_contexts` table |
-| 10 | `chat_sessions` + `scheduled_jobs`: renamed `run_context_id` → `run_context` (now a `RunContext` JSON blob instead of a plain group-id string); existing values cleared to NULL |
-| 11 | New tables `projects`, `project_tickets`; `scheduled_jobs`: added `origin_ref TEXT` for post-completion callbacks |
-| 12 | `projects`: dropped `agent_id` column (agent is a ticket-level concern, not project-level) |
-| 13 | Reassigned legacy `agent_id` values in `scheduled_jobs` + `chat_sessions_stack` to renamed agent ids (e.g. `engineer`→`software-engineer`, `worker`/`tinker`→`generalist`) |
-| 14 | `chat_history`: added `cost REAL` — per-request price in USD reported by the provider (OpenRouter `usage.cost`) |
+> The original per-version history (1–16: `voice_id`, cache-token columns, `scheduled_jobs` columns, the `run_context_id` → `run_context` rename, the `run_contexts` flatten/drop, agent-id reassignments, `chat_history.cost`, the `chat_llm_tools` CHECK widening, …) is preserved in git history. It is no longer reachable code: a fresh DB is created at the final shape, and the only existing DBs are already at v16.
 
 ---
 

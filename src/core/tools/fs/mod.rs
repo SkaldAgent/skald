@@ -62,9 +62,13 @@ pub fn canonicalize_for_policy(path: &str, base: &Path) -> PathBuf {
     // Longest existing ancestor first (ancestors() yields self, then parents).
     for ancestor in cleaned.ancestors() {
         if let Ok(canon) = std::fs::canonicalize(ancestor) {
+            // `canon.join("")` appends a trailing separator, so skip the join
+            // when the tail is empty (the common case: the file itself is its
+            // first canonicalizable ancestor). Otherwise the canonical path
+            // ends in '/', leaking into display strings and /api/file requests.
             return match cleaned.strip_prefix(ancestor) {
-                Ok(tail) => canon.join(tail),
-                Err(_)   => canon,
+                Ok(tail) if !tail.as_os_str().is_empty() => canon.join(tail),
+                _                                         => canon,
             };
         }
     }

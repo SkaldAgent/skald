@@ -5,7 +5,8 @@ import { fileWatcher }          from '../lib/file-watcher.js';
 
 const PAGE_ID = 'file_viewer';
 
-const IMG_EXTS  = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'];
+const IMG_EXTS  = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif'];
+const LATEX_EXTS = ['tex', 'latex'];
 const TEXT_EXTS = [
   'txt', 'md', 'markdown', 'rs', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx',
   'py', 'json', 'yml', 'yaml', 'toml', 'sh', 'bash', 'zsh', 'fish',
@@ -15,6 +16,9 @@ const TEXT_EXTS = [
   'xml', 'csv', 'tsv', 'log', 'env', 'ini', 'cfg', 'conf',
   'gitignore', 'dockerignore', 'editorconfig',
   'vue', 'svelte', 'astro',
+  // LaTeX is also kept here as the fallback when compilation fails — kindFor
+  // still routes it to 'latex' so the viewer knows to attempt a compile first.
+  'tex', 'latex',
 ];
 
 function extOf(path) {
@@ -27,9 +31,14 @@ function extOf(path) {
 
 function kindFor(path) {
   const ext = extOf(path);
-  if (IMG_EXTS.includes(ext))  return 'image';
-  if (ext === 'pdf')           return 'pdf';
-  if (TEXT_EXTS.includes(ext)) return 'text';
+  // SVG is excluded from IMG_EXTS on purpose: rendered in a sandboxed iframe
+  // (not <img>), which both scales viewBox-only SVGs to fill the viewport and
+  // isolates any embedded <script> from the host page.
+  if (ext === 'svg')             return 'svg';
+  if (IMG_EXTS.includes(ext))    return 'image';
+  if (ext === 'pdf')             return 'pdf';
+  if (LATEX_EXTS.includes(ext))  return 'latex';
+  if (TEXT_EXTS.includes(ext))   return 'text';
   return 'binary';
 }
 
@@ -93,13 +102,14 @@ function pathFromHash() {
 
 export class FileViewerPage extends LightElement {
   static properties = {
-    _open:    { state: true },
-    _path:    { state: true },
-    _kind:    { state: true },
-    _content: { state: true },
-    _blobUrl:  { state: true },
-    _loading: { state: true },
-    _error:   { state: true },
+    _open:         { state: true },
+    _path:         { state: true },
+    _kind:         { state: true },
+    _content:      { state: true },
+    _blobUrl:      { state: true },
+    _loading:      { state: true },
+    _error:        { state: true },
+    _compileError: { state: true },
   };
 
   constructor() {
@@ -111,6 +121,7 @@ export class FileViewerPage extends LightElement {
     this._blobUrl      = null;
     this._loading     = false;
     this._error       = null;
+    this._compileError = null;
     this._watchPath   = null;     // path currently being watched (async-verified)
     this._watchUnsub  = null;     // unsubscribe function returned by fileWatcher
     this._reloadTimer = null;     // debounce timer for change-triggered reloads
@@ -147,10 +158,11 @@ export class FileViewerPage extends LightElement {
   }
 
   _reset() {
-    this._path    = null;
-    this._kind    = null;
-    this._content = '';
-    this._error   = null;
+    this._path        = null;
+    this._kind        = null;
+    this._content     = '';
+    this._error       = null;
+    this._compileError = null;
     this._revokeBlobUrl();
   }
 
@@ -168,6 +180,7 @@ export class FileViewerPage extends LightElement {
       this._kind    = kindFor(path);
       this._content = '';
       this._error   = null;
+      this._compileError = null;
       this._revokeBlobUrl();
       this._loading = true;
     } else {
@@ -177,7 +190,7 @@ export class FileViewerPage extends LightElement {
     }
     try {
       const url = `/api/file?path=${encodeURIComponent(path)}`;
-      if (this._kind === 'image' || this._kind === 'pdf') {
+      if (this._kind === 'image' || this._kind === 'pdf' || this._kind === 'svg') {
         const res = await fetch(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const blob = await res.blob();
@@ -185,6 +198,8 @@ export class FileViewerPage extends LightElement {
         const oldUrl = this._blobUrl;
         this._blobUrl = URL.createObjectURL(blob);
         if (oldUrl) URL.revokeObjectURL(oldUrl);
+      } else if (this._kind === 'latex') {
+        await this._loadLatex(path);
       } else if (this._kind === 'text') {
         const res = await fetch(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -196,6 +211,40 @@ export class FileViewerPage extends LightElement {
     } finally {
       if (!silent) this._loading = false;
     }
+  }
+
+  /**
+   * Load a `.tex` / `.latex` file. Tries to compile to PDF server-side first;
+   * on any non-OK response (422 compilation error, 501 no latexmk, etc.) it
+   * falls back to showing the raw source as plain text, preserving the error
+   * message so the user can see why the compile failed.
+   */
+  async _loadLatex(path) {
+    const compileUrl = `/api/file?path=${encodeURIComponent(path)}&compile-latex=true`;
+    try {
+      const res = await fetch(compileUrl);
+      if (res.ok) {
+        const blob = await res.blob();
+        const oldUrl = this._blobUrl;
+        this._blobUrl = URL.createObjectURL(blob);
+        if (oldUrl) URL.revokeObjectURL(oldUrl);
+        this._content = '';
+        this._compileError = null;
+        return;
+      }
+      // Preserve a trimmed version of the failure message — the body for 422
+      // is the latexmk log, which can be large.
+      let detail = '';
+      try { detail = (await res.text()).slice(0, 2000); } catch { /* ignore */ }
+      this._compileError = detail || `HTTP ${res.status}`;
+    } catch (e) {
+      this._compileError = e.message || String(e);
+    }
+    // Fallback: fetch the raw .tex source.
+    this._revokeBlobUrl();
+    const res = await fetch(`/api/file?path=${encodeURIComponent(path)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    this._content = await res.text();
   }
 
   // ── File watcher ────────────────────────────────────────────────────────────
@@ -258,6 +307,20 @@ export class FileViewerPage extends LightElement {
     if (this._kind === 'pdf' && this._blobUrl) {
       return html`<iframe class="fv-pdf" src=${this._blobUrl} title=${this._path}></iframe>`;
     }
+    if (this._kind === 'latex' && this._blobUrl) {
+      // Successfully compiled server-side — render the resulting PDF the same
+      // way a native .pdf would be rendered.
+      return html`<iframe class="fv-pdf" src=${this._blobUrl} title=${this._path}></iframe>`;
+    }
+    if (this._kind === 'svg' && this._blobUrl) {
+      // `allow-same-origin` (and nothing else) is required so the iframe can load
+      // the blob: URL — those are only readable from their creating origin. With
+      // `allow-scripts` absent, any <script> inside the SVG still cannot execute,
+      // so this stays an isolated, script-free render.
+      return html`<div class="fv-image-wrap">
+        <iframe class="fv-svg" sandbox="allow-same-origin" src=${this._blobUrl} title=${this._path}></iframe>
+      </div>`;
+    }
     if (this._kind === 'binary') {
       return html`<div class="fv-state text-muted">
         <i class="bi bi-file-earmark-binary fs-3 d-block mb-2"></i>
@@ -268,6 +331,18 @@ export class FileViewerPage extends LightElement {
     if (ext === 'md' || ext === 'markdown') {
       const rendered = rewriteMarkdownAssets(renderMarkdown(this._content), dirOf(this._path || ''));
       return html`<div class="fv-md">${unsafeHTML(rendered)}</div>`;
+    }
+    if (this._kind === 'latex') {
+      // Compile failed — show why, then fall back to the source.
+      return html`
+        ${this._compileError
+          ? html`<details class="fv-compile-error">
+              <summary><i class="bi bi-exclamation-triangle text-warning"></i>&nbsp;LaTeX compilation failed — showing source instead</summary>
+              <pre>${this._compileError}</pre>
+            </details>`
+          : nothing}
+        <pre class="fv-code"><code>${this._content}</code></pre>
+      `;
     }
     return html`<pre class="fv-code"><code>${this._content}</code></pre>`;
   }

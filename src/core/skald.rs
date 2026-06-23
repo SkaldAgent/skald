@@ -19,6 +19,7 @@ use super::inbox::Inbox;
 use super::compactor::ContextCompactor;
 use super::cron::TaskManager;
 use super::image_generate::ImageGeneratorManager;
+use super::latex::LatexCompiler;
 use super::llm::LlmManager;
 use super::location::LocationManager;
 use super::memory::MemoryManager;
@@ -55,6 +56,7 @@ pub struct Skald {
     pub ticket_manager:          Arc<ProjectTicketManager>,
     pub image_generator_manager: Arc<ImageGeneratorManager>,
     pub inbox:                   Inbox,
+    pub latex_compiler:          LatexCompiler,
     pub(crate) event_bus:        Arc<ChatEventBus>,
     pub memory_manager:          Arc<MemoryManager>,
     pub clarification:           Arc<ClarificationManager>,
@@ -353,6 +355,8 @@ impl Skald {
             Arc::clone(&tools),
         );
 
+        let latex_compiler = LatexCompiler::new();
+
         let catalog = ToolCatalog::new(
             Arc::clone(&tools),
             Arc::clone(&mcp),
@@ -418,6 +422,7 @@ impl Skald {
             ticket_manager,
             image_generator_manager,
             inbox,
+            latex_compiler,
             catalog,
             event_bus,
             memory_manager,

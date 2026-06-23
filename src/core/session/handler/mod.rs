@@ -509,7 +509,7 @@ impl ChatSessionHandler {
 
         // Resume any tool calls left pending from a previous interrupted session.
         // They are re-gated (rules may have changed) and executed before the LLM runs.
-        self.resume_pending_tools(stack.id, &config, &tx).await?;
+        self.resume_pending_tools(stack.id, &config, &token, &tx).await?;
 
         let outcome = self.run_agent_turn(stack.id, &config, &token, &tx).await?;
 

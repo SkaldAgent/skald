@@ -154,11 +154,11 @@ pub async fn web_resolve_tool(
             .resolve_for_tool_call(tc_id, ApprovalDecision::Rejected { note: note.clone() })
             .await;
         if !live {
-            chat_llm_tools::fail(&skald.db, tc_id, &note).await?;
+            chat_llm_tools::reject(&skald.db, tc_id, &note).await?;
         }
         return Ok(Json(ResolveToolResponse {
             tool_call_id: tc_id,
-            status:       "failed".to_string(),
+            status:       "rejected".to_string(),
             result:       Some(note),
         }));
     }
@@ -380,10 +380,12 @@ fn build_debug_items<'a>(
                                 .unwrap_or(Value::Null);
 
                             let (status, result, error) = match tc.status.as_str() {
-                                "done"    => ("done",    tc.result.clone(), None),
-                                "pending" => ("pending", None,              None),
-                                "running" => ("error",   None,              Some("Interrupted.".to_string())),
-                                _         => ("error",   None,              tc.result.clone()),
+                                "done"      => ("done",      tc.result.clone(), None),
+                                "pending"   => ("pending",   None,              None),
+                                "running"   => ("error",     None,              Some("Interrupted.".to_string())),
+                                "cancelled" => ("cancelled", None,              tc.result.clone()),
+                                "rejected"  => ("rejected",  None,              tc.result.clone()),
+                                _           => ("error",     None,              tc.result.clone()),
                             };
 
                             let label_short = tools.describe_call(&tc.name, &args, ToolDescriptionLength::Short);

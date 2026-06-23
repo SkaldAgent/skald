@@ -6,7 +6,7 @@ use tracing::{error, info, warn};
 use crate::core::approval::GateResult;
 use crate::core::db::{chat_history, chat_llm_tools, chat_sessions_stack};
 use crate::core::events::ServerEvent;
-use crate::core::tools::{ToolDescriptionLength, tool_names as tn};
+use crate::core::tools::{drive_execution, ExecutionOutcome, ToolDescriptionLength, tool_names as tn};
 
 use super::{ApprovalDecision, ChatSessionHandler, TurnOutcome};
 use super::interface_tools::{AgentRunConfig, InterfaceTool};
@@ -57,7 +57,7 @@ impl ChatSessionHandler {
         info!(session_id = self.session_id, stack_id = stack.id, depth = stack.depth, "resume_turn start");
 
         // Resume pending/interrupted tools before running the LLM loop.
-        let had_pending = self.resume_pending_tools(stack.id, &config, &tx).await?;
+        let had_pending = self.resume_pending_tools(stack.id, &config, &token, &tx).await?;
 
         // Guard: skip if no tools were pending AND the last message is a pure-text
         // assistant response (no tool calls). If the last assistant message HAS tool
@@ -145,7 +145,7 @@ impl ChatSessionHandler {
                 "resume_turn: cascading to parent stack"
             );
 
-            self.resume_pending_tools(parent_stack.id, &config, &tx).await?;
+            self.resume_pending_tools(parent_stack.id, &config, &token, &tx).await?;
             current_outcome = self.run_agent_turn(parent_stack.id, &config, &token, &tx).await?;
             current_stack = parent_stack;
 
@@ -189,6 +189,7 @@ impl ChatSessionHandler {
         &self,
         stack_id: i64,
         config:   &AgentRunConfig,
+        token:    &CancellationToken,
         tx:       &mpsc::Sender<ServerEvent>,
     ) -> anyhow::Result<bool> {
         let pool    = &self.db;
@@ -274,8 +275,8 @@ impl ChatSessionHandler {
             match gate {
                 GateResult::Deny => {
                     let msg = "Tool call denied by approval policy.".to_string();
-                    chat_llm_tools::fail(pool, tc.id, &msg).await?;
-                    tx.send(ServerEvent::ToolError { tool_call_id: tc.id, error: msg }).await.ok();
+                    chat_llm_tools::reject(pool, tc.id, &msg).await?;
+                    tx.send(ServerEvent::ToolRejected { tool_call_id: tc.id, reason: msg }).await.ok();
                     continue;
                 }
 
@@ -301,9 +302,9 @@ impl ChatSessionHandler {
                             } else {
                                 format!("User rejected. Reason: {note}")
                             };
-                            chat_llm_tools::fail(pool, tc.id, &msg).await?;
-                            tx.send(ServerEvent::ToolError {
-                                tool_call_id: tc.id, error: msg,
+                            chat_llm_tools::reject(pool, tc.id, &msg).await?;
+                            tx.send(ServerEvent::ToolRejected {
+                                tool_call_id: tc.id, reason: msg,
                             }).await.ok();
                             continue;
                         }
@@ -331,25 +332,32 @@ impl ChatSessionHandler {
                 unsafe { libc::_exit(-1) }
             }
 
-            // Execute the tool — check memory tools first, then registry.
-            let tool_result = if let Some(tool) = config.memory_tools.iter().find(|t| t.name() == tc.name) {
-                tool.execute_async(args.clone()).await
-            } else {
-                self.execute_tool(&tc.name, args).await
+            // Rehydrate the execution from the persisted intent (name + args) and
+            // re-run it through the same unified, cancellable path as a live turn.
+            // Covers registry / memory / image / interface / MCP tools uniformly.
+            let outcome = match self.build_execution(&tc.name, args, config) {
+                Some(exec) => drive_execution(exec.as_ref(), token).await,
+                None        => ExecutionOutcome::Failed(format!("Unknown tool: {}", tc.name)),
             };
-            match tool_result {
-                Ok(result) => {
+            match outcome {
+                ExecutionOutcome::Completed(result) => {
                     chat_llm_tools::complete(pool, tc.id, &result).await?;
                     tx.send(ServerEvent::ToolDone {
                         tool_call_id: tc.id, result,
                     }).await.ok();
                 }
-                Err(e) => {
-                    let msg = e.to_string();
+                ExecutionOutcome::Failed(msg) => {
                     chat_llm_tools::fail(pool, tc.id, &msg).await?;
                     tx.send(ServerEvent::ToolError {
                         tool_call_id: tc.id, error: msg,
                     }).await.ok();
+                }
+                ExecutionOutcome::Cancelled => {
+                    // User pressed /stop while resuming — record it and abort the
+                    // rest of the resume (the sticky token cancels the turn too).
+                    chat_llm_tools::cancel(pool, tc.id, "Interrotto dall'utente.").await?;
+                    tx.send(ServerEvent::ToolCancelled { tool_call_id: tc.id }).await.ok();
+                    return Ok(true);
                 }
             }
         }

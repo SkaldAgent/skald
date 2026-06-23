@@ -215,6 +215,16 @@ export class ChatSession extends LightElement {
         this._updateTool(msg.tool_call_id, { status: 'error', error: msg.error });
         break;
 
+      case 'tool_cancelled':
+        // Stopped by the user via /stop — distinct from an error.
+        this._updateTool(msg.tool_call_id, { status: 'cancelled' });
+        break;
+
+      case 'tool_rejected':
+        // Denied by an approval policy or a human — distinct from an error.
+        this._updateTool(msg.tool_call_id, { status: 'rejected', error: msg.reason });
+        break;
+
       case 'approval_required':
         this._updateTool(msg.tool_call_id, { status: 'pending', request_id: msg.request_id });
         this._expanded = new Set([...this._expanded, msg.tool_call_id]);
@@ -228,7 +238,7 @@ export class ChatSession extends LightElement {
           if (approved) {
             this._updateTool(tool_call_id, { status: 'running', request_id: null });
           } else {
-            this._updateTool(tool_call_id, { status: 'error', error: 'Rifiutato.' });
+            this._updateTool(tool_call_id, { status: 'rejected', error: 'Rifiutato.' });
           }
           const expanded = new Set(this._expanded);
           expanded.delete(tool_call_id);
@@ -496,7 +506,7 @@ export class ChatSession extends LightElement {
     if (this._ws?.readyState === WebSocket.OPEN) {
       this._ws.send(JSON.stringify({ type: 'reject_tool', request_id: msg.request_id, note: this._rejectNote }));
     }
-    this._updateTool(msg.tool_call_id, { status: 'error', error: "Rifiutato dall'utente." });
+    this._updateTool(msg.tool_call_id, { status: 'rejected', error: "Rifiutato dall'utente." });
     this._rejectingId = null;
   }
 

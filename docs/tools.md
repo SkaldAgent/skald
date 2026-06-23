@@ -11,6 +11,7 @@ pub trait Tool: Send + Sync {
     fn target_path(&self, _args: &Value) -> Option<String> { None }  // default impl — file this call opens, if any
     fn execute(&self, _args: Value) -> Result<String> { /* default: Err */ }
     fn execute_async<'a>(&'a self, args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
+    fn run<'a>(&'a self, args: Value) -> Box<dyn ToolExecution + 'a> { /* default: SimpleExecution(execute_async) */ }
     fn category(&self) -> ToolCategory;              // access-control grouping
     fn sub_agents_only(&self) -> bool { false }      // default impl — visible only to sub-agents (depth > 0)
     fn root_agent_only(&self) -> bool { false }      // default impl — visible only to root agent (depth == 0)
@@ -18,12 +19,76 @@ pub trait Tool: Send + Sync {
 }
 ```
 
+`Tool` is the **definition** (the catalogue entry in `ToolRegistry`); a single
+live invocation is a `ToolExecution` produced by `run()`. See
+[Tool execution lifecycle](#tool-execution-lifecycle) below.
+
 **Two execution paths:**
 
 - **Sync tools** implement `execute(&self, args)` only. The default `execute_async` wraps it in a ready future — no changes needed.
 - **Async tools** (e.g. `image_generate`, `image_generate_providers_list`) implement `execute_async` directly and omit `execute`. Do NOT use `block_in_place` — override `execute_async` instead.
 
-The dispatcher in `llm_loop.rs` always calls `tool.execute_async(args).await`, so sync and async tools are dispatched uniformly.
+The dispatcher in `llm_loop.rs` drives every tool through `Tool::run(args) → ToolExecution`, so sync and async tools are dispatched uniformly (and cancellably).
+
+---
+
+## Tool execution lifecycle
+
+`Tool` (definition) and `ToolExecution` (a single in-flight invocation) are split
+on the `Command → spawn() → Child` pattern. `Tool::run(args)` starts one
+execution and returns a handle that owns its state and implements its own stop.
+Defined in [`crates/core-api/src/tool.rs`](../crates/core-api/src/tool.rs).
+
+```rust
+pub trait ToolExecution: Send + Sync {
+    fn state(&self) -> ToolExecutionState;
+    fn wait<'a>(&'a self) -> Pin<Box<dyn Future<Output = ExecutionOutcome> + Send + 'a>>;
+    fn stop<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> { /* default: no-op */ }
+}
+```
+
+**States** (`ToolExecutionState`, richer than the persisted status string):
+
+| State | Meaning | DB `status` |
+| --- | --- | --- |
+| `Pending` | created, not yet started (transient, not persisted alone) | `running` |
+| `AwaitingApproval` | blocked on a human approve/clarification | `pending` |
+| `Running` | actively executing | `running` |
+| `Completed` | finished OK | `done` |
+| `Failed` | tool/runtime error | `failed` |
+| `Cancelled` | stopped by `/stop` — **not** an error | `cancelled` |
+| `Rejected` | denied by policy/human — **not** an error | `rejected` |
+
+`Cancelled` and `Rejected` are deliberately distinct from `Failed` so a stop or a
+policy denial never pollutes error metrics. `wait()` only ever returns the three
+terminal `ExecutionOutcome`s (`Completed` / `Failed` / `Cancelled`); the
+approval-phase states are owned by the session driver.
+
+**Purity.** A `ToolExecution` never touches the DB or the WebSocket. The session
+driver (`ChatSessionHandler`) mirrors its state to `chat_llm_tools` and emits the
+`ToolStart`/`ToolDone`/`ToolError`/`ToolCancelled`/`ToolRejected` events.
+
+**`SimpleExecution`** is the default handle: a work future + a stop-token. `wait`
+races the two, so `stop()` (or the driver dropping `wait`) drops the work future,
+aborting the in-flight I/O — enough to make `/stop` responsive for **every**
+I/O-bound tool with zero per-tool code (this includes `execute_cmd`, whose
+`kill_on_drop(true)` child dies when the future is dropped).
+
+**`drive_execution(exec, cancel_token)`** is the generic driver: it runs `wait`
+and, when the turn's `/stop` token fires, calls `exec.stop()` once. Used by both
+the live loop (`llm_loop.rs`) and `resume_pending_tools` (`resume.rs`).
+
+**Bespoke `stop()` (extension point).** Tools that must tear down *remote* work
+override `run()` to return their own `ToolExecution` whose `stop()` does more than
+drop the future — e.g. a ComfyUI image tool POSTing `/interrupt` so the server
+stops generating too. Dropping the future already frees the client; a bespoke
+`stop()` propagates the cancellation to the far side. (Not yet wired for any
+built-in tool — the default covers responsive `/stop` today.)
+
+**Rehydration = re-run from intent.** A persisted tool call is `(name, args, status)`;
+the live future is never serialized. `resume_pending_tools` reconstructs an
+execution via `build_execution(name, args)` and re-runs it from the start — it
+does not resume a checkpoint.
 
 **`sub_agents_only`**: if a tool returns `true`, it is excluded from the root agent's tool list and only added to sub-agent configs (depth ≥ 1) in `dispatch_sub_agent`. Default is `false`.
 
@@ -59,7 +124,8 @@ Every tool declares a `ToolCategory`, used for access-control filtering and audi
 | `root_agent_only_names()` | Returns names of all tools where `root_agent_only() == true` — used by `for_sub_agent()` to filter |
 | `list_all()` | Returns `(name, description)` for all registered tools (sorted) |
 | `category_of(name)` | Returns `Option<ToolCategory>` for a registered tool; `None` for MCP/interface/unknown tools |
-| `dispatch(name, args)` | Executes tool by name; errors on unknown name |
+| `dispatch(name, args)` | Executes tool by name to a `Result<String>`; errors on unknown name (used by the REST resolve endpoint) |
+| `run(name, args)` | Starts a `ToolExecution` for a registered tool; `None` for unknown names (MCP/interface handled by the caller). The cancellable dispatch path. |
 | `describe_call(name, args, length)` | Returns a human-readable label for any tool call (including non-registry tools). Falls back to `name` for unknown tools. |
 
 ---
@@ -112,7 +178,7 @@ All tools are registered in `src/main.rs` before `ChatSessionManager` is built.
   - **Background sessions** (cron, tic): available at root level (`!is_interactive`); registers with `ClarificationManager`, visible in Agent Inbox; agent suspends until answered
 - `show_mcp_tools` — activates MCP servers for the session (lazy loading); injected as an `InterfaceTool` in `build_agent_config` with per-session state; not available to sub-agents
 - `notify` — queues a notification briefing to the home conversation via `ChatHub`; **injected as an `InterfaceTool` by the caller** (`TicManager` for TIC, `TaskManager` for background task agents); not in ToolRegistry so ordinary agents cannot call it
-- `show_file_to_user` — opens a file in the user's UI. Emits `ServerEvent::OpenFile`, which the SPA routes (HTML → new browser tab, everything else → the [file viewer](frontend.md#file-viewer)). **Injected as an `InterfaceTool` only for SPA clients** in `ws.rs` (sources `web` + `mobile`); the Telegram plugin goes through a separate handler and never receives it — its analogue is `send_attachment`. Built by `tools::show_file::make_tool(hub, source)`; the path emitted to the frontend is normalised by `fs::relativize_for_display` (relative to the project root when inside it, absolute otherwise)
+- `show_file_to_user` — opens a file in the user's UI. Emits `ServerEvent::OpenFile`, which the SPA routes (HTML → new browser tab; everything else → the [file viewer](frontend.md#file-viewer)). Supported formats in the file viewer: Markdown, source code, plain text, raster images (PNG/JPG/GIF/WebP/…), SVG, PDF, and LaTeX (`.tex` / `.latex` — compiled to PDF automatically on the server). **Injected as an `InterfaceTool` only for SPA clients** in `ws.rs` (sources `web` + `mobile`); the Telegram plugin goes through a separate handler and never receives it — its analogue is `send_attachment`. Built by `tools::show_file::make_tool(hub, source)`; the path emitted to the frontend is normalised by `fs::relativize_for_display` (relative to the project root when inside it, absolute otherwise)
 
 **Also not in ToolRegistry:**
 
