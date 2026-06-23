@@ -7,6 +7,8 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters_schema(&self) -> Value;            // JSON Schema object
+    fn describe(&self, args, length) -> String { name }       // default impl — UI/notification label
+    fn target_path(&self, _args: &Value) -> Option<String> { None }  // default impl — file this call opens, if any
     fn execute(&self, _args: Value) -> Result<String> { /* default: Err */ }
     fn execute_async<'a>(&'a self, args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
     fn category(&self) -> ToolCategory;              // access-control grouping
@@ -90,6 +92,7 @@ All system tool names are centralised in `src/core/tools/tool_names.rs` as `pub 
 | `tn::NOTIFY` | `"notify"` |
 | `tn::READ_NOTIFICATION` | `"read_notification"` |
 | `tn::EXECUTE_CMD` | `"execute_cmd"` |
+| `tn::SHOW_FILE_TO_USER` | `"show_file_to_user"` |
 
 **Rule:** never hardcode these strings in new code — always use the constants. This ensures that a rename is a single-file change and that typos produce a compile error rather than a silent dispatch miss.
 
@@ -109,6 +112,7 @@ All tools are registered in `src/main.rs` before `ChatSessionManager` is built.
   - **Background sessions** (cron, tic): available at root level (`!is_interactive`); registers with `ClarificationManager`, visible in Agent Inbox; agent suspends until answered
 - `show_mcp_tools` — activates MCP servers for the session (lazy loading); injected as an `InterfaceTool` in `build_agent_config` with per-session state; not available to sub-agents
 - `notify` — queues a notification briefing to the home conversation via `ChatHub`; **injected as an `InterfaceTool` by the caller** (`TicManager` for TIC, `TaskManager` for background task agents); not in ToolRegistry so ordinary agents cannot call it
+- `show_file_to_user` — opens a file in the user's UI. Emits `ServerEvent::OpenFile`, which the SPA routes (HTML → new browser tab, everything else → the [file viewer](frontend.md#file-viewer)). **Injected as an `InterfaceTool` only for SPA clients** in `ws.rs` (sources `web` + `mobile`); the Telegram plugin goes through a separate handler and never receives it — its analogue is `send_attachment`. Built by `tools::show_file::make_tool(hub, source)`; the path emitted to the frontend is normalised by `fs::relativize_for_display` (relative to the project root when inside it, absolute otherwise)
 
 **Also not in ToolRegistry:**
 
@@ -165,7 +169,7 @@ Filtering happens in `src/core/session/handler/config.rs` (depth 0) and `agent_d
 
 | Tool | New parameters | Notes |
 | --- | --- | --- |
-| `execute_cmd` | `workdir` (absolute path), `timeout` (1–600 s, default 120) | Output truncated at 100 KB. Description tells LLM to use dedicated tools (`read_file`, `grep_files`, etc.) instead of shell equivalents. |
+| `execute_cmd` | `workdir` (absolute path), `timeout` (1–600 s, default 120) | Output truncated at 100 KB. Description tells LLM to use dedicated tools (`read_file`, `grep_files`, etc.) instead of shell equivalents. **Audit:** every command is logged at `info` (`execute_cmd: running shell command`, fields `command`/`workdir`/`timeout_secs`) before running, so auto-approved commands (approval bypass active) are still traceable. |
 | `edit_file` | `replace_all` (bool, default false) | Replaces every occurrence when true; otherwise requires unique match. Description tells LLM to use instead of `sed`/`awk`. |
 | `grep_files` | `output_mode` (`content`/`files_only`/`count`), `context_lines` (0–10), `offset` (pagination) | Description tells LLM to use instead of `grep`/`rg`. Result paths are relative to the queried directory (stripped of the resolved root), consistent with `list_files`. |
 | `get_ast_outline` | `path` | Returns top-level definitions (functions, classes, structs, methods) without bodies. **tree-sitter 0.26** backend for: `.py .js .mjs .ts .tsx .go .java .c .h .cpp .cc .hpp .swift .lua .rb .sh .ex .exs .json .yaml .yml .html .css`. **syn** backend for `.rs`. Text/regex fallback for `.kt .toml .md .sql` (grammar crates incompatible with tree-sitter 0.26 at time of writing). |
@@ -188,6 +192,14 @@ The default implementation returns `self.name()`, so all tools work without impl
 `ToolRegistry::describe_call(name, args, length)` is the single call-site used by `llm_loop.rs`, `resume.rs`, and the `/api/{source}/messages` history endpoint. It also handles synthetic tools (`call_agent`) that are not in the registry.
 
 Labels are emitted in `ServerEvent::ToolStart` as `label_short` and `label_full` and included in history responses so the frontend always has them.
+
+## Clickable Target Path
+
+A tool can override `target_path(&self, args: &Value) -> Option<String>` to advertise a **single viewable file** the call acts on. The single-file fs tools (`read_file`, `write_file`, `edit_file`, `insert_at_line`, `replace_lines`, `search_file`) return their `path` argument via the `fs::path_arg` helper; directory tools (`list_files`, `grep_files`) and every other tool return `None` (the default).
+
+`ToolRegistry::target_path(name, args)` is the registry-level accessor, mirroring `describe_call`. Its result is emitted in `ServerEvent::ToolStart` as the optional `path` field (omitted when `None`) and included in `/api/{source}/messages` history items. The frontend renders that path as a link that opens the [file viewer](frontend.md#file-viewer) via `window.openFile(path)`.
+
+`show_file_to_user` is an `InterfaceTool` (not in the registry, so it has no `Tool::target_path`). Because its whole purpose is to open a file, both `describe_call` and `target_path` special-case it **inline**: the label becomes `` show_file_to_user `path` `` and the same raw `path` arg is returned, so the frontend's `renderLabel` makes the path in the label clickable with no extra wiring.
 
 ---
 

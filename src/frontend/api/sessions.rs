@@ -388,12 +388,14 @@ fn build_debug_items<'a>(
 
                             let label_short = tools.describe_call(&tc.name, &args, ToolDescriptionLength::Short);
                             let label_full  = tools.describe_call(&tc.name, &args, ToolDescriptionLength::Full);
+                            let target_path = tools.target_path(&tc.name, &args);
                             items.push(json!({
                                 "kind":         "tool",
                                 "tool_call_id": tc.id,
                                 "name":         tc.name,
                                 "label_short":  label_short,
                                 "label_full":   label_full,
+                                "path":         target_path,
                                 "arguments":    args,
                                 "status":       status,
                                 "result":       result,
@@ -490,12 +492,14 @@ fn build_items<'a>(
 
                             let label_short = tools.describe_call(&tc.name, &args, ToolDescriptionLength::Short);
                             let label_full  = tools.describe_call(&tc.name, &args, ToolDescriptionLength::Full);
+                            let target_path = tools.target_path(&tc.name, &args);
                             items.push(json!({
                                 "kind":         "tool",
                                 "tool_call_id": tc.id,
                                 "name":         tc.name,
                                 "label_short":  label_short,
                                 "label_full":   label_full,
+                                "path":         target_path,
                                 "arguments":    args,
                                 "status":       status,
                                 "result":       result,

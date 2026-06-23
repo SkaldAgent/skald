@@ -10,8 +10,16 @@ mod write_file;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
+use serde_json::Value;
 
 use crate::core::tools::ToolRegistry;
+
+/// Extracts the `path` argument as an owned string, if present. Single-file
+/// tools use this to advertise their target to the UI via `Tool::target_path`,
+/// keeping the argument name in one place.
+pub(crate) fn path_arg(args: &Value) -> Option<String> {
+    args.get("path").and_then(Value::as_str).map(str::to_string)
+}
 
 pub use edit_file::EditFile;
 pub use grep_files::GrepFiles;
@@ -82,6 +90,20 @@ fn lexical_normalize(p: &Path) -> PathBuf {
 /// `/a/bc` is not considered to be under `/a/b`.
 pub fn path_under(child: &Path, base: &Path) -> bool {
     child.starts_with(base)
+}
+
+/// Normalize a user path for display in the UI: relative to the project root when the
+/// file lives inside it, absolute otherwise. Resolves `.`/`..` and symlinks via
+/// `canonicalize_for_policy` so the same file always yields the same string — keeping
+/// the file viewer's "already loaded" check and its watcher subscription consistent.
+pub fn relativize_for_display(user_path: &str) -> String {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let abs = canonicalize_for_policy(user_path, &cwd);
+    let cwd_canon = std::fs::canonicalize(&cwd).unwrap_or(cwd);
+    match abs.strip_prefix(&cwd_canon) {
+        Ok(rel) => rel.to_string_lossy().into_owned(),
+        Err(_)  => abs.to_string_lossy().into_owned(),
+    }
 }
 
 pub(super) fn read_to_string(user_path: &str) -> Result<String> {

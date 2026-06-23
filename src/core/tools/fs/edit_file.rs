@@ -92,6 +92,10 @@ impl Tool for EditFile {
         })
     }
 
+    fn target_path(&self, args: &Value) -> Option<String> {
+        super::path_arg(args)
+    }
+
     fn describe(&self, args: &Value, length: ToolDescriptionLength) -> String {
         let path = args["path"].as_str().unwrap_or("?");
         let _ = length;

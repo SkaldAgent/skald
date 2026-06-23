@@ -44,7 +44,7 @@ All events are JSON objects with a `"type"` tag (snake_case).
 
 | type | Key fields | When emitted |
 |---|---|---|
-| `tool_start` | `tool_call_id`, `message_id`, `name`, `arguments` | Tool call recorded, about to execute |
+| `tool_start` | `tool_call_id`, `message_id`, `name`, `arguments`, `label_short`, `label_full`, `path?` | Tool call recorded, about to execute. `path` (optional) is the viewable file the call targets — rendered as a clickable link to the file viewer |
 | `tool_done` | `tool_call_id`, `result` | Tool executed successfully |
 | `tool_error` | `tool_call_id`, `error` | Tool execution failed |
 | `agent_start` | `stack_id`, `parent_tool_call_id`, `agent_id`, `depth` | Sub-agent stack frame opened |
@@ -53,6 +53,7 @@ All events are JSON objects with a `"type"` tag (snake_case).
 | `pending_write` | `request_id`, `tool_call_id`, `path`, `old_content`, `new_content` | Approval required for write/command |
 | `agent_question` | `request_id`, `tool_call_id`, `title`, `question`, `suggested_answers` | Sub-agent needs user clarification |
 | `file_changed` | `path` | A tool wrote to a file |
+| `open_file` | `path` | Agent-driven file open: markdown/text/image route to the `<file-viewer-page>`; HTML files open in a new browser tab (rendered as a `text/html` blob — relative paths inside the HTML do not resolve). Emitted by the `show_file_to_user` interface tool (SPA-only, injected in `ws.rs`; `path` normalised relative to the project root) |
 | `done` | `message_id`, `stack_id`, `content`, `input_tokens`, `output_tokens` | Turn complete, final response |
 | `truncated` | `output_tokens` | LLM hit token limit (`finish_reason=length`) |
 | `error` | `message` | Fatal error (session handler failed) |
@@ -154,10 +155,11 @@ Cancel message (abort current turn): `{"type":"cancel"}`
 | `web/lib/chat-session.js` | `ChatSession` (base) | Shared WS logic, message state, all approval/LLM event handling. Subclasses override `_wsSource`, `_getInputContent`, `_clearInput`, `_scrollToBottom`, `_onMessagePushed`. Effective source is `_source` (`_activeSource ?? _wsSource`); `_switchSource(source)` tears down the WS, reloads history, and reconnects to switch sessions live |
 | `web/components/copilot.js` | `<app-copilot>` | Desktop copilot panel (`_wsSource='web'`); resize, composer input with model pill and auto-resize textarea. Browser-style tabs (`General` + project chats); listens for the `project-chat-open` window event to add/focus a project tab |
 | `web/components/shared/chat-page.js` | `<chat-page>` | Mobile chat page (`_wsSource='mobile'`); extends `ChatSession` with mobile-specific layout |
-| `web/components/copilot-render.js` | (helpers) | Renders messages, tool call blocks, diffs — shared by copilot and chat-page |
+| `web/components/copilot-render.js` | (helpers) | Renders messages, tool call blocks, diffs — shared by copilot and chat-page. Tool labels and diff headers render the call's `path` (when present) as a clickable link via `renderLabel`/`renderPath` → `openFile(path)` |
 | `web/components/sidebar.js` | `<app-sidebar>` | Navigation sidebar; polls `/api/inbox` every 10 s for badge count |
 | `web/components/topbar.js` | `<app-topbar>` | Top navigation bar |
-| `web/components/editor.js` | (editor panel) | File editor with cursor/selection tracking |
+| `web/components/editor.js` | (removed) | The legacy `<app-main>` editor panel was removed. Use `<file-viewer>` (see [File Viewer](#file-viewer)) instead |
+| `web/components/file-viewer-page.js` | `<file-viewer-page>` | Top-level page that previews files (markdown / code / images / PDF) in the main workspace. Opened by `window.openFile(path)` (which sets `#file_viewer?path=...`). Currently shows preview only — editor + watcher tabs planned |
 | `web/components/cron-jobs.js` | `<cron-jobs-page>` | Cron job management UI — columns: Title (+ one-shot badge), Cron, Agent, Last run, Next run, Enabled, Actions |
 | `web/components/agent-inbox.js` | `<agent-inbox-page>` | Unified inbox for pending approvals and clarifications from background sessions; polls `/api/inbox` every 8 s when open |
 | `web/components/models-hub.js` | `<models-hub-page>` | Models hub — 3-card landing page (LLM / Transcription / Image Generation) with live model counts; internal navigation to sub-sections |
@@ -193,6 +195,176 @@ Approval cards have Approve / Reject buttons and a timed bypass menu (15 min / 1
 
 ---
 
+## File-Change Watcher (live reload)
+
+`<file-viewer-page>` automatically reloads when the file it is showing changes
+on disk — whether the change comes from a Skald tool, an external editor
+(VSCode, vim, …), or any other process. The mechanism is a dedicated
+WebSocket.
+
+### Endpoint
+
+`GET /api/file/watch` — upgrades to a long-lived WebSocket. Client → server
+commands:
+
+| Command | Effect |
+|---|---|
+| `{"op":"subscribe","path":"docs/index.md"}` | Start watching `path` (relative or absolute — same path model as `GET /api/file`) |
+| `{"op":"unsubscribe","path":"docs/index.md"}` | Stop watching `path` |
+
+Server → client messages:
+
+| Message | Meaning |
+|---|---|
+| `{"type":"subscribed","path":"..."}` | Ack — watch installed successfully |
+| `{"type":"unsubscribed","path":"..."}` | Ack — watch removed |
+| `{"type":"changed","path":"..."}` | The file at `path` changed on disk (any event kind: create/modify/remove) |
+| `{"type":"error","path":"...","error":"..."}` | Watch install failed (e.g. path does not exist, permission denied) |
+| `{"type":"error","error":"..."}` | Malformed client message or unknown op (no `path`) |
+
+The `path` field always round-trips the original user-supplied string, so the
+client can match it against the path it asked to watch.
+
+### Implementation notes
+
+- **Backend** (`src/frontend/api/file_watch.rs`): one `notify::RecommendedWatcher`
+  per subscription per connection. On disconnect every watcher is dropped and
+  OS resources are released automatically. Path resolution uses
+  `fs_tools::resolve` (same as `GET /api/file`), so absolute paths are used
+  as-is and relative paths resolve against Skald's process CWD.
+- **Frontend** (`web/lib/file-watcher.js`): singleton `fileWatcher` with a
+  single persistent connection, ref-counting per path (multiple consumers of
+  the same path share one OS watcher and one subscribe message),
+  auto-reconnect on close with 2 s backoff, and automatic re-subscribe of all
+  active paths on reconnect. Consumers call `fileWatcher.watch(path, cb)` and
+  get back an `unsub()` function.
+- **`<file-viewer-page>`** subscribes when it opens (or when the path changes
+  via hash navigation) and unsubscribes when it closes or navigates away.
+  Change notifications are debounced (300 ms) and trigger a **silent reload**
+  (no spinner, no flicker — image previews swap the object URL only after the
+  new blob is ready, text previews replace the content atomically).
+- **Cross-platform:** uses `notify`'s recommended backend (FSEvents on macOS,
+  inotify on Linux, ReadDirectoryChangesW on Windows).
+- **Dirty-buffer conflict handling** is not implemented yet — there is no
+  editor tab yet. When the CodeMirror editor lands (roadmap), a changed event
+  arriving while the buffer has unsaved edits will show an "Overwrite / Discard
+  / Ignore" banner instead of auto-reloading.
+
+---
+
+## File Viewer
+
+`<file-viewer-page>` is a top-level page that previews files from disk in the
+main workspace, so users (and agents, in future phases) can read
+markdown/code/images without leaving the UI. It is registered in
+`web/app.js` and lives once in the DOM at `index.html` (default
+`display:none`, shown via the standard page router — see below).
+
+### Opening files
+
+The global helper `openFile(path)` is the single entry point — defined in
+`web/lib/open-file.js`:
+
+```js
+openFile('data/memory/index.md');
+// or
+window.openFile('docs/frontend.md');
+```
+
+`openFile(path)` sets `location.hash` to `#file_viewer?path=<enc>`, which the
+sidebar hash router (`web/components/sidebar.js:_pageFromHash`) resolves to
+the `file_viewer` page. This means:
+
+- **Back/forward browser navigation** works naturally.
+- **Deep-linkable** — the URL can be shared or bookmarked.
+- **The chat and everything else stay usable** while the file is open
+  (clicking any other sidebar entry just changes the hash and the page
+  switches out).
+
+Both surfaces (`openFile(...)` and setting the hash directly) are equivalent.
+Components that want to open a file should call `openFile(...)` so the URL
+format lives in one place.
+
+**Callers of `openFile`:**
+
+- **Tool-call cards & write diffs** in the copilot/chat transcript. When a tool
+  call targets a single viewable file, the backend reports the path in
+  `ServerEvent::ToolStart.path` (via `Tool::target_path` — see
+  [tools.md](tools.md#clickable-target-path)); `copilot-render.js` renders it as
+  a clickable link. Falls back gracefully: tools without a `path` render the
+  plain label, unsupported file types show the viewer's "preview not available"
+  state, and unreadable paths show its error state.
+- **The `show_file_to_user` tool**, via the `OpenFile` WebSocket event
+  (`open_file`, handled in `chat-session.js`). It is an `InterfaceTool` injected
+  only for SPA clients (`web` + `mobile`) in `src/frontend/api/ws.rs`, so the
+  assistant can proactively open a file — see
+  [tools.md](tools.md#registration-pattern). HTML files open in a new browser
+  tab; everything else routes through `openFile`.
+
+### Routing
+
+`file_viewer` is registered in the sidebar's segment whitelist
+(`sidebar.js:_pageFromHash`) but has **no sidebar menu entry** — like
+`#session/{id}`, it's an "accessory" page reachable only via link or
+`openFile`. The page follows the standard pattern: it listens for
+`llm-page-change` (shows/hides itself) and `hashchange` (re-reads the path
+from the URL when navigating between files while staying on the page).
+
+Path resolution is delegated to the backend via `GET /api/file?path=<enc>`
+(`src/frontend/api/files.rs`), which calls `fs_tools::resolve`:
+
+- **Relative paths** resolve against Skald's process CWD (the data root).
+- **Absolute paths** are used as-is — required when opening files that live
+  outside the data root, e.g. inside a project's custom working directory.
+
+`get_file` serves **raw bytes** with a `Content-Type` derived from the extension
+(`content_type_for`), not `read_to_string` — so binary formats (images, PDFs)
+work. The viewer reads text kinds via `res.text()` and binary kinds via
+`res.blob()` → object URL.
+
+### Supported kinds
+
+| Kind | Extensions | Rendering |
+|---|---|---|
+| **Markdown** | `.md`, `.markdown` | `renderMarkdown()` (marked + DOMPurify) via `unsafeHTML`. Relative `<img>` sources are rewritten (`rewriteMarkdownAssets`) to `/api/file?path=<dir-of-md + src>` so images referenced relative to the file load from disk; external/`data:`/root-relative URLs are left untouched |
+| **Image** | `.png .jpg .jpeg .gif .webp .svg .bmp .ico .avif` | `<img>` loaded as a Blob from `/api/file` (object URL) |
+| **PDF** | `.pdf` | `<iframe>` to a Blob object URL — the browser's native PDF viewer |
+| **Text/code** | `.txt .rs .js .ts .py .json .yml .toml .sh .sql .go .html .css .vue ...` (see `TEXT_EXTS` in the source) | `<pre><code>` block, monospace, horizontal scroll |
+| **Binary/unknown** | anything else | Placeholder: "Preview not available for this file type." |
+
+### Mobile
+
+Not wired on mobile (`<mobile-app>` has no hash router and the chat is one
+tab among many, so the original motivation for the page refactor — keeping
+the chat usable — does not apply). `openFile` is a no-op on mobile for now;
+a mobile-specific surface can be added later if needed.
+
+### Roadmap
+
+The page is the foundation for several follow-up phases (tracked separately):
+
+1. **Tab Editor (CodeMirror 6)** — second tab in the page with syntax-highlighted
+   editable buffer; saves via `PUT /api/file`. Bypasses the approval gate (user is
+   editing manually, not via an agent tool). Will introduce the "Overwrite /
+   Discard / Ignore" banner for dirty-buffer conflicts.
+2. **Agent-driven opening** — new `ServerEvent::OpenFile { path }` emitted by a
+   `show_file_to_user(path)` interface tool; `chat-session.js` sets the hash from
+   the WS payload, so both manual and agent-driven paths funnel into the same
+   `<file-viewer-page>`.
+3. **More media** — video (`<video>`), audio (`<audio>`), PDF (`<iframe>`).
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `web/lib/open-file.js` | Defines and registers `window.openFile`; sets `location.hash` |
+| `web/components/file-viewer-page.js` | `<file-viewer-page>` Lit page — hash routing, fetch, kind-based rendering, watcher integration |
+| `web/lib/file-watcher.js` | Singleton client for `/api/file/watch` — ref-counting, auto-reconnect, re-subscribe |
+| `web/css/file-viewer.css` | Page + content styling (markdown, code, image, state) |
+| `src/frontend/api/file_watch.rs` | `/api/file/watch` WS handler — `notify::RecommendedWatcher` per subscription |
+
+---
+
 ## Adding a New ServerEvent
 
 1. Add the variant to `ServerEvent` enum in `src/core/events.rs`.
@@ -225,3 +397,5 @@ The frontend reads this flag at startup and uses it to show or hide sections in 
 - A new Lit component is added
 - The approval message format changes
 - The debug-mode endpoint changes
+- The file viewer gains a new phase (editor tab, agent-driven opening) or a new supported kind
+- The `/api/file/watch` protocol (commands, messages) changes

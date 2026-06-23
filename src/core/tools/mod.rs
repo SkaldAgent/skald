@@ -44,6 +44,7 @@ pub mod set_secret;
 pub mod read_notification;
 pub mod register_mcp;
 pub mod restart;
+pub mod show_file;
 pub mod show_mcp_tools;
 pub mod toggle_item;
 
@@ -126,7 +127,18 @@ impl ToolRegistry {
         if let Some(tool) = self.tools.get(name) {
             return tool.describe(args, length);
         }
-        // Non-registry tools handled inline.
+        // Non-registry tools handled inline. `show_file_to_user` is an InterfaceTool
+        // (injected in ws.rs), so it has no registry `describe`; surface its target
+        // path in the label so the frontend renders it as a clickable file link.
+        if name == tool_names::SHOW_FILE_TO_USER {
+            if let Some(path) = args["path"].as_str() {
+                let max = match length {
+                    ToolDescriptionLength::Short => MAX_LABEL_SHORT,
+                    ToolDescriptionLength::Full  => MAX_LABEL_FULL,
+                };
+                return truncate_label(&format!("{name} `{path}`"), max);
+            }
+        }
         name.to_string()
     }
 
@@ -134,6 +146,22 @@ impl ToolRegistry {
     /// (MCP tools, interface tools, call_agent, etc.).
     pub fn category_of(&self, name: &str) -> Option<ToolCategory> {
         self.tools.get(name).map(|t| t.category())
+    }
+
+    /// Path to a single viewable file targeted by this tool call, if any.
+    /// `None` for non-file tools, directory tools, and unknown/non-registry tools.
+    ///
+    /// `show_file_to_user` is an InterfaceTool (not in the registry) whose whole
+    /// purpose is to open a file, so it is handled inline here as well — mirroring
+    /// `describe_call`, so its label and clickable path use the same raw `path` arg.
+    pub fn target_path(&self, name: &str, args: &Value) -> Option<String> {
+        if let Some(tool) = self.tools.get(name) {
+            return tool.target_path(args);
+        }
+        if name == tool_names::SHOW_FILE_TO_USER {
+            return args["path"].as_str().map(str::to_string);
+        }
+        None
     }
 
     /// Dispatch a tool call by name.

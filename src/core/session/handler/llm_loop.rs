@@ -186,6 +186,7 @@ impl ChatSessionHandler {
                             arguments:   call.arguments.clone(),
                             label_short: self.tools.describe_call(&call.name, &call.arguments, ToolDescriptionLength::Short),
                             label_full:  self.tools.describe_call(&call.name, &call.arguments, ToolDescriptionLength::Full),
+                            path:        self.tools.target_path(&call.name, &call.arguments),
                         }).await.ok();
 
                         // ── Working directory injection ─────────────────────────────────

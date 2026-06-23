@@ -28,7 +28,10 @@ IMAGES: If image generation is active, you can display images to the user using 
 image syntax with the URL. Always set a max-width style to avoid the image taking up the full screen width, \
 e.g. <img src=\"URL\" style=\"max-width:480px\">. \
 The URL returned by image_generate already points to the correct endpoint — use it as-is. \
-Do NOT append \".png\" or any extension to the URL.";
+Do NOT append \".png\" or any extension to the URL.\n\
+\n\
+FILES: To let the user look at a file directly, call show_file_to_user(path). It opens the file \
+in their viewer (HTML opens in a new browser tab). Prefer this over pasting long file contents into chat.";
 
 const HELP_TEXT: &str = "\
 **Available commands**\n\n\
@@ -306,6 +309,15 @@ async fn handle_socket(mut socket: WebSocket, skald: Arc<Skald>, source: String)
                     // set_selected_client, which broadcasts ClientSelected.
                     client_name:          skald.chat_hub.get_selected_client(&source).await,
                     extra_system_context: Some(WEB_FORMAT_CONTEXT.to_string()),
+                    // SPA-only tool: lets the assistant open a file in the user's
+                    // viewer. Injected here (not in the registry) so it exists only
+                    // for ws.rs clients (web + mobile), never for the Telegram plugin.
+                    interface_tools: vec![
+                        crate::core::tools::show_file::make_tool(
+                            Arc::clone(&skald.chat_hub),
+                            source.clone(),
+                        ),
+                    ],
                     ..Default::default()
                 };
                 // send_message only enqueues — the turn runs on ChatHub's per-source

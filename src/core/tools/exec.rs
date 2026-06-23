@@ -123,6 +123,20 @@ fn parse_args(args: &Value) -> Result<(String, Option<PathBuf>, u64)> {
 }
 
 async fn run(command: String, workdir: Option<PathBuf>, timeout_secs: u64) -> Result<String> {
+    // Audit log: record every shell command before it runs. Auto-approved
+    // commands (approval bypass active) otherwise leave no trace, so a command
+    // that kills the process — or misbehaves — can't be reconstructed.
+    let workdir_display = workdir
+        .as_deref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| ".".to_string());
+    tracing::info!(
+        command = %command,
+        workdir = %workdir_display,
+        timeout_secs,
+        "execute_cmd: running shell command"
+    );
+
     let mut cmd = tokio::process::Command::new("sh");
     cmd.arg("-c")
         .arg(&command)

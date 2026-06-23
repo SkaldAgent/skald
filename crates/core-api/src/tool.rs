@@ -41,6 +41,14 @@ pub trait Tool: Send + Sync {
         self.name().to_string()
     }
 
+    /// If this invocation targets a single file the user can open in the file
+    /// viewer, return its path (relative to the project root, or absolute).
+    /// Tools that target a directory (list/grep) or no file at all return
+    /// `None`. The frontend renders the returned path as a clickable link.
+    fn target_path(&self, _args: &Value) -> Option<String> {
+        None
+    }
+
     /// JSON Schema for the `parameters` field in the OpenAI function definition.
     fn parameters_schema(&self) -> Value;
 

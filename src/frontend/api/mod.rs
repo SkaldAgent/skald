@@ -3,6 +3,7 @@ pub mod config;
 pub mod approval;
 pub mod cron;
 pub mod dev;
+pub mod file_watch;
 pub mod stats;
 pub mod files;
 pub mod image_generate_models;
@@ -44,6 +45,7 @@ pub fn router() -> Router<Arc<Skald>> {
         .route("/web/tools/{tool_call_id}/resolve",     post(sessions::web_resolve_tool))
         .route("/ws",                                   get(ws::handler))
         .route("/ws/session/{id}",                      get(ws_session::handler))
+        .route("/file/watch",                           get(file_watch::handler))
         // LLM selector (for copilot dropdown)
         .route("/llm/models/selector",          get(llm::selector))
         // LLM providers

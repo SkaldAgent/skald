@@ -69,8 +69,8 @@ async fn async_main() -> Result<()> {
 
     let handle = WebFrontend::new(skald.clone(), std::sync::Arc::clone(&pool), &frontend_cfg).start().await?;
 
-    tokio::signal::ctrl_c().await?;
-    warn!("SIGINT received — shutting down");
+    let signal = wait_for_shutdown_signal().await;
+    warn!(signal, "shutdown signal received — shutting down");
 
     handle.shutdown().await;
     skald.shutdown().await;
@@ -78,4 +78,28 @@ async fn async_main() -> Result<()> {
     info!("shutdown complete");
 
     Ok(())
+}
+
+/// Wait for an OS shutdown signal and return its name for logging.
+///
+/// We trap **both** SIGINT (Ctrl+C) and SIGTERM. Without an explicit SIGTERM
+/// handler the default action kills the process with exit code 143, which the
+/// `run.sh` supervisor treats as a hard stop (only exit 255 triggers a
+/// restart) — and the kill leaves no trace in the log. Trapping it lets us log
+/// the cause and shut down gracefully (exit 0).
+#[cfg(unix)]
+async fn wait_for_shutdown_signal() -> &'static str {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+    let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
+    tokio::select! {
+        _ = sigterm.recv() => "SIGTERM",
+        _ = sigint.recv()  => "SIGINT",
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown_signal() -> &'static str {
+    let _ = tokio::signal::ctrl_c().await;
+    "CTRL_C"
 }

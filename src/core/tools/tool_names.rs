@@ -8,3 +8,4 @@ pub const SHOW_MCP_TOOLS:         &str = "show_mcp_tools";
 pub const NOTIFY:                 &str = "notify";
 pub const READ_NOTIFICATION:      &str = "read_notification";
 pub const EXECUTE_CMD:            &str = "execute_cmd";
+pub const SHOW_FILE_TO_USER:      &str = "show_file_to_user";

@@ -1,25 +1,42 @@
 import { html, nothing }  from 'lit';
 import { unsafeHTML }      from 'lit/directives/unsafe-html.js';
 import { renderMarkdown }  from '../lib/base.js';
+import { openFile }        from '../lib/open-file.js';
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
-/** Convert a tool label with backtick-wrapped args to safe HTML with <code> tags. */
-function labelToHtml(s) {
-  if (!s) return '';
-  const esc = t => t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  let out = '', rest = s;
-  while (true) {
+/**
+ * Render a tool label (with backtick-wrapped arguments) as Lit nodes. Each
+ * backtick segment becomes a `<code>`; the segment that exactly matches `path`
+ * — the file a file-targeting tool acts on, supplied by the backend
+ * `target_path` — instead becomes a link that opens it in the file viewer.
+ * Lit auto-escapes text, so no manual HTML escaping is needed.
+ */
+function renderLabel(label, path) {
+  const out = [];
+  let rest = label || '';
+  while (rest.length) {
     const open = rest.indexOf('`');
-    if (open === -1) { out += esc(rest); break; }
-    out += esc(rest.slice(0, open));
+    if (open === -1) { out.push(rest); break; }
+    if (open > 0) out.push(rest.slice(0, open));
     rest = rest.slice(open + 1);
     const close = rest.indexOf('`');
-    if (close === -1) { out += '`' + esc(rest); break; }
-    out += `<code>${esc(rest.slice(0, close))}</code>`;
+    if (close === -1) { out.push('`' + rest); break; }
+    out.push(renderPath(rest.slice(0, close), path));
     rest = rest.slice(close + 1);
   }
   return out;
+}
+
+/** A backtick segment: a clickable file link when it is the call's target path, else plain `<code>`. */
+function renderPath(seg, path) {
+  if (!path || seg !== path) return html`<code>${seg}</code>`;
+  const open = (e) => { e.stopPropagation(); openFile(seg); };
+  return html`<span class="copilot-tool-path" role="button" tabindex="0"
+    title="Apri nel viewer"
+    @click=${open}
+    @keydown=${(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(e); } }}
+  >${seg}</span>`;
 }
 
 export function truncate(s, max = 400) {
@@ -90,7 +107,11 @@ export function renderPendingWrite(host, msg) {
     <div class="copilot-approval copilot-approval--${msg.status}">
       <div class="copilot-approval-header">
         <i class="bi bi-pencil-square"></i>
-        <code class="copilot-approval-path">${msg.path}</code>
+        <span class="copilot-approval-path copilot-tool-path" role="button" tabindex="0"
+          title="Apri nel viewer"
+          @click=${() => openFile(msg.path)}
+          @keydown=${(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openFile(msg.path); } }}
+        >${msg.path}</span>
         ${msg.status === 'pending'
           ? html`<span class="badge bg-warning text-dark ms-auto">Pending approval</span>`
           : msg.status === 'approved'
@@ -161,7 +182,7 @@ export function renderTool(host, msg) {
     <div class="copilot-tool ${isPending ? 'copilot-tool--pending' : ''}">
       <button class="copilot-tool-header" @click=${() => host._toggleExpand(msg.tool_call_id)}>
         <span class="copilot-tool-status">${statusIcon}</span>
-        <span class="copilot-tool-name">${unsafeHTML(labelToHtml(msg.label_full || msg.name))}</span>
+        <span class="copilot-tool-name">${renderLabel(msg.label_full || msg.name, msg.path)}</span>
         ${isPending ? html`<span class="badge bg-warning text-dark ms-2">Pending approval</span>` : nothing}
         <i class="bi bi-chevron-${isOpen ? 'up' : 'down'} ms-auto"></i>
       </button>

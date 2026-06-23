@@ -103,8 +103,10 @@ export class AppSidebar extends LightElement {
   _pageFromHash() {
     const hash = location.hash.slice(1);
     if (!hash) return 'home';
-    const segment = hash.split('/')[0];
-    return ['inbox', 'tasks', 'projects', 'models', 'providers', 'approval', 'agents', 'config', 'llm-requests', 'session', 'tic'].includes(segment) ? segment : 'home';
+    // Segment ends at the first `/` (e.g. `#session/123`) or `?` (e.g. `#file_viewer?path=...`).
+    const match = hash.match(/^([^/?]+)/);
+    const segment = match ? match[1] : '';
+    return ['inbox', 'tasks', 'projects', 'models', 'providers', 'approval', 'agents', 'config', 'llm-requests', 'session', 'tic', 'file_viewer'].includes(segment) ? segment : 'home';
   }
 
   _tasksSectionFromHash() {

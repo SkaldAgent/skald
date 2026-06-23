@@ -36,6 +36,10 @@ impl Tool for SearchFile {
         })
     }
 
+    fn target_path(&self, args: &Value) -> Option<String> {
+        super::path_arg(args)
+    }
+
     fn describe(&self, args: &Value, length: ToolDescriptionLength) -> String {
         let path = args["path"].as_str().unwrap_or("?");
         match length {

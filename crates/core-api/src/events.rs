@@ -42,6 +42,10 @@ pub enum ServerEvent {
         label_short:  String,
         /// Verbose human-readable label (≤120 chars): tool + all meaningful arguments.
         label_full:   String,
+        /// Path to a single viewable file this call targets, if any. The
+        /// frontend renders it as a clickable link to the file viewer.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path:         Option<String>,
     },
     /// A tool call completed successfully. DB status: done.
     ToolDone {
@@ -121,6 +125,13 @@ pub enum ServerEvent {
     },
     /// A book file was written by a tool; the frontend should reload if it has it open.
     FileChanged {
+        path: String,
+    },
+    /// Ask the frontend to open a file for the user. Behaves like
+    /// `window.openFile(path)`: navigates to the file viewer page for markdown /
+    /// text / images, or opens an HTML file in a new browser tab. Emitted by
+    /// the future `show_file_to_user` interface tool (not wired yet).
+    OpenFile {
         path: String,
     },
     /// The active LLM model failed and the system switched to a fallback automatically.
@@ -205,6 +216,7 @@ impl ServerEvent {
             Self::ApprovalRequired   { .. } => "approval_required",
             Self::AgentQuestion      { .. } => "agent_question",
             Self::FileChanged        { .. } => "file_changed",
+            Self::OpenFile           { .. } => "open_file",
             Self::Truncated          { .. } => "truncated",
             Self::ModelFallback      { .. } => "model_fallback",
             Self::LlmFailed          { .. } => "llm_failed",

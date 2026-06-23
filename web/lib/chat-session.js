@@ -197,6 +197,7 @@ export class ChatSession extends LightElement {
             name:         msg.name,
             label_short:  msg.label_short,
             label_full:   msg.label_full,
+            path:         msg.path,
             arguments:    msg.arguments,
             status:       'running',
             result:       null,
@@ -288,6 +289,19 @@ export class ChatSession extends LightElement {
       case 'file_changed':
         window.dispatchEvent(new CustomEvent('file-changed', { detail: { path: msg.path } }));
         break;
+
+      case 'open_file': {
+        // Agent-driven file open. HTML files open in a new browser tab (served
+        // as a blob with the right content-type, since /api/file returns plain
+        // text); everything else routes through the file-viewer page.
+        const p = msg.path ?? '';
+        if (/\.(html?|xhtml)$/i.test(p)) {
+          this._openHtmlInNewTab(p);
+        } else if (typeof window.openFile === 'function') {
+          window.openFile(p);
+        }
+        break;
+      }
 
       case 'model_fallback':
         this._push({ kind: 'info', content: `⚡ Model fallback: ${msg.from} → ${msg.to}` });
@@ -410,6 +424,25 @@ export class ChatSession extends LightElement {
       this._ws.send(JSON.stringify({ type: 'cancel' }));
     }
     this._waiting = false;
+  }
+
+  // Open an HTML file in a new browser tab. The file is fetched via /api/file
+  // (which returns plain text) and re-wrapped as a Blob with the correct
+  // `text/html` MIME type so the browser renders it. Limitation: relative
+  // paths (CSS, JS, images) inside the HTML do NOT resolve — the blob URL has
+  // no directory base. Self-contained HTML works fine; full web apps will need
+  // a dedicated preview endpoint in a future phase.
+  async _openHtmlInNewTab(path) {
+    try {
+      const res = await fetch(`/api/file?path=${encodeURIComponent(path)}`);
+      if (!res.ok) return;
+      const text = await res.text();
+      const blob = new Blob([text], { type: 'text/html;charset=utf-8' });
+      const url  = URL.createObjectURL(blob);
+      window.open(url);
+      // Give the new tab time to load before revoking the object URL.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch { /* swallow — opening the tab is best-effort */ }
   }
 
   // ── Approval — pending_write (WS) ─────────────────────────────────────────────

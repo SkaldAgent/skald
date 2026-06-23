@@ -102,8 +102,8 @@ All extend `LightElement` from `web/lib/base.js` (Lit). `ChatSession` (`web/lib/
 | `copilot-render.js` | (helpers) | `renderMsg`, `renderTool`, `renderDiff`, etc. — shared by copilot and chat-page |
 | `sidebar.js` | `<app-sidebar>` | Nav sidebar; polls `/api/inbox` every 10 s for badge |
 | `topbar.js` | `<app-topbar>` | Top nav bar |
-| `editor.js` | — | File editor panel |
 | `home-page.js` | `<home-page>` | Landing / dashboard |
+| `file-viewer-page.js` | `<file-viewer-page>` | Top-level page previewing files (markdown / code / images) via `window.openFile(path)` → `#file_viewer?path=...` |
 | `agents.js` | `<agents-page>` | Agent discovery and config |
 | `agent-inbox.js` | `<agent-inbox-page>` | Pending approvals + clarifications from background sessions |
 | `approval-rules.js` | `<approval-rules-page>` | Approval rule management |

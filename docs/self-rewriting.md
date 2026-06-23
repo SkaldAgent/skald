@@ -10,9 +10,12 @@ The `restart` tool calls `std::process::exit(-1)`. On Unix, Rust maps `-1` to ex
 
 | Exit code | Meaning | run.sh action |
 |---|---|---|
-| `0` | Clean shutdown (Ctrl+C) | Stop loop, exit 0 |
+| `0` | Graceful shutdown — SIGINT (Ctrl+C) **or** SIGTERM, both trapped in `main.rs` | Stop loop, exit 0 |
 | `255` | Restart requested (`exit(-1)`) | `cargo run` again (recompile) |
-| other | Unexpected error | Stop loop, propagate code |
+| `143` | SIGTERM with no handler (`128+15`) — no longer reachable; see note | Stop loop, propagate code |
+| other | Unexpected error (e.g. `101` panic) | Stop loop, propagate code |
+
+`main.rs` traps **both** SIGINT and SIGTERM (`wait_for_shutdown_signal`) and runs the graceful shutdown path, so an external `kill` now exits `0` and logs `signal=SIGTERM` instead of dying silently with code `143`. To force a restart, use the `restart` tool (exit `255`) — never `kill` the process.
 
 ---
 

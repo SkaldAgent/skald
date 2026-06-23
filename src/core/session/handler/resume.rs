@@ -226,6 +226,7 @@ impl ChatSessionHandler {
                     arguments:    args.clone(),
                     label_short:  self.tools.describe_call(&tc.name, &args, ToolDescriptionLength::Short),
                     label_full:   self.tools.describe_call(&tc.name, &args, ToolDescriptionLength::Full),
+                    path:         self.tools.target_path(&tc.name, &args),
                 }).await.ok();
                 let result = self.dispatch_ask_user_clarification(tc.id, &args, tx).await;
                 match result {
@@ -255,6 +256,7 @@ impl ChatSessionHandler {
                 arguments:    args.clone(),
                 label_short:  self.tools.describe_call(&tc.name, &args, ToolDescriptionLength::Short),
                 label_full:   self.tools.describe_call(&tc.name, &args, ToolDescriptionLength::Full),
+                path:         self.tools.target_path(&tc.name, &args),
             }).await.ok();
 
             // Re-run through the approval gate with current rules.

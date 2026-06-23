@@ -3,7 +3,8 @@ use std::path::Path;
 use axum::{
     Json,
     extract::{Query, State},
-    http::StatusCode,
+    http::{HeaderValue, StatusCode, header},
+    response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,14 +42,53 @@ pub struct FileQuery {
     pub path: String,
 }
 
+/// Serve a file's raw bytes with a `Content-Type` derived from its extension.
+///
+/// Raw bytes (not `read_to_string`) so binary formats — images, PDFs — work; the
+/// frontend file viewer reads text via `res.text()` and binaries via `res.blob()`.
 pub async fn get_file(
     State(_state): State<Arc<Skald>>,
     Query(q): Query<FileQuery>,
-) -> Result<String, ApiError> {
-    let abs = fs_tools::resolve(&q.path)?;
-    let content = std::fs::read_to_string(&abs)
-        .map_err(|_| anyhow::anyhow!("File not found: {}", q.path))?;
-    Ok(content)
+) -> Response {
+    let abs = match fs_tools::resolve(&q.path) {
+        Ok(p)  => p,
+        Err(_) => return (StatusCode::BAD_REQUEST, format!("Invalid path: {}", q.path)).into_response(),
+    };
+    match tokio::fs::read(&abs).await {
+        Ok(bytes) => {
+            let mut response = bytes.into_response();
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(content_type_for(&q.path)),
+            );
+            response
+        }
+        Err(_) => (StatusCode::NOT_FOUND, format!("File not found: {}", q.path)).into_response(),
+    }
+}
+
+/// Best-effort `Content-Type` from a file extension. Known binary types get their
+/// specific MIME; everything else is served as UTF-8 text (markdown, code, configs,
+/// and unknown files the viewer treats as plain text or "binary, no preview").
+fn content_type_for(path: &str) -> &'static str {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "png"          => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif"          => "image/gif",
+        "webp"         => "image/webp",
+        "avif"         => "image/avif",
+        "bmp"          => "image/bmp",
+        "ico"          => "image/x-icon",
+        "svg"          => "image/svg+xml",
+        "pdf"          => "application/pdf",
+        "html" | "htm" => "text/html; charset=utf-8",
+        _              => "text/plain; charset=utf-8",
+    }
 }
 
 #[derive(Deserialize)]

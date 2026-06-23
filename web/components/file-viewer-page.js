@@ -1,0 +1,289 @@
+import { html, nothing } from 'lit';
+import { unsafeHTML }           from 'lit/directives/unsafe-html.js';
+import { LightElement, renderMarkdown } from '../lib/base.js';
+import { fileWatcher }          from '../lib/file-watcher.js';
+
+const PAGE_ID = 'file_viewer';
+
+const IMG_EXTS  = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'];
+const TEXT_EXTS = [
+  'txt', 'md', 'markdown', 'rs', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx',
+  'py', 'json', 'yml', 'yaml', 'toml', 'sh', 'bash', 'zsh', 'fish',
+  'html', 'htm', 'css', 'scss', 'less',
+  'sql', 'go', 'java', 'c', 'h', 'cpp', 'hpp', 'cc', 'kt', 'scala',
+  'lua', 'pl', 'php', 'rb', 'swift', 'dart',
+  'xml', 'csv', 'tsv', 'log', 'env', 'ini', 'cfg', 'conf',
+  'gitignore', 'dockerignore', 'editorconfig',
+  'vue', 'svelte', 'astro',
+];
+
+function extOf(path) {
+  const dot = path.lastIndexOf('.');
+  if (dot < 0) return '';
+  // Reject dots that are inside a directory segment, not the file extension.
+  if (path.indexOf('/', dot + 1) >= 0) return '';
+  return path.slice(dot + 1).toLowerCase();
+}
+
+function kindFor(path) {
+  const ext = extOf(path);
+  if (IMG_EXTS.includes(ext))  return 'image';
+  if (ext === 'pdf')           return 'pdf';
+  if (TEXT_EXTS.includes(ext)) return 'text';
+  return 'binary';
+}
+
+/** Directory portion of a path: `docs/guide.md` → `docs`, `guide.md` → ``. */
+function dirOf(path) {
+  const i = path.lastIndexOf('/');
+  return i < 0 ? '' : path.slice(0, i);
+}
+
+/** Lexically resolve `.`/`..` segments, preserving a leading slash for absolute paths. */
+function normalizePath(p) {
+  const abs = p.startsWith('/');
+  const out = [];
+  for (const seg of p.split('/')) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') { out.pop(); continue; }
+    out.push(seg);
+  }
+  return (abs ? '/' : '') + out.join('/');
+}
+
+/**
+ * Resolve an asset reference found inside a markdown file. External URLs, data
+ * URIs, protocol-relative and root-relative paths are left untouched; a path
+ * relative to the markdown file's directory is routed through `/api/file` so it
+ * loads from disk instead of resolving against the SPA origin.
+ */
+function resolveAssetSrc(src, baseDir) {
+  if (!src || /^([a-z][a-z0-9+.-]*:|\/\/|#|\/)/i.test(src)) return src;
+  const joined = baseDir ? `${baseDir}/${src}` : src;
+  return `/api/file?path=${encodeURIComponent(normalizePath(joined))}`;
+}
+
+/**
+ * Rewrite relative `<img>` sources in rendered markdown HTML so they resolve
+ * against the markdown file's location on disk (via `/api/file`). Parsed in an
+ * inert <template> so the original (broken) URLs never trigger a fetch.
+ */
+function rewriteMarkdownAssets(htmlStr, baseDir) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = htmlStr;
+  let changed = false;
+  for (const img of tpl.content.querySelectorAll('img[src]')) {
+    const src = img.getAttribute('src');
+    const resolved = resolveAssetSrc(src, baseDir);
+    if (resolved !== src) { img.setAttribute('src', resolved); changed = true; }
+  }
+  return changed ? tpl.innerHTML : htmlStr;
+}
+
+function pathFromHash() {
+  const h = location.hash;
+  const prefix = `#${PAGE_ID}?path=`;
+  if (!h.startsWith(prefix)) return null;
+  try {
+    return decodeURIComponent(h.slice(prefix.length));
+  } catch {
+    return null;
+  }
+}
+
+export class FileViewerPage extends LightElement {
+  static properties = {
+    _open:    { state: true },
+    _path:    { state: true },
+    _kind:    { state: true },
+    _content: { state: true },
+    _blobUrl:  { state: true },
+    _loading: { state: true },
+    _error:   { state: true },
+  };
+
+  constructor() {
+    super();
+    this._open        = false;
+    this._path        = null;
+    this._kind        = null;
+    this._content     = '';
+    this._blobUrl      = null;
+    this._loading     = false;
+    this._error       = null;
+    this._watchPath   = null;     // path currently being watched (async-verified)
+    this._watchUnsub  = null;     // unsubscribe function returned by fileWatcher
+    this._reloadTimer = null;     // debounce timer for change-triggered reloads
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    window.addEventListener('llm-page-change', (e) => {
+      this._open = e.detail.page === PAGE_ID;
+      this.style.display = this._open ? 'flex' : 'none';
+      if (this._open) this._loadFromHash();
+      else {
+        this._reset();
+        this._teardownWatch();
+      }
+    });
+    window.addEventListener('hashchange', () => {
+      if (this._open) this._loadFromHash();
+    });
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this._teardownWatch();
+    if (this._reloadTimer) clearTimeout(this._reloadTimer);
+    this._revokeBlobUrl();
+  }
+
+  _revokeBlobUrl() {
+    if (this._blobUrl) {
+      URL.revokeObjectURL(this._blobUrl);
+      this._blobUrl = null;
+    }
+  }
+
+  _reset() {
+    this._path    = null;
+    this._kind    = null;
+    this._content = '';
+    this._error   = null;
+    this._revokeBlobUrl();
+  }
+
+  _loadFromHash() {
+    const path = pathFromHash();
+    if (!path) return;
+    if (path === this._path && !this._error) return; // already loaded
+    this._setupWatch(path);
+    this._load(path);
+  }
+
+  async _load(path, silent = false) {
+    if (!silent) {
+      this._path    = path;
+      this._kind    = kindFor(path);
+      this._content = '';
+      this._error   = null;
+      this._revokeBlobUrl();
+      this._loading = true;
+    } else {
+      // Silent reload (file changed externally): keep showing the old content
+      // until the new fetch lands; only update visible state on success.
+      this._error = null;
+    }
+    try {
+      const url = `/api/file?path=${encodeURIComponent(path)}`;
+      if (this._kind === 'image' || this._kind === 'pdf') {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        // Swap URLs only after the new blob is ready so the preview never flickers.
+        const oldUrl = this._blobUrl;
+        this._blobUrl = URL.createObjectURL(blob);
+        if (oldUrl) URL.revokeObjectURL(oldUrl);
+      } else if (this._kind === 'text') {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        this._content = await res.text();
+      }
+      // binary: nothing to fetch
+    } catch (e) {
+      this._error = e.message || String(e);
+    } finally {
+      if (!silent) this._loading = false;
+    }
+  }
+
+  // ── File watcher ────────────────────────────────────────────────────────────
+
+  _setupWatch(path) {
+    this._teardownWatch();
+    if (!path) return;
+    this._watchPath = path;
+    fileWatcher.watch(path, () => this._onFileChanged())
+      .then(unsub => {
+        // Race: if the path changed or the page closed while awaiting, release
+        // the subscription immediately so the OS watcher is torn down.
+        if (this._watchPath !== path) {
+          try { unsub(); } catch { /* ignore */ }
+          return;
+        }
+        this._watchUnsub = unsub;
+      })
+      .catch(() => { /* WS error; client auto-reconnects and re-subscribes */ });
+  }
+
+  _teardownWatch() {
+    if (this._reloadTimer) {
+      clearTimeout(this._reloadTimer);
+      this._reloadTimer = null;
+    }
+    if (this._watchUnsub) {
+      try { this._watchUnsub(); } catch { /* ignore */ }
+      this._watchUnsub = null;
+    }
+    this._watchPath = null;
+  }
+
+  _onFileChanged() {
+    // Debounce: collapse bursts of FS events into a single reload.
+    if (this._reloadTimer) return;
+    this._reloadTimer = setTimeout(() => {
+      this._reloadTimer = null;
+      const path = this._watchPath;
+      if (path && this._open) this._load(path, true);
+    }, 300);
+  }
+
+  _back() {
+    history.back();
+  }
+
+  _renderBody() {
+    if (this._loading) {
+      return html`<div class="fv-state"><span class="spinner-border"></span></div>`;
+    }
+    if (this._error) {
+      return html`<div class="fv-state text-danger">
+        <i class="bi bi-exclamation-triangle fs-3 d-block mb-2"></i>${this._error}
+      </div>`;
+    }
+    if (this._kind === 'image' && this._blobUrl) {
+      return html`<div class="fv-image-wrap"><img src=${this._blobUrl} alt=${this._path} class="fv-image" /></div>`;
+    }
+    if (this._kind === 'pdf' && this._blobUrl) {
+      return html`<iframe class="fv-pdf" src=${this._blobUrl} title=${this._path}></iframe>`;
+    }
+    if (this._kind === 'binary') {
+      return html`<div class="fv-state text-muted">
+        <i class="bi bi-file-earmark-binary fs-3 d-block mb-2"></i>
+        Preview not available for this file type.
+      </div>`;
+    }
+    const ext = extOf(this._path);
+    if (ext === 'md' || ext === 'markdown') {
+      const rendered = rewriteMarkdownAssets(renderMarkdown(this._content), dirOf(this._path || ''));
+      return html`<div class="fv-md">${unsafeHTML(rendered)}</div>`;
+    }
+    return html`<pre class="fv-code"><code>${this._content}</code></pre>`;
+  }
+
+  render() {
+    if (!this._open) return nothing;
+    return html`
+      <div class="llm-page fv-page">
+        <div class="llm-page-header">
+          <button class="btn btn-sm btn-outline-secondary back-btn" title="Back" @click=${() => this._back()}>
+            <i class="bi bi-arrow-left"></i>
+          </button>
+          <h2 class="llm-page-title fv-title" title=${this._path ?? ''}>${this._path ?? ''}</h2>
+        </div>
+        <div class="fv-body">${this._renderBody()}</div>
+      </div>
+    `;
+  }
+}

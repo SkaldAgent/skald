@@ -19,6 +19,10 @@ import { LlmRequestDetail }  from './components/llm-request-detail.js';
 import { SessionDetailPage } from './components/session-detail.js';
 import { TicSessionsPage }  from './components/tic-sessions.js';
 import { ProjectsPage }     from './components/projects/index.js';
+import { FileViewerPage }   from './components/file-viewer-page.js';
+
+// Register the global `openFile(path)` helper (window.openFile → location.hash).
+import './lib/open-file.js';
 
 customElements.define('app-topbar',           AppTopbar);
 customElements.define('app-sidebar',          AppSidebar);
@@ -41,6 +45,7 @@ customElements.define('llm-request-detail',  LlmRequestDetail);
 customElements.define('session-detail-page', SessionDetailPage);
 customElements.define('tic-sessions-page',   TicSessionsPage);
 customElements.define('projects-page',       ProjectsPage);
+customElements.define('file-viewer-page', FileViewerPage);
 
 // Toggle the workspace placeholder when an LLM page opens/closes.
 const workspace = document.getElementById('app-workspace');
