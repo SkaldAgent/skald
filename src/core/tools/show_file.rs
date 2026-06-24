@@ -28,7 +28,14 @@ pub fn make_tool(hub: Arc<ChatHub>, source: String) -> InterfaceTool {
                              to PDF automatically on the server). HTML files open in a \
                              new browser tab. Use this to surface a file you created or \
                              found so the user can look at it directly. One file per call. \
-                             The file must already exist on disk.",
+                             The file must already exist on disk. \
+                             IMPORTANT for LaTeX: always pass the `.tex` source, never a \
+                             pre-built `.pdf` of a document you have the `.tex` for. The \
+                             `.tex` is compiled on the server and the view live-reloads \
+                             whenever any of its dependencies (\\input fragments, .sty/.cls, \
+                             images) change. A raw `.pdf` is served statically — never \
+                             recompiled and its dependencies are not watched — so the user \
+                             would keep seeing a stale render.",
             "parameters": {
                 "type": "object",
                 "properties": {

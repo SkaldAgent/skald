@@ -100,6 +100,31 @@ function pathFromHash() {
   }
 }
 
+/**
+ * Distil a raw latexmk / xelatex log into its actionable error block.
+ *
+ * The 422 body carries the *full* log. Under `-file-line-error` the meaningful
+ * `path:line: message` errors (and `! TeX error` lines) sit deep in the log —
+ * the opening lines are only the engine banner and package preamble. Slicing
+ * the first N characters therefore hid the real error; instead we extract the
+ * error lines plus a few trailing context lines (LaTeX echoes the offending
+ * source line right after) so the user can read it — or paste it straight into
+ * an agent. Falls back to the log tail when no error line is recognised.
+ */
+function formatLatexError(log) {
+  if (!log) return '';
+  const lines = log.split('\n');
+  const blocks = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (/:\d+: /.test(lines[i]) || lines[i].startsWith('! ')) {
+      blocks.push(lines.slice(i, i + 4).join('\n').trimEnd());
+    }
+  }
+  const excerpt = blocks.join('\n\n').trim();
+  if (excerpt) return excerpt;
+  return (log.length > 4000 ? log.slice(-4000) : log).trim();
+}
+
 export class FileViewerPage extends LightElement {
   static properties = {
     _open:         { state: true },
@@ -232,10 +257,11 @@ export class FileViewerPage extends LightElement {
         this._compileError = null;
         return;
       }
-      // Preserve a trimmed version of the failure message — the body for 422
-      // is the latexmk log, which can be large.
+      // The 422 body is the full latexmk log. Extract the actionable error
+      // block (see formatLatexError) instead of slicing from the top, which
+      // under -file-line-error only shows the preamble and hides the real error.
       let detail = '';
-      try { detail = (await res.text()).slice(0, 2000); } catch { /* ignore */ }
+      try { detail = formatLatexError(await res.text()); } catch { /* ignore */ }
       this._compileError = detail || `HTTP ${res.status}`;
     } catch (e) {
       this._compileError = e.message || String(e);

@@ -24,7 +24,7 @@ This project is that experiment. It started as a desperate hack and turned into 
 
 ### 💬 Conversational agent
 
-A chat interface where you talk to the LLM like you would any assistant. Sub-agents can be delegated tasks — research, coding, planning — and report back. *(screenshot)*
+A chat interface where you talk to the LLM like you would any assistant. Sub-agents can be delegated tasks — research, coding, planning — and report back.
 
 ### ♻️ Self‑rewriting
 
@@ -34,31 +34,34 @@ The idea is that **this is an almost‑empty container**. A starting point. Want
 
 Need a Discord plugin? Ask the agent — it writes the code, restarts, and guides you through connecting it. Need a specific MCP server? The agent knows how to build and register one. You don't need to know the code. Just describe what you want.
 
+### 🧰 Skills
+
+Reusable capability packages that extend what the agent can do without touching the core code. Each skill is a folder with instructions plus one or more scripts; the agent discovers them automatically and invokes them when relevant. Ships with skills for PDF and DOCX handling, a full ComfyUI image-workflow suite, architecture diagrams, slide/Keynote generation, iOS development, and a `skill-creator` the agent uses to author brand-new skills on the fly.
+
 ### 🧠 Memory system
 
 Two layers work together:
 
 - **File-based memory** — the agent writes notes to markdown files in `data/memory/`. It manages these autonomously, like a personal wiki.
-- **Honcho** (optional but highly recommended) — a self-hosted memory server that extracts long-term conclusions about you from every conversation. Over time, the agent knows your preferences, habits, and context. *(screenshot)*
+- **Honcho** (optional but highly recommended) — a self-hosted memory server that extracts long-term conclusions about you from every conversation. Over time, the agent knows your preferences, habits, and context.
 
 ### 🔌 Multi‑LLM support
 
-Works with OpenAI, Anthropic, OpenRouter, Ollama, LM Studio, DeepSeek — anything with an API. Each agent can use a different model depending on the task. You can switch on the fly. *(screenshot)*
-
-> **Recommended models today:** DeepSeek v4 Flash (average reasoning) is great for everyday chat and light coding — writing MCP servers or skills. DeepSeek v4 Pro is better for heavy architectural work — new complex plugins, major rewrites, anything that needs deep reasoning.
+Works with OpenAI, Anthropic, OpenRouter, Ollama, LM Studio, DeepSeek — anything with an API. Each agent can use a different model depending on the task. You can switch on the fly.
 
 ### ✅ Approval system
 
 The agent can do a lot on its own, but some actions are too sensitive to run unchecked. Before executing shell commands, writing to important files, or restarting the server, the agent pauses and asks for your approval.
 
-A request pops up in real time — you see exactly what the agent wants to do, with a diff when files are involved. Approve, reject, or add a note. If you're away, pending requests collect in the **Agent Inbox**, waiting for you to come back and decide. *(screenshot)*
+A request pops up in real time — you see exactly what the agent wants to do, with a diff when files are involved. Approve, reject, or add a note. If you're away, pending requests collect in the **Agent Inbox**, waiting for you to come back and decide.
 
-The rules are fully configurable: you decide which tools, agents, or paths require approval, which are always allowed, and which are blocked entirely. The agent never acts on your machine without your say-so. *(screenshot)* *(screenshot)*
+The rules are fully configurable: you decide which tools, agents, or paths require approval, which are always allowed, and which are blocked entirely. Each session also runs under a **permission group** that scopes which directories the agent may read and write, so a task can be sandboxed to exactly the files it needs. The agent never acts on your machine without your say-so.
 
 ### 🎨 Multi‑modal
 
-- **Image generation** — describe what you want, the agent generates it (OpenRouter, Grok, etc.)
-- **Speech‑to‑text** — send a voice message, get it transcribed (OpenAI Whisper API or local whisper.cpp)
+- **Image generation** — describe what you want, the agent generates it. Cloud (OpenRouter, etc.) or fully local through the **ComfyUI** plugin, with a skill suite for building, validating, and repairing workflows.
+- **Speech‑to‑text** — send a voice message, get it transcribed (OpenAI / ElevenLabs cloud, or local whisper.cpp on-device).
+- **Text‑to‑speech** — the agent can talk back. Cloud (OpenAI, ElevenLabs) or local (Orpheus 3B, or Kokoro — lightweight and multilingual).
 
 ### 👁️ Background agent (TIC)
 
@@ -68,20 +71,28 @@ Every 15 minutes, a background agent checks your incoming events and decides wha
 - **Google Calendar** — upcoming events, changes
 - **WhatsApp** — new messages
 
-If something needs your attention, it briefs your conversational agent, which can then alert you. The notification rules are **yours** — you tell the agent what to filter and what to escalate. *(screenshot)*
+If something needs your attention, it briefs your conversational agent, which can then alert you. The notification rules are **yours** — you tell the agent what to filter and what to escalate.
 
 ### ⏰ Cron jobs
 
-Tell the agent *"send me a daily summary at 9am"* or *"check the weather every morning and remind me to take an umbrella"*. The agent creates, manages, and runs scheduled tasks — no crontab editing. *(screenshot)*
+Tell the agent *"send me a daily summary at 9am"* or *"check the weather every morning and remind me to take an umbrella"*. The agent creates, manages, and runs scheduled tasks — no crontab editing.
+
+### 📋 Projects & tickets
+
+Tie a unit of work to a directory on disk. A **project** gives agents standing context — its path, description, and permissions — so they don't need re-explaining every time. Work it two ways: fire-and-forget **tickets** (one background agent run each, tracked on a board), or an **interactive chat** with the project's coordinator agent, which delegates to specialist sub-agents (researcher, architect, engineer, …).
 
 ### 🔌 Plugins
 
 | Plugin | What it does |
 |--------|-------------|
 | **Telegram** | Chat with your agent from Telegram — full interaction, including approval requests |
+| **Mobile connector** | Bridges the agent to the companion mobile app over an end-to-end-encrypted relay — pairing, inbox sync, push |
 | **Tailscale** | Connects your agent to your tailnet, accessible from any device in your mesh |
 | **Honcho** | Long-term memory server (personality extraction, conversation context) |
+| **ComfyUI** | Local image generation through a running ComfyUI instance |
 | **Whisper (local)** | On-device speech-to-text via whisper.cpp |
+| **ElevenLabs** | Cloud text-to-speech and speech-to-text |
+| **Orpheus 3B / Kokoro** | Local, on-device text-to-speech (Kokoro is lightweight and multilingual) |
 
 Want to enable a plugin? Ask the copilot in the web UI, or any other active chat session — it will guide you through the setup step by step.
 
@@ -91,14 +102,17 @@ Model Context Protocol servers give the agent direct access to external services
 
 | MCP server | Tools exposed |
 |-----------|--------------|
-| **Google Calendar** | List events, create/update/delete, RSVP |
 | **Gmail** | Read, send, search, manage labels |
+| **Google Calendar** | List events, create/update/delete, RSVP |
 | **Google Maps** | Transit directions, places, geocoding |
 | **WhatsApp** | Read messages, send messages, list chats |
-| **Tavily** | Web search and research |
-| **Web fetch** | Download and extract any URL |
+| **Flights (SerpAPI)** | Search flights and fares |
 
-More can be added at runtime — the agent can write new MCP servers from scratch, modify existing ones, or register them on its own.
+These ship as ready-to-use custom servers. Any other MCP server — web search, web fetch, your own — can be added at runtime: the agent can write a new one from scratch, modify an existing one, or register it on its own.
+
+### 📄 File viewer & live documents
+
+The web UI previews files directly — Markdown, source code, images, SVG, and PDF. **LaTeX (`.tex`) is compiled to PDF on the server** (via `latexmk` / `xelatex`) and rendered inline, with dependency-aware caching and a file watcher that recompiles and reloads the moment you — or the agent — change a source fragment (an `\input`'ed file, a `.sty`, an image). The agent can surface any file to you with a single call, and tool outputs link straight to the file they touched.
 
 ### 🌐 Web app
 
@@ -124,9 +138,9 @@ Enable the Tailscale plugin and the web app becomes accessible from any device o
 
 <table><tr><td width="220"><a href="assets/images/skald-mobile-app-screen.png"><img src="assets/images/skald-mobile-app-screen.png" alt="Mobile app screenshot" width="200"></a></td><td>
 
-The web app works on mobile — add it to your phone's HomeScreen and use it to chat with the agent, approve pending requests, and manage your inbox remotely.
+The web app works on mobile — add it to your phone's Home Screen to chat with the agent, approve pending requests, and manage your inbox remotely.
 
-⚠️ **Current status**: the mobile web app works, but **push notifications are not yet implemented** — you need to open the page to see new requests. The mobile web app is still a work in progress.
+For a tighter experience there's a companion mobile app backed by an **end-to-end-encrypted relay** (the Mobile connector plugin): it pairs with your Skald, keeps your Agent Inbox in sync, and delivers **push notifications** so you're alerted to approvals and questions even when the app is closed — with a smart delay that suppresses the phone push if you've already handled it on your computer.
 
 </td></tr></table>
 
@@ -198,8 +212,6 @@ Once the app is running, the last step is to register at least one **LLM provide
 2. At least one model assigned to that provider
 
 All credentials are stored in SQLite and managed entirely through the web UI — no config file editing required.
-
-> **Recommended:** DeepSeek v4 Flash for everyday conversation, and DeepSeek v4 Pro for complex architecture and coding tasks. Flash is fast and cheap; Pro has deeper reasoning for heavy work.
 
 ## Status
 
