@@ -67,7 +67,7 @@ impl Config {
         if !config_path.exists() {
             std::fs::copy(default_path, config_path)
                 .with_context(|| format!("Failed to copy {DEFAULT_CONFIG} to {CONFIG}"))?;
-            println!("Created {CONFIG} from {DEFAULT_CONFIG}");
+            crate::boot::section(format!("Created {CONFIG} from {DEFAULT_CONFIG}"));
         }
 
         let content = std::fs::read_to_string(config_path)

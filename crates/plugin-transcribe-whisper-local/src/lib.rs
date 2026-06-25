@@ -3,45 +3,190 @@
 /// Audio (any format) is first converted to 16 kHz mono WAV by ffmpeg, then fed to
 /// whisper.cpp through the `whisper-rs` crate. No Python involved.
 ///
+/// The ~2 GB model is **lazily loaded**: by default it is loaded into memory only on
+/// the first transcription and unloaded again after a configurable idle period
+/// (`idle_timeout_secs`, default 20 min). Set `load_at_startup: true` to load eagerly.
+///
 /// The model must be a GGML `.bin` file. Download with:
 ///   curl -L -o models/ggml-large-v3.bin \
 ///     https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 use core_api::plugin::{Plugin, PluginContext};
 use core_api::transcribe::{Transcribe, TranscribeRegistry};
 
+/// Default idle timeout before the model is unloaded from memory (20 minutes).
+const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 1200;
+/// How often the eviction task checks for idleness.
+const EVICTION_TICK: Duration = Duration::from_secs(60);
+
+// ── LazyModel ─────────────────────────────────────────────────────────────────
+//
+// Shared, droppable home of the GGML weights. Both the plugin and the registered
+// transcriber hold an `Arc<LazyModel>`; the eviction task holds a `Weak`. The
+// weights live behind `ctx` and can be dropped at any time to reclaim ~2 GB — the
+// transcriber keeps working because it reloads on demand via `ensure_loaded()`.
+
+struct LazyModel {
+    /// Path to the GGML `.bin` file. Behind a Mutex so a config change can swap it.
+    path:      tokio::sync::Mutex<PathBuf>,
+    /// Loaded model context — `None` until first use (or after eviction).
+    ctx:       tokio::sync::Mutex<Option<Arc<WhisperContext>>>,
+    /// Timestamp of the last transcription, used to decide idle eviction.
+    last_used: std::sync::Mutex<std::time::Instant>,
+}
+
+impl LazyModel {
+    fn new() -> Self {
+        Self {
+            path:      tokio::sync::Mutex::new(PathBuf::new()),
+            ctx:       tokio::sync::Mutex::new(None),
+            last_used: std::sync::Mutex::new(std::time::Instant::now()),
+        }
+    }
+
+    /// Reset the idle timer to now.
+    fn touch(&self) {
+        *self.last_used.lock().unwrap() = std::time::Instant::now();
+    }
+
+    async fn is_loaded(&self) -> bool {
+        self.ctx.lock().await.is_some()
+    }
+
+    /// Ensure the model is resident in memory and return a handle to it. Loads
+    /// from `path` on first use (or after eviction); a no-op clone otherwise.
+    /// The `ctx` lock is held across the load so concurrent first-callers wait
+    /// for a single load instead of loading the weights twice — but the lock is
+    /// released before the returned handle is used for inference.
+    async fn ensure_loaded(&self) -> Result<Arc<WhisperContext>> {
+        let mut guard = self.ctx.lock().await;
+
+        if let Some(ctx) = guard.as_ref() {
+            self.touch();
+            return Ok(Arc::clone(ctx));
+        }
+
+        let model_path = self.path.lock().await.clone();
+        anyhow::ensure!(
+            model_path.exists(),
+            "whisper_local: model file not found at '{}'. \
+             Download a GGML model and set the path via the plugins API.",
+            model_path.display()
+        );
+        let path_str = model_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("model path is not valid UTF-8"))?
+            .to_string();
+
+        info!(model = %model_path.display(), "whisper_local: loading model into memory");
+        let whisper_ctx = tokio::task::spawn_blocking(move || {
+            let mut params = WhisperContextParameters::default();
+            params.use_gpu(true);
+            WhisperContext::new_with_params(&path_str, params)
+                .map_err(|e| anyhow::anyhow!("failed to load whisper model: {e:?}"))
+        })
+        .await??;
+
+        let ctx = Arc::new(whisper_ctx);
+        *guard = Some(Arc::clone(&ctx));
+        self.touch();
+        Ok(ctx)
+    }
+
+    /// Drop the in-memory model. The actual free runs on a blocking thread because
+    /// whisper.cpp cleanup may touch the GPU. In-flight transcriptions hold their
+    /// own `Arc`, so memory is only reclaimed once they finish.
+    async fn unload(&self) {
+        if let Some(ctx) = self.ctx.lock().await.take() {
+            let in_flight = Arc::strong_count(&ctx) - 1;
+            tokio::task::spawn_blocking(move || drop(ctx));
+            debug!(in_flight, "whisper_local: model unloaded from memory");
+        }
+    }
+
+    /// Unload the model if it has been idle for at least `timeout`.
+    async fn evict_if_idle(&self, timeout: Duration) {
+        if !self.is_loaded().await {
+            return;
+        }
+        let idle = self.last_used.lock().unwrap().elapsed();
+        if idle >= timeout {
+            info!(idle_secs = idle.as_secs(), "whisper_local: idle timeout reached — unloading model");
+            self.unload().await;
+        }
+    }
+}
+
 // ── WhisperLocalPlugin ────────────────────────────────────────────────────────
 
 pub struct WhisperLocalPlugin {
-    /// Path to the GGML model file — behind a Mutex so reload() can swap it.
-    model_path:           tokio::sync::Mutex<PathBuf>,
-    /// BCP-47 language code — can be changed at runtime without model reload.
-    language:             tokio::sync::Mutex<String>,
-    /// Loaded model context — None until start(), reset to None on stop().
-    ctx:                  tokio::sync::Mutex<Option<Arc<WhisperContext>>>,
-    running:              Arc<AtomicBool>,
+    /// Shared, lazily-loaded model weights.
+    model:                Arc<LazyModel>,
+    /// BCP-47 language code. Shared with the registered transcriber so runtime
+    /// changes take effect without re-registering.
+    language:             Arc<tokio::sync::Mutex<String>>,
+    /// Idle seconds before unload. `0` = never unload.
+    idle_timeout_secs:    AtomicU64,
+    /// Load the model eagerly in `start()` instead of on first use.
+    load_at_startup:      AtomicBool,
+    running:              AtomicBool,
     /// Kept so stop() can deregister without needing the full context.
     transcribe_registry:  tokio::sync::Mutex<Option<Arc<dyn TranscribeRegistry>>>,
+    /// Background idle-eviction task; aborted on stop()/reconfigure.
+    evictor:              tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 impl WhisperLocalPlugin {
     pub fn new() -> Self {
         Self {
-            model_path:          tokio::sync::Mutex::new(PathBuf::new()),
-            language:            tokio::sync::Mutex::new("auto".to_string()),
-            ctx:                 tokio::sync::Mutex::new(None),
-            running:             Arc::new(AtomicBool::new(false)),
+            model:               Arc::new(LazyModel::new()),
+            language:            Arc::new(tokio::sync::Mutex::new("auto".to_string())),
+            idle_timeout_secs:   AtomicU64::new(DEFAULT_IDLE_TIMEOUT_SECS),
+            load_at_startup:     AtomicBool::new(false),
+            running:             AtomicBool::new(false),
             transcribe_registry: tokio::sync::Mutex::new(None),
+            evictor:             tokio::sync::Mutex::new(None),
         }
+    }
+
+    /// (Re)start the idle-eviction task to match the current `idle_timeout_secs`.
+    /// A timeout of `0` means "never unload" — any existing task is dropped and
+    /// none is spawned.
+    async fn respawn_evictor(&self) {
+        if let Some(handle) = self.evictor.lock().await.take() {
+            handle.abort();
+        }
+
+        let secs = self.idle_timeout_secs.load(Ordering::Relaxed);
+        if secs == 0 {
+            return;
+        }
+        let timeout = Duration::from_secs(secs);
+        let model = Arc::downgrade(&self.model);
+
+        let handle = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(EVICTION_TICK);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                match model.upgrade() {
+                    Some(m) => m.evict_if_idle(timeout).await,
+                    None => break, // plugin dropped
+                }
+            }
+        });
+        *self.evictor.lock().await = Some(handle);
     }
 }
 
@@ -70,6 +215,19 @@ impl Plugin for WhisperLocalPlugin {
                     "title":       "Language",
                     "description": "BCP-47 code (e.g. 'it', 'en') or 'auto' for auto-detect",
                     "default":     "auto"
+                },
+                "load_at_startup": {
+                    "type":        "boolean",
+                    "title":       "Load at startup",
+                    "description": "Load the model into memory when the plugin starts. \
+                                    If false (default), the model is loaded lazily on the first transcription.",
+                    "default":     false
+                },
+                "idle_timeout_secs": {
+                    "type":        "integer",
+                    "title":       "Idle unload timeout (seconds)",
+                    "description": "Unload the model from memory after this many seconds of inactivity. 0 = never unload.",
+                    "default":     1200
                 }
             },
             "required": ["model"]
@@ -81,17 +239,24 @@ impl Plugin for WhisperLocalPlugin {
     fn as_arc_any(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync> { self }
 
     async fn reload(&self, enabled: bool, config: Value, ctx: PluginContext) -> Result<()> {
-        let new_model = config["model"].as_str().unwrap_or("").to_string();
-        let new_lang  = config["language"].as_str().unwrap_or("auto").to_string();
-        let old_model = self.model_path.lock().await.to_string_lossy().to_string();
-        let is_running = self.is_running();
+        let new_model   = config["model"].as_str().unwrap_or("").to_string();
+        let new_lang    = config["language"].as_str().unwrap_or("auto").to_string();
+        let new_eager   = config["load_at_startup"].as_bool().unwrap_or(false);
+        let new_timeout = config["idle_timeout_secs"].as_u64().unwrap_or(DEFAULT_IDLE_TIMEOUT_SECS);
+        let old_model   = self.model.path.lock().await.to_string_lossy().to_string();
+        let is_running  = self.is_running();
+
+        // Scalar settings that don't depend on lifecycle. Language is shared with
+        // the live transcriber, so this takes effect immediately.
+        self.load_at_startup.store(new_eager, Ordering::Relaxed);
+        self.idle_timeout_secs.store(new_timeout, Ordering::Relaxed);
+        *self.language.lock().await = new_lang;
 
         match (enabled, is_running) {
             (true, false) => {
                 anyhow::ensure!(!new_model.is_empty(),
                     "whisper_local: cannot start — `model` is missing from config");
-                *self.model_path.lock().await = PathBuf::from(&new_model);
-                *self.language.lock().await   = new_lang;
+                *self.model.path.lock().await = PathBuf::from(&new_model);
                 self.start(ctx).await?;
             }
             (false, true) => {
@@ -99,14 +264,15 @@ impl Plugin for WhisperLocalPlugin {
             }
             (true, true) => {
                 if new_model != old_model {
-                    info!("whisper_local: model path changed — reloading");
-                    self.stop().await?;
-                    *self.model_path.lock().await = PathBuf::from(&new_model);
-                    *self.language.lock().await   = new_lang;
-                    self.start(ctx).await?;
-                } else if new_lang != *self.language.lock().await {
-                    info!(language = %new_lang, "whisper_local: language updated (no model reload)");
-                    *self.language.lock().await = new_lang;
+                    info!("whisper_local: model path changed — clearing cached model");
+                    *self.model.path.lock().await = PathBuf::from(&new_model);
+                    self.model.unload().await;
+                }
+                // Pick up a possibly-changed idle timeout.
+                self.respawn_evictor().await;
+                // Honour load_at_startup turning on (or a fresh model path) eagerly.
+                if self.load_at_startup.load(Ordering::Relaxed) && !self.model.is_loaded().await {
+                    self.model.ensure_loaded().await?;
                 }
             }
             (false, false) => {}
@@ -123,8 +289,9 @@ impl Plugin for WhisperLocalPlugin {
         // The call is idempotent (backed by std::sync::Once).
         whisper_rs::install_logging_hooks();
 
-        let model_path = self.model_path.lock().await.clone();
-
+        // Validate the model path up front so config errors surface immediately,
+        // even though the weights are not loaded until first use (lazy mode).
+        let model_path = self.model.path.lock().await.clone();
         anyhow::ensure!(
             model_path.exists(),
             "whisper_local: model file not found at '{}'. \
@@ -132,36 +299,33 @@ impl Plugin for WhisperLocalPlugin {
             model_path.display()
         );
 
-        let mut params = WhisperContextParameters::default();
-        params.use_gpu(true);
-
-        let path_str = model_path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("model path is not valid UTF-8"))?
-            .to_string();
-
-        let whisper_ctx = tokio::task::spawn_blocking(move || {
-            WhisperContext::new_with_params(&path_str, params)
-                .map_err(|e| anyhow::anyhow!("failed to load whisper model: {e:?}"))
-        })
-        .await??;
-
-        *self.ctx.lock().await = Some(Arc::new(whisper_ctx));
         self.running.store(true, Ordering::Relaxed);
-        info!(model = %model_path.display(), "whisper_local plugin started");
 
+        // Register a lightweight transcriber that shares the lazy model + language;
+        // it holds no strong reference to the weights, so eviction can free them.
         *self.transcribe_registry.lock().await = Some(Arc::clone(&ctx.transcribe_registry));
         ctx.transcribe_registry.register(Arc::new(WhisperLocalTranscriber {
-            ctx:      self.ctx.lock().await.clone().unwrap(),
-            language: self.language.lock().await.clone(),
+            model:    Arc::clone(&self.model),
+            language: Arc::clone(&self.language),
         })).await;
 
+        if self.load_at_startup.load(Ordering::Relaxed) {
+            self.model.ensure_loaded().await?;
+            info!(model = %model_path.display(), "whisper_local plugin started (model preloaded)");
+        } else {
+            info!(model = %model_path.display(), "whisper_local plugin started (lazy — loads on first use)");
+        }
+
+        self.respawn_evictor().await;
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
         self.running.store(false, Ordering::Relaxed);
-        *self.ctx.lock().await = None;
+        if let Some(handle) = self.evictor.lock().await.take() {
+            handle.abort();
+        }
+        self.model.unload().await;
         info!("whisper_local plugin stopped");
         if let Some(reg) = self.transcribe_registry.lock().await.take() {
             reg.unregister("whisper_local").await;
@@ -172,13 +336,13 @@ impl Plugin for WhisperLocalPlugin {
 
 // ── WhisperLocalTranscriber ───────────────────────────────────────────────────
 //
-// Lightweight handle registered in TranscribeManager. Cloned from the plugin's
-// ctx + language at start() time so it can be passed as Arc<dyn Transcribe>
-// without holding a reference back to the plugin.
+// Lightweight handle registered in TranscribeManager. Shares the plugin's lazy
+// model and language via Arc, so it never pins the weights in memory and always
+// reflects the current language. Loads the model on demand at transcription time.
 
 struct WhisperLocalTranscriber {
-    ctx:      Arc<WhisperContext>,
-    language: String,
+    model:    Arc<LazyModel>,
+    language: Arc<tokio::sync::Mutex<String>>,
 }
 
 #[async_trait]
@@ -186,14 +350,15 @@ impl Transcribe for WhisperLocalTranscriber {
     fn id(&self) -> &str { "whisper_local" }
 
     async fn transcribe(&self, audio: Vec<u8>, format: &str) -> Result<String> {
-        let ctx      = Arc::clone(&self.ctx);
-        let language = self.language.clone();
-
         debug!(bytes = audio.len(), format, "whisper_local: transcribing audio");
+
+        // Load on demand (no-op if already resident) and refresh the idle timer.
+        let ctx      = self.model.ensure_loaded().await?;
+        let language = self.language.lock().await.clone();
 
         let pcm = audio_to_pcm_f32(audio, format).await?;
 
-        tokio::task::spawn_blocking(move || {
+        let text = tokio::task::spawn_blocking(move || {
             let mut state = ctx.create_state()
                 .map_err(|e| anyhow::anyhow!("whisper state error: {e:?}"))?;
 
@@ -223,9 +388,13 @@ impl Transcribe for WhisperLocalTranscriber {
                 .to_string();
 
             info!(chars = text.len(), segments = n, "whisper_local: transcription complete");
-            Ok(text)
+            Ok::<String, anyhow::Error>(text)
         })
-        .await?
+        .await??;
+
+        // Reset the idle timer again so a long inference isn't evicted right after.
+        self.model.touch();
+        Ok(text)
     }
 }
 

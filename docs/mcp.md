@@ -51,6 +51,12 @@ dump a `KeyboardInterrupt` traceback. They are instead reaped via `kill_on_drop`
 when the app shuts down and the per-server reader task is dropped, the child gets
 a silent SIGKILL.
 
+The child's **stderr is captured** (`Stdio::piped()`, not inherited) and drained
+into `tracing` at `debug` level under the `mcp_client` target, prefixed with the
+server name. This keeps startup banners, deprecation warnings and INFO logs from
+servers like FastMCP off the console at the default log level, while still making
+them available for diagnostics via `RUST_LOG=mcp_client=debug`.
+
 ---
 
 ## Tool Naming Convention

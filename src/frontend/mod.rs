@@ -63,6 +63,7 @@ impl WebFrontend {
         );
         let handle = server.start(&addr).await?;
         info!(%addr, "server listening");
+        crate::boot::ready(format!("Ready — http://localhost:{}", self.port));
         Ok(handle)
     }
 }

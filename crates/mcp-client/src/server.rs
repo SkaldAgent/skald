@@ -11,7 +11,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::time::timeout;
-use tracing::warn;
+use tracing::debug;
 
 use crate::{McpServerClient, McpTool, extract_text, interpolate_env};
 use crate::config::McpServerConfig;
@@ -48,7 +48,12 @@ impl McpServer {
         }
         cmd.stdin(Stdio::piped())
            .stdout(Stdio::piped())
-           .stderr(Stdio::inherit())
+           // Capture the child's stderr instead of inheriting it: many MCP
+           // servers (e.g. FastMCP) print a startup banner, deprecation
+           // warnings and INFO logs there, which would otherwise spill raw
+           // onto our console. We drain it into tracing at `debug` level so it
+           // stays quiet by default but is still available for diagnostics.
+           .stderr(Stdio::piped())
            .kill_on_drop(true);
 
         // Detach the child into its own process group so that a terminal
@@ -67,6 +72,20 @@ impl McpServer {
             .ok_or_else(|| anyhow::anyhow!("could not capture stdin for '{}'", cfg.name))?;
         let stdout = child.stdout.take()
             .ok_or_else(|| anyhow::anyhow!("could not capture stdout for '{}'", cfg.name))?;
+
+        // Drain the child's stderr into tracing at `debug` so banners/warnings
+        // from MCP servers don't pollute our console at the default log level.
+        if let Some(stderr) = child.stderr.take() {
+            let server_name_err = cfg.name.clone();
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if !line.trim().is_empty() {
+                        debug!(target: "mcp_client", "[{server_name_err}] {line}");
+                    }
+                }
+            });
+        }
 
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));

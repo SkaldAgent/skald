@@ -36,9 +36,6 @@ impl WebServer {
             .await
             .with_context(|| format!("Failed to bind to {addr}"))?;
 
-        let local_addr = listener.local_addr()?;
-        println!("Server running at http://{local_addr}/");
-
         let router = Self::build_router_with_plugins(&self.static_dir, self.skald, self.plugin_routers);
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();

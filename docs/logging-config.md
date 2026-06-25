@@ -10,7 +10,57 @@ logs/skald.log.YYYY-MM-DD
 
 A new file is created each day. The non-blocking writer is initialized in `main()` and the `_log_guard` is kept alive for the full process lifetime to ensure all buffered logs are flushed on shutdown.
 
-**Nothing is written to stdout/stderr** — all output goes to the log file.
+The subscriber has **two layers** (`main.rs`):
+
+| Layer | Writer | Filter | Format |
+|---|---|---|---|
+| File | `logs/skald.log` (daily) | `EnvFilter` (`RUST_LOG`, default `info`) | full structured (timestamp, level, target, fields) |
+| Stdout | terminal | `boot` target only | minimal — message only, failures in red |
+
+**Runtime output goes only to the file.** Stdout carries just the curated
+**bootstrap** lines (see below); once the app is up nothing else is printed there.
+
+---
+
+## Bootstrap output (stdout)
+
+During startup a small, ordered set of human-readable lines is printed to stdout
+so you can see at a glance how the app is configured and how it is coming up:
+
+```
+skald v0.1.0 — starting
+› Database ready (schema v16)
+› MCP servers — connecting to 18 in background
+  ✓ codebase-memory (14 tools)
+› Plugins — 6 active, 1 failed, 2 available
+  ✓ honcho, telegram, comfyui, elevenlabs, mobile-connector, whisper_local
+  ✗ remote_connectivity — creating tailscale device
+  ○ orpheus_tts_3b, kokoro_tts
+✅ Ready — http://localhost:3000
+  ✓ gcal (8 tools)
+  ...
+```
+
+These are emitted via the helpers in `src/boot.rs` (`title`, `section`, `ok`,
+`off`, `fail`, `ready`) on the `boot` tracing target. They are rendered by a
+dedicated stdout layer that:
+
+- shows **only** the `boot` target (it ignores `RUST_LOG`, so bootstrap output
+  always appears);
+- strips timestamps/levels/targets and colours failures red (ANSI only on a TTY);
+- still lets the same lines reach the **file** log as a high-level startup trace.
+
+Note the glyph convention: `✓` started/connected, `✗` failed (with reason),
+`○` available but disabled, `›` phase header, `✅` ready.
+
+**MCP servers connect asynchronously** and do not block startup, so their `✓`/`✗`
+lines stream in as each server responds — some may appear *after* the `✅ Ready`
+line. The app is usable as soon as `Ready` prints (HTTP listening); MCP tools
+become available as their servers connect.
+
+To add a bootstrap line from anywhere in the binary crate, call
+`crate::boot::section("…")` (or `ok`/`fail`/`off`). Keep them few and targeted —
+this is a curated summary, not a log.
 
 ---
 

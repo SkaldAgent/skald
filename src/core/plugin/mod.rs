@@ -150,10 +150,20 @@ impl PluginManager {
     /// Must be called after both set_skald() and set_router_factory().
     pub async fn start_enabled(&self) -> Result<()> {
         let skald = self.skald()?;
+        // Build a full inventory for the bootstrap report: active (started),
+        // failed (enabled but errored/timed out), and available (disabled).
+        let mut active:   Vec<String> = Vec::new();
+        let mut failed:   Vec<(String, String)> = Vec::new();
+        let mut disabled: Vec<String> = Vec::new();
+
         for plugin in &self.plugins {
             let row = db::get(&self.db, plugin.id()).await?;
-            let Some(row) = row else { continue };
-            if !row.enabled { continue; }
+            let enabled = row.as_ref().map(|r| r.enabled).unwrap_or(false);
+            if !enabled {
+                disabled.push(plugin.id().to_string());
+                continue;
+            }
+            let row = row.expect("enabled implies row present");
             let config = serde_json::from_str(&row.config).unwrap_or(json!({}));
             let deadline = Duration::from_secs(PLUGIN_START_TIMEOUT_SECS);
             let ctx = self.build_context(&skald)?;
@@ -165,11 +175,34 @@ impl PluginManager {
                     if let Some(mem) = plugin.memory() {
                         skald.memory_manager.register(mem).await;
                     }
+                    active.push(plugin.id().to_string());
                 }
-                Ok(Err(e)) => error!(plugin = plugin.id(), error = %e, "plugin failed to start"),
-                Err(_)     => error!(plugin = plugin.id(), secs = PLUGIN_START_TIMEOUT_SECS, "plugin start timed out"),
+                Ok(Err(e)) => {
+                    error!(plugin = plugin.id(), error = %e, "plugin failed to start");
+                    failed.push((plugin.id().to_string(), e.to_string()));
+                }
+                Err(_) => {
+                    error!(plugin = plugin.id(), secs = PLUGIN_START_TIMEOUT_SECS, "plugin start timed out");
+                    failed.push((plugin.id().to_string(),
+                        format!("start timed out after {PLUGIN_START_TIMEOUT_SECS}s")));
+                }
             }
         }
+
+        crate::boot::section(format!(
+            "Plugins — {} active, {} failed, {} available",
+            active.len(), failed.len(), disabled.len()
+        ));
+        if !active.is_empty() {
+            crate::boot::ok(active.join(", "));
+        }
+        for (id, reason) in &failed {
+            crate::boot::fail(format!("{id} — {reason}"));
+        }
+        if !disabled.is_empty() {
+            crate::boot::off(disabled.join(", "));
+        }
+
         Ok(())
     }
 

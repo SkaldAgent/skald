@@ -508,13 +508,13 @@ async fn create_tables(pool: &SqlitePool) -> Result<()> {
 const BASELINE_SCHEMA_VERSION: u32 = 16;
 
 async fn migrate_tables(pool: &SqlitePool) -> Result<()> {
-    let version: u32 = sqlx::query_scalar::<_, String>(
+    let existing: Option<u32> = sqlx::query_scalar::<_, String>(
         "SELECT value FROM config WHERE key='schema_version'",
     )
     .fetch_optional(pool)
     .await?
-    .and_then(|v| v.parse().ok())
-    .unwrap_or(0);
+    .and_then(|v| v.parse().ok());
+    let version = existing.unwrap_or(0);
 
     // Fresh DB: create_tables already produced the fully-compacted v16 schema,
     // so just stamp the baseline without running any historical migration.
@@ -530,6 +530,16 @@ async fn migrate_tables(pool: &SqlitePool) -> Result<()> {
 
     // Future migrations go here, e.g.:
     // if version < 17 { … ; bump schema_version to '17' }
+
+    match existing {
+        None => crate::boot::section(format!(
+            "Database initialised (schema v{BASELINE_SCHEMA_VERSION})"
+        )),
+        Some(v) if v < BASELINE_SCHEMA_VERSION => crate::boot::section(format!(
+            "Database migrated (schema v{v} → v{BASELINE_SCHEMA_VERSION})"
+        )),
+        Some(v) => crate::boot::section(format!("Database ready (schema v{v})")),
+    }
 
     Ok(())
 }

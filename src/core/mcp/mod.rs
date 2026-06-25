@@ -112,6 +112,7 @@ impl McpManager {
 
         if rows.is_empty() {
             info!("No enabled MCP servers in DB — MCP disabled.");
+            crate::boot::section("MCP servers — none enabled");
             return;
         }
 
@@ -122,6 +123,9 @@ impl McpManager {
                 descs.insert(row.name.clone(), row.description.clone());
             }
         }
+        crate::boot::section(format!(
+            "MCP servers — connecting to {} in background", cfgs.len()
+        ));
         let handles: Vec<_> = cfgs.into_iter().map(|cfg| {
             let tx = self.notification_tx.clone();
             tokio::spawn(async move {
@@ -139,15 +143,19 @@ impl McpManager {
                 Ok((name, _, Ok(Ok(s)))) => {
                     let tool_names: Vec<_> = s.tools().iter().map(|t| t.name.as_str()).collect();
                     info!("MCP server '{}' ready — {} tool(s): {}", name, tool_names.len(), tool_names.join(", "));
+                    let n = tool_names.len();
+                    crate::boot::ok(format!("{name} ({n} tool{})", if n == 1 { "" } else { "s" }));
                     self.servers.write().unwrap().insert(name, s);
                 }
                 Ok((name, _, Ok(Err(e)))) => {
                     warn!("MCP server '{}' failed to start: {e}", name);
+                    crate::boot::fail(format!("{name} — {e}"));
                     self.errors.write().unwrap().insert(name, e.to_string());
                 }
                 Ok((name, _, Err(_))) => {
                     let msg = format!("startup timed out after {SERVER_START_TIMEOUT_SECS}s");
                     warn!("MCP server '{}' {msg}", name);
+                    crate::boot::fail(format!("{name} — {msg}"));
                     self.errors.write().unwrap().insert(name, msg);
                 }
                 Err(e) => { warn!("MCP startup task panicked: {e}"); }

@@ -1,13 +1,18 @@
+mod boot;
 mod core;
 mod frontend;
 mod config;
 
+use std::io::IsTerminal;
 use std::sync::Arc;
 
 use anyhow::Result;
+use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info, warn};
+use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::Layer;
 
 use core_api::plugin::Plugin;
 use config::Config;
@@ -29,19 +34,31 @@ async fn async_main() -> Result<()> {
     let file_appender = tracing_appender::rolling::daily("logs", format!("{APP_NAME}.log"));
     let (non_blocking, _log_guard) = tracing_appender::non_blocking(file_appender);
 
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
+    // File layer: full structured logs, governed by RUST_LOG.
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(non_blocking)
+        .with_ansi(false)
+        .with_filter(env_filter);
+
+    // Stdout layer: only the curated `boot` target, rendered cleanly. It carries
+    // its own target filter and is therefore independent of RUST_LOG, so the
+    // bootstrap output always shows. ANSI is enabled only on a real terminal.
+    let boot_layer = tracing_subscriber::fmt::layer()
+        .event_format(boot::BootFormat)
+        .with_writer(std::io::stdout)
+        .with_ansi(std::io::stdout().is_terminal())
+        .with_filter(Targets::new().with_target(boot::TARGET, LevelFilter::TRACE));
+
     tracing_subscriber::registry()
-        .with(filter)
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_writer(non_blocking)
-                .with_ansi(false),
-        )
+        .with(file_layer)
+        .with(boot_layer)
         .init();
 
     info!(version = env!("CARGO_PKG_VERSION"), "starting {APP_NAME}");
+    boot::title(format!("{APP_NAME} v{} — starting", env!("CARGO_PKG_VERSION")));
 
     let config = match Config::load() {
         Ok(c)  => { debug!("config loaded"); c }
