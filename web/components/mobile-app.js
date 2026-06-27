@@ -2,12 +2,15 @@ import { LitElement, html, nothing } from 'lit';
 import './shared/inbox-page.js';
 import './shared/chat-page.js';
 import './shared/projects-page.js';
+import './shared/file-viewer-mobile.js';
 
 // Sections addressable via the URL hash — same routing style as the desktop
 // sidebar (web/components/sidebar.js). The native iOS shell and mobile browsers
 // share this router so the URL always reflects the active section: native menu
 // sync, deep links, and back/refresh restoration all flow from one place.
-const VALID_SECTIONS = ['inbox', 'projects', 'chat', 'notifications', 'settings'];
+// `file_viewer` is not a tab — it's opened from content (a clickable tool path
+// via openFile() → `#file_viewer?path=...`) and so has no bottom-nav entry.
+const VALID_SECTIONS = ['inbox', 'projects', 'chat', 'notifications', 'settings', 'file_viewer'];
 
 class MobileApp extends LitElement {
   // No shadow DOM — lets external CSS and Bootstrap Icons apply directly.
@@ -19,6 +22,8 @@ class MobileApp extends LitElement {
     _chatSource: { state: true },
     // Label shown in the chat header when inside a project.
     _chatLabel:  { state: true },
+    // File shown by the file_viewer section (from `#file_viewer?path=...`).
+    _filePath:   { state: true },
   };
 
   constructor() {
@@ -26,6 +31,7 @@ class MobileApp extends LitElement {
     this._section    = 'chat';
     this._chatSource = 'mobile';
     this._chatLabel  = '';
+    this._filePath   = null;
     // id → name cache, so a cold deep-link (#chat/project-<id> opened by the
     // native shell) can resolve its header label without the project list open.
     this._projectLabels = {};
@@ -54,27 +60,38 @@ class MobileApp extends LitElement {
 
   // ── Hash routing ───────────────────────────────────────────────────────────
 
-  // { section, projectId } parsed from location.hash. Forms:
-  //   #projects              → section 'projects'
-  //   #chat                  → section 'chat' (main mobile session)
-  //   #chat/project-<id>     → section 'chat' bound to a project's session
+  // { section, projectId, filePath } parsed from location.hash. Forms:
+  //   #projects                  → section 'projects'
+  //   #chat                      → section 'chat' (main mobile session)
+  //   #chat/project-<id>         → section 'chat' bound to a project's session
+  //   #file_viewer?path=<enc>    → section 'file_viewer' showing a file
   _readHash() {
     const raw = location.hash.slice(1);
-    if (!raw) return { section: 'chat', projectId: null };
-    const slash = raw.indexOf('/');
-    const seg   = slash === -1 ? raw : raw.slice(0, slash);
-    const sub   = slash === -1 ? ''  : raw.slice(slash + 1);
+    if (!raw) return { section: 'chat', projectId: null, filePath: null };
+    // Segment ends at the first `/` (project sub-route) or `?` (query, e.g. the
+    // file viewer's `?path=`).
+    const cut   = raw.search(/[/?]/);
+    const seg   = cut === -1 ? raw : raw.slice(0, cut);
     const section = VALID_SECTIONS.includes(seg) ? seg : 'chat';
+    if (section === 'file_viewer') {
+      let filePath = null;
+      const m = raw.match(/[?&]path=([^&]*)/);
+      if (m) { try { filePath = decodeURIComponent(m[1]); } catch { /* keep null */ } }
+      return { section, projectId: null, filePath };
+    }
+    const slash = raw.indexOf('/');
+    const sub   = slash === -1 ? '' : raw.slice(slash + 1);
     let projectId = null;
     if (section === 'chat' && sub.startsWith('project-')) {
       projectId = sub.slice('project-'.length) || null;
     }
-    return { section, projectId };
+    return { section, projectId, filePath: null };
   }
 
   _applyHash() {
-    const { section, projectId } = this._readHash();
-    this._section = section;
+    const { section, projectId, filePath } = this._readHash();
+    this._section  = section;
+    this._filePath = filePath;
     if (projectId) {
       const source = 'project-' + projectId;
       if (this._chatSource !== source) this._chatSource = source;
@@ -83,7 +100,14 @@ class MobileApp extends LitElement {
       if (this._chatSource !== 'mobile') this._chatSource = 'mobile';
       this._chatLabel = '';
     }
-    this._notifyNative(section, projectId ? 'project-' + projectId : null);
+    // Tell the native shell which section is active. For the file viewer we also
+    // pass the document path, so the iOS "Doc" tab can highlight itself and
+    // remember the last opened file (re-opened when the user taps Doc again).
+    this._notifyNative(
+      section,
+      projectId ? 'project-' + projectId : null,
+      section === 'file_viewer' ? filePath : null,
+    );
   }
 
   // Resolve the display label for a project id (shown in the chat header). Cached
@@ -127,11 +151,12 @@ class MobileApp extends LitElement {
   // ── Native bridge ──────────────────────────────────────────────────────────
 
   // Web → Native: tell the iOS shell which section/project is active so it can
-  // highlight the matching native tab. No-op outside WKWebView — the `skaldNav`
-  // message handler only exists when the shell registered it.
-  _notifyNative(section, project) {
+  // highlight the matching native tab. `path` is only set for the file viewer
+  // (the document being shown). No-op outside WKWebView — the `skaldNav` message
+  // handler only exists when the shell registered it.
+  _notifyNative(section, project, path = null) {
     try {
-      window.webkit?.messageHandlers?.skaldNav?.postMessage({ section, project });
+      window.webkit?.messageHandlers?.skaldNav?.postMessage({ section, project, path });
     } catch { /* not in native shell */ }
   }
 
@@ -166,6 +191,11 @@ class MobileApp extends LitElement {
             @project-open=${(e) => this._onProjectOpen(e)}
             style=${s === 'projects' ? 'flex:1;min-height:0;overflow:hidden' : 'display:none'}
           ></projects-page>
+          <mobile-file-viewer-page
+            .visible=${s === 'file_viewer'}
+            .path=${this._filePath}
+            style=${s === 'file_viewer' ? 'flex:1;min-height:0;overflow:hidden' : 'display:none'}
+          ></mobile-file-viewer-page>
           ${['notifications', 'settings'].includes(s) ? html`
             <div class="mobile-coming-soon">
               <i class="bi bi-tools"></i>

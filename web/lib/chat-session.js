@@ -20,6 +20,9 @@ export class ChatSession extends LightElement {
     _rejectingId:           { state: true },
     _rejectNote:            { state: true },
     _clarificationAnswer:   { state: true },
+    // Voice recording state (shared by every chat surface).
+    _hasTranscribe:      { state: true },
+    _recording:          { state: true },
   };
 
   // Live events whose arrival implies a turn is in flight (used to restore the
@@ -42,10 +45,22 @@ export class ChatSession extends LightElement {
     // Runtime-selected source. When null, falls back to the static `_wsSource`.
     // Lets a single chat component switch between sessions (e.g. copilot tabs).
     this._activeSource          = null;
+    // Voice recording state. Shared so every surface (desktop copilot + mobile
+    // chat) can expose the same mic button. The desktop-only Ctrl+Space push-
+    // to-talk shortcut is wired in `app-copilot`; `_shortcutRecording` tracks
+    // whether a recording session was started by that shortcut.
+    this._hasTranscribe     = false;
+    this._recording         = false;
+    this._shortcutRecording = false;
+    this._mediaRecorder     = null;
+    this._audioChunks       = [];
   }
 
   async connectedCallback() {
     super.connectedCallback();
+    // Fire-and-forget: availability of a transcription provider determines
+    // whether the mic button is rendered at all.
+    this._checkTranscribe();
     await Promise.all([this._loadProviders(), this._loadHistory()]);
     this._connectWS();
   }
@@ -567,12 +582,114 @@ export class ChatSession extends LightElement {
   /** Called after every _push(). Override to handle scrolling, focus, etc. */
   _onMessagePushed(_item) {}
 
-  /** Returns the current value of the chat input. */
-  _getInputContent() { return ''; }
+  /** Returns the chat input textarea element. Subclasses must override. */
+  _inputEl() { return null; }
 
-  /** Clears the chat input. */
-  _clearInput() {}
+  /** Returns the current value of the chat input. */
+  _getInputContent() { return this._inputEl()?.value.trim() ?? ''; }
+
+  /** Clears the chat input and resets its auto-resize height. */
+  _clearInput() {
+    const el = this._inputEl();
+    if (!el) return;
+    el.value = '';
+    el.style.height = 'auto';
+  }
+
+  /** Auto-resizes a textarea to fit its content (capped by CSS max-height). */
+  _autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 'px';
+  }
 
   /** Scrolls the message list to the bottom. */
   _scrollToBottom() {}
+
+  // ── Voice recording (shared by every chat surface) ────────────────────────────
+
+  async _checkTranscribe() {
+    try {
+      const r = await fetch('/api/transcribe/has');
+      this._hasTranscribe = r.status === 204;
+    } catch {
+      this._hasTranscribe = false;
+    }
+  }
+
+  async _startRecording(fromShortcut = false) {
+    if (this._recording) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this._audioChunks      = [];
+      this._shortcutRecording = fromShortcut;
+
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+          ? 'audio/webm'
+          : '';
+
+      this._mediaRecorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+
+      this._mediaRecorder.addEventListener('dataavailable', e => {
+        if (e.data.size > 0) this._audioChunks.push(e.data);
+      });
+
+      this._mediaRecorder.addEventListener('stop', () => {
+        stream.getTracks().forEach(t => t.stop());
+        this._submitAudio();
+      });
+
+      this._mediaRecorder.start();
+      this._recording = true;
+    } catch (err) {
+      console.error('mic error:', err);
+    }
+  }
+
+  _stopRecording() {
+    if (!this._recording || !this._mediaRecorder) return;
+    this._mediaRecorder.stop();
+    this._recording = false;
+  }
+
+  /** Toggle button handler: start or stop a recording (button-initiated). */
+  _toggleRecording() {
+    if (this._recording) {
+      this._shortcutRecording = false;
+      this._stopRecording();
+    } else {
+      this._startRecording(false);
+    }
+  }
+
+  async _submitAudio() {
+    if (this._audioChunks.length === 0) return;
+
+    const mimeType = this._mediaRecorder?.mimeType ?? 'audio/webm';
+    const blob = new Blob(this._audioChunks, { type: mimeType });
+    // Derive file extension from mimeType, e.g. "audio/webm;codecs=opus" → "webm"
+    const ext = mimeType.split('/')[1]?.split(';')[0] ?? 'webm';
+
+    const form = new FormData();
+    form.append('audio', blob, `recording.${ext}`);
+
+    try {
+      const resp = await fetch('/api/transcribe/audio', { method: 'POST', body: form });
+      if (!resp.ok) throw new Error(await resp.text());
+      const { text } = await resp.json();
+      if (text) {
+        const ta = this._inputEl();
+        if (ta) {
+          ta.value = (ta.value ? ta.value + ' ' : '') + text;
+          this._autoResize(ta);
+          ta.focus();
+        }
+      }
+    } catch (err) {
+      console.error('transcription error:', err);
+    }
+  }
 }

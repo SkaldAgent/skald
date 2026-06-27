@@ -164,15 +164,17 @@ Cancel message (abort current turn): `{"type":"cancel"}`
 
 | File | Element | Responsibility |
 |---|---|---|---|
-| `web/lib/chat-session.js` | `ChatSession` (base) | Shared WS logic, message state, all approval/LLM event handling. Subclasses override `_wsSource`, `_getInputContent`, `_clearInput`, `_scrollToBottom`, `_onMessagePushed`. Effective source is `_source` (`_activeSource ?? _wsSource`); `_switchSource(source)` tears down the WS, reloads history, and reconnects to switch sessions live |
-| `web/components/copilot.js` | `<app-copilot>` | Desktop copilot panel (`_wsSource='web'`); resize, composer input with model pill and auto-resize textarea. Browser-style tabs (`General` + project chats); listens for the `project-chat-open` window event to add/focus a project tab |
-| `web/components/shared/chat-page.js` | `<chat-page>` | Mobile chat page; extends `ChatSession` with mobile-specific layout. The `source` prop (default `mobile`) re-points the chat: when it changes the component calls `_switchSource` to bind to a project's `project-{id}` session; it also honours `source` on the first connect (cold deep link from the native shell); inside a project the header shows the project `label` + a back button that emits `project-exit` |
+| `web/lib/chat-session.js` | `ChatSession` (base) | Shared WS logic, message state, all approval/LLM event handling, **voice recording + transcription** (`_checkTranscribe`, `_startRecording`, `_stopRecording`, `_toggleRecording`, `_submitAudio`; renders a mic button when `/api/transcribe/has` returns 204), and textarea helpers (`_inputEl` hook, `_autoResize`). Subclasses override `_wsSource`, `_inputEl`, `_getInputContent`/`_clearInput` (defaults now driven by `_inputEl`), `_scrollToBottom`, `_onMessagePushed`. Effective source is `_source` (`_activeSource ?? _wsSource`); `_switchSource(source)` tears down the WS, reloads history, and reconnects to switch sessions live |
+| `web/components/copilot.js` | `<app-copilot>` | Desktop copilot panel (`_wsSource='web'`); resize, composer input with model pill and auto-resize textarea. **Voice recording is inherited from `ChatSession`**; only the desktop-only Ctrl+Space push-to-talk shortcut (`_onKeydown`/`_onKeyup`) lives here. Browser-style tabs (`General` + project chats); listens for the `project-chat-open` window event to add/focus a project tab |
+| `web/components/shared/chat-page.js` | `<chat-page>` | Mobile chat page; extends `ChatSession` with a mobile-specific layout. Composer mirrors the desktop copilot: a single unified box (`.chat-page-composer`) wrapping an auto-resizing textarea with a toolbar below — toolbar-left holds a native `<select>` model pill (`auto` + providers, opens the OS picker), toolbar-right holds the mic button (inherited recording) and the send/stop button. **Enter inserts a newline** (no Shift+Enter on mobile) — only the send button submits. The `source` prop (default `mobile`) re-points the chat: when it changes the component calls `_switchSource` to bind to a project's `project-{id}` session; it also honours `source` on the first connect (cold deep link from the native shell); inside a project the header shows the project `label` + a back button that emits `project-exit` |
 | `web/components/shared/projects-page.js` | `<projects-page>` | Mobile project list. Loads `GET /api/projects`; tapping a project `POST`s `/api/projects/{id}/session` and emits a `project-open` event (`{source, label}`) so `<mobile-app>` re-points the chat |
 | `web/components/copilot-render.js` | (helpers) | Renders messages, tool call blocks, diffs — shared by copilot and chat-page. Tool labels and diff headers render the call's `path` (when present) as a clickable link via `renderLabel`/`renderPath` → `openFile(path)` |
 | `web/components/sidebar.js` | `<app-sidebar>` | Navigation sidebar; polls `/api/inbox` every 10 s for badge count |
 | `web/components/topbar.js` | `<app-topbar>` | Top navigation bar |
 | `web/components/editor.js` | (removed) | The legacy `<app-main>` editor panel was removed. Use `<file-viewer>` (see [File Viewer](#file-viewer)) instead |
-| `web/components/file-viewer-page.js` | `<file-viewer-page>` | Top-level page that previews files (markdown / code / images / SVG / PDF / LaTeX) in the main workspace. Opened by `window.openFile(path)` (which sets `#file_viewer?path=...`). Currently shows preview only — editor + watcher tabs planned |
+| `web/components/shared/file-viewer-base.js` | `FileViewerBase` (base) | Shared file-viewer engine: fetch, kind detection (image/pdf/svg/latex/text/binary), markdown asset rewriting, LaTeX compile + error formatting, live watcher, and `_renderBody`. Navigation-agnostic — driven by `_show(path)` / `_hide()`; subclasses supply the chrome |
+| `web/components/file-viewer-page.js` | `<file-viewer-page>` | Desktop subclass of `FileViewerBase`. Self-routes off the hash (`#file_viewer?path=...`) via the `llm-page-change` + `hashchange` events; renders in the main workspace. Opened by `window.openFile(path)`. Preview only — editor + watcher tabs planned |
+| `web/components/shared/file-viewer-mobile.js` | `<mobile-file-viewer-page>` | Mobile subclass of `FileViewerBase`. Prop-driven (`visible` / `path`, set by `<mobile-app>`'s hash router); full-screen with a mobile header + back button |
 | `web/components/cron-jobs.js` | `<cron-jobs-page>` | Cron job management UI — columns: Title (+ one-shot badge), Cron, Agent, Last run, Next run, Enabled, Actions |
 | `web/components/agent-inbox.js` | `<agent-inbox-page>` | Unified inbox for pending approvals and clarifications from background sessions; polls `/api/inbox` every 8 s when open |
 | `web/components/models-hub.js` | `<models-hub-page>` | Models hub — 3-card landing page (LLM / Transcription / Image Generation) with live model counts; internal navigation to sub-sections |
@@ -222,9 +224,12 @@ The mobile UI (`web/mobile.html` → `<mobile-app>`) is the same SPA the desktop
 | `#projects` | Projects | Project list |
 | `#chat` | Chat | Main mobile session (source `mobile`) |
 | `#chat/project-<id>` | Chat | Bound to a project's session (source `project-<id>`). The header label resolves from `/api/projects` (cached in `<mobile-app>`), so a cold deep link still shows the name. Back/refresh keep the user inside the project |
+| `#file_viewer?path=<enc>` | File viewer | Full-screen file preview, reached from content via `openFile(path)` (e.g. a clickable tool path) — **not** a bottom-nav tab. The back button returns to the previous section via history |
 | `#notifications`, `#settings` | (coming soon) | Placeholder |
 
 `<chat-page>` (`web/components/shared/chat-page.js`) honours its `source` prop on the **first** connect (via `_activeSource`), so a cold `#chat/project-<id>` deep link connects straight to that session instead of opening the `mobile` session and switching a tick later.
+
+`_applyHash()` **skips** the `skaldNav` notify for the `file_viewer` section: the viewer is a transient overlay reached from content (not a tab), so opening a file from the chat must not deselect the native "chat" tab.
 
 ### Native shell mode (`?native=true`)
 
@@ -319,6 +324,13 @@ main workspace, so users (and agents, in future phases) can read
 markdown/code/images without leaving the UI. It is registered in
 `web/app.js` and lives once in the DOM at `index.html` (default
 `display:none`, shown via the standard page router — see below).
+
+The fetch / kind-detection / markdown-asset / LaTeX-compile / live-watch logic
+and `_renderBody` live in `FileViewerBase` (`web/components/shared/file-viewer-base.js`),
+shared with the mobile viewer. The base is navigation-agnostic — driven only by
+`_show(path)` / `_hide()`; each subclass supplies its own chrome and decides when
+to call them: the desktop `<file-viewer-page>` from the hash, the mobile
+`<mobile-file-viewer-page>` from props (see [Mobile](#mobile) below).
 
 ### Opening files
 
@@ -469,7 +481,7 @@ force a rebuild); shell-escape inputs (`\input{|"command"}`) are not tracked.
 
 ### Mobile
 
-`<mobile-app>` now has a hash router (see [Mobile App & Native Shell](#mobile-app--native-shell)), but the **File Viewer page itself is not rendered** there — only `inbox`, `projects`, `chat`, and the placeholder sections. `openFile` is therefore still a no-op on mobile; a mobile file-viewer surface can be added later by routing `#file_viewer?path=...` like the desktop.
+The mobile app renders its own `<mobile-file-viewer-page>` (`web/components/shared/file-viewer-mobile.js`), a thin subclass of `FileViewerBase` that shares all of the desktop viewer's fetch/render/watch logic and only swaps the chrome (full-screen page, mobile header + back button). `<mobile-app>`'s hash router (see [Mobile App & Native Shell](#mobile-app--native-shell)) routes `#file_viewer?path=...` to a non-tab `file_viewer` section and binds the component's `visible` / `path` props; the same `openFile(path)` used in the desktop transcript (a clickable tool path) therefore works unchanged on mobile. The back button returns to the previous section via history, and `_applyHash` skips the `skaldNav` notify so the native tab highlight stays put.
 
 ### Roadmap
 
@@ -490,9 +502,11 @@ The page is the foundation for several follow-up phases (tracked separately):
 | File | Purpose |
 |---|---|
 | `web/lib/open-file.js` | Defines and registers `window.openFile`; sets `location.hash` |
-| `web/components/file-viewer-page.js` | `<file-viewer-page>` Lit page — hash routing, fetch, kind-based rendering, watcher integration |
+| `web/components/shared/file-viewer-base.js` | `FileViewerBase` — shared engine: fetch, kind detection, markdown assets, LaTeX compile, watcher, `_renderBody`. Driven by `_show`/`_hide` |
+| `web/components/file-viewer-page.js` | `<file-viewer-page>` desktop subclass — hash routing (`llm-page-change` + `hashchange`) + desktop chrome |
+| `web/components/shared/file-viewer-mobile.js` | `<mobile-file-viewer-page>` mobile subclass — prop-driven (`visible`/`path`) + mobile chrome (full-screen, back button) |
 | `web/lib/file-watcher.js` | Singleton client for `/api/file/watch` — ref-counting, auto-reconnect, re-subscribe |
-| `web/css/file-viewer.css` | Page + content styling (markdown, code, image, LaTeX compile-error banner, state) |
+| `web/css/file-viewer.css` | Page + content styling (markdown, code, image, LaTeX compile-error banner, state). Loaded by both `index.html` and `mobile.html` |
 | `src/frontend/api/file_watch.rs` | `/api/file/watch` WS handler — `notify::RecommendedWatcher` per watched file (one per LaTeX dependency for `.tex` sources) |
 | `src/core/latex/mod.rs`, `src/core/latex/compiler.rs` | `LatexCompiler` — `latexmk -xelatex` invocation, SHA-256 content cache, error mapping. Called by `get_file` when `?compile-latex=true` |
 

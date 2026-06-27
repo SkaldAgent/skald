@@ -247,6 +247,18 @@ impl MessageBuilder {
                                     "Error: {}",
                                     tc.result.as_deref().unwrap_or("unknown error")
                                 ),
+                                // A human/policy rejection or a /stop cancellation is a
+                                // deliberate, terminal outcome — surface the saved reason
+                                // (the user's justification) so the LLM understands the
+                                // tool did NOT run and why, instead of retrying blindly.
+                                "rejected" => tc.result.as_deref()
+                                    .unwrap_or("User rejected this tool call.")
+                                    .to_string(),
+                                "cancelled" => tc.result.as_deref()
+                                    .unwrap_or("Tool call was cancelled by the user.")
+                                    .to_string(),
+                                // 'pending'/'running' left behind by a crash or a lost
+                                // connection: the call really was interrupted mid-flight.
                                 _ => "Error: tool call was interrupted (connection lost before user approval). Please retry the operation.".to_string(),
                             };
 

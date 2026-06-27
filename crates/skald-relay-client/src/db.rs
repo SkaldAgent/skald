@@ -133,21 +133,24 @@ pub async fn set_device_info(pool: &SqlitePool, ed25519_pub: &[u8; 32], device_i
 /// (crypto.md §8): even if the process dies right after, the counter never
 /// regresses, so no AES-GCM nonce is ever reused. Returns the counter value to
 /// embed in the nonce.
+///
+/// A single `UPDATE … RETURNING` (not SELECT-then-UPDATE in a deferred
+/// transaction): the latter starts as a reader, takes a WAL snapshot, then tries
+/// to upgrade to a writer — and if another connection committed to the same row
+/// meanwhile it fails with `SQLITE_BUSY_SNAPSHOT` (517), which `busy_timeout`
+/// does **not** retry. Concurrent `accept_pipe`/`send` for one peer hit the same
+/// row at once (e.g. a WebView opening many connections), so the snapshot upgrade
+/// loses constantly. A lone `UPDATE` starts directly as a write, so callers
+/// serialize on the write lock (which `busy_timeout` *does* cover).
 pub async fn next_send_counter(pool: &SqlitePool, ed25519_pub: &[u8; 32]) -> Result<u64> {
-    let mut tx = pool.begin().await?;
-    let current: i64 =
-        sqlx::query_scalar("SELECT send_counter FROM relay_clients WHERE ed25519_pub = ?")
-            .bind(ed25519_pub.as_slice())
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("next_send_counter: client not found"))?;
-    let next = current + 1;
-    sqlx::query("UPDATE relay_clients SET send_counter = ? WHERE ed25519_pub = ?")
-        .bind(next)
-        .bind(ed25519_pub.as_slice())
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
+    let next: i64 = sqlx::query_scalar(
+        "UPDATE relay_clients SET send_counter = send_counter + 1 \
+         WHERE ed25519_pub = ? RETURNING send_counter",
+    )
+    .bind(ed25519_pub.as_slice())
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("next_send_counter: client not found"))?;
     Ok(next as u64)
 }
 

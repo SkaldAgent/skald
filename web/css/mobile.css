@@ -8,6 +8,12 @@
   --mobile-nav-color:    #6c757d;
   --mobile-nav-active:   #0d6efd;
   --mobile-chat-bg:      #0d6efd;
+
+  /* Raised neutral surface for the chat composer + assistant bubbles, kept
+     grey/neutral on purpose so the mobile chat doesn't inherit the desktop's
+     indigo-tinted --msg-assistant-bg (which reads as purple in dark mode). */
+  --mobile-surface:      #f2f2f7;
+  --mobile-surface-text: #1c1c1e;
 }
 
 [data-bs-theme="dark"] {
@@ -17,6 +23,8 @@
   --mobile-nav-color:    #8e8e93;
   --mobile-nav-active:   #6ea8fe;
   --mobile-chat-bg:      #0d6efd;
+  --mobile-surface:      #2c2c2e;
+  --mobile-surface-text: #e5e5ea;
 }
 
 body {
@@ -272,7 +280,18 @@ mobile-app[data-native] .chat-page-input-area { padding-bottom: 10px; }
 /* Wider bubbles on narrow screens */
 .chat-page .copilot-msg {
   max-width: 96%;
+  /* Allow the bubble to shrink below its content's intrinsic width so inner
+     scroll containers (code/diff/table) collapse and scroll internally instead
+     of widening the bubble past the viewport. */
+  min-width: 0;
   font-size: 0.92rem;
+}
+
+/* Assistant bubbles use a neutral surface instead of the desktop's indigo-tinted
+   --msg-assistant-bg, which clashed with the mobile neutral palette. */
+.chat-page .copilot-msg.assistant {
+  background: var(--mobile-surface);
+  color: var(--mobile-surface-text);
 }
 
 .chat-page-header-actions {
@@ -281,15 +300,14 @@ mobile-app[data-native] .chat-page-input-area { padding-bottom: 10px; }
   gap: 8px;
 }
 
-.chat-page-provider-select {
-  max-width: 130px;
-  font-size: 0.8rem;
-}
-
 .chat-page-messages {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* Clip horizontally: wide content (code blocks, tables, diffs) scrolls inside
+     its own bubble box, so the message list itself never pans sideways. Without
+     this, `overflow-y: auto` makes the unset x-axis compute to `auto` too. */
+  overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
   padding: 12px 14px;
   display: flex;
@@ -323,41 +341,126 @@ mobile-app[data-native] .chat-page-input-area { padding-bottom: 10px; }
   padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--mobile-nav-border);
   background: var(--mobile-bg);
+  flex-shrink: 0;
 }
 
-.chat-page-input-row {
+/* Unified composer: a single bordered box wrapping the textarea and the
+   toolbar below it, mirroring the desktop copilot (.copilot-composer). Uses
+   the neutral mobile surface so it matches the assistant bubbles. */
+.chat-page-composer {
   display: flex;
-  align-items: flex-end;
-  gap: 8px;
+  flex-direction: column;
+  border: 1px solid var(--mobile-nav-border);
+  border-radius: 0.75rem;
+  background: var(--mobile-surface);
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.chat-page-input-row .form-control {
-  flex: 1;
+.chat-page-composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+}
+
+.chat-page-textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
   resize: none;
-  border-radius: 18px;
-  padding: 10px 14px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
   font-size: 0.95rem;
   line-height: 1.4;
+  padding: 12px 14px 6px;
   min-height: 44px;
   max-height: 120px;
+  overflow-y: auto;
 }
 
-.chat-page-input-actions {
+/* ── Composer toolbar (below the textarea) ─────────────────────────────────── */
+
+.chat-page-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  padding: 6px 8px;
+}
+
+.chat-page-toolbar-left,
+.chat-page-toolbar-right {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding-bottom: 2px;
 }
 
+/* Model selector — a native <select> styled as a subtle pill, opening the
+   OS-native picker for the best touch ergonomics. */
+.chat-page-model-pill {
+  appearance: none;
+  -webkit-appearance: none;
+  max-width: 150px;
+  padding: 5px 26px 5px 10px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background-color: transparent;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 16 16' fill='%2394a3b8'%3E%3Cpath d='M7.247 11.14 2.451 5.658C1.885 5.013 2.345 4 3.204 4h9.592a1 1 0 0 1 .753 1.659l-4.796 5.48a1 1 0 0 1-1.506 0z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  font-size: 0.78rem;
+  color: var(--mobile-nav-color);
+  cursor: pointer;
+}
+
+.chat-page-model-pill:focus,
+.chat-page-model-pill:hover {
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+/* ── Mic + send buttons ────────────────────────────────────────────────────── */
+
+.chat-page-mic-btn,
 .chat-page-send {
   width: 40px;
   height: 40px;
+  border: none;
   border-radius: 50%;
   padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  font-size: 1rem;
+  color: #fff;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.chat-page-mic-btn {
+  background: var(--accent);
+}
+
+.chat-page-mic-btn:active { transform: scale(0.94); }
+
+.chat-page-send {
+  background: var(--accent);
+}
+
+.chat-page-send:active { transform: scale(0.94); }
+
+.chat-page-send--stop {
+  background: #dc2626;
+}
+
+.chat-page-mic-btn--recording {
+  background: #dc2626;
+  animation: chat-page-pulse 1s ease-in-out infinite;
+}
+
+@keyframes chat-page-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.65; }
 }
 
 /* MCP dropdown opens upward on mobile */
@@ -457,4 +560,36 @@ mobile-app[data-native] .chat-page-input-area { padding-bottom: 10px; }
   color: var(--mobile-nav-color);
   font-size: 1rem;
   flex-shrink: 0;
+}
+
+/* ── File viewer (mobile) ───────────────────────────── */
+
+/* Full-height column: fixed header + scrollable body. The body content classes
+   (.fv-md / .fv-code / .fv-pdf / .fv-image-wrap / .fv-state / ...) come from the
+   shared css/file-viewer.css, loaded by mobile.html. */
+.mobile-file-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+/* Let the title (and its filename child) shrink so the ellipsis kicks in. */
+.mobile-file-viewer .mobile-section-title { min-width: 0; flex: 1; }
+
+.mobile-file-viewer .fv-body {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Filename: monospace, single line with ellipsis, leaving room for the back
+   button. Full path is on the element's title attribute. */
+.fv-mobile-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.92rem;
+  font-weight: 500;
 }

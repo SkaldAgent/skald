@@ -148,17 +148,41 @@ RelayClient::incoming_pipes() -> broadcast::Receiver<IncomingPipe>        // res
 RelayClient::accept_pipe(&IncomingPipe) -> PipeConnection                 // responder
 RelayClient::reject_pipe(&IncomingPipe, reason)
 PipeConnection::{ send(&[u8]), recv() -> Option<Vec<u8>>, close() }       // sealed/opened transparently
+PipeConnection::split() -> (PipeSender, PipeReceiver)                     // independent halves
+PipeSender::send(&[u8])          // seals + queues; blocks only when the send buffer is full
+PipeReceiver::recv() -> Option<Vec<u8>>
 ```
 Inbound pipe invites surface on a **separate channel** (`incoming_pipes`), **not** as a `RelayEvent`
 variant — so adding the pipe is purely additive and the `plugin-mobile-connector` consumer compiles
 unchanged. The relay client owns the pipe control plane end-to-end (it intercepts only the `pipe_*`
 signaling kinds; every other payload stays pass-through).
 
-### 6.1 Agent-side consumers (by `stream_type`)
+### 6.1 Full-duplex & client-side backpressure
+
+A `PipeConnection` is **full-duplex**: on `connect` the data-plane socket is split into a sink + stream
+and a background **writer task** takes the sink. `send` seals the chunk and hands it to the writer
+(returning before the flush); `recv` reads the stream directly. So a slow flush on one direction never
+stalls the other — and `split() -> (PipeSender, PipeReceiver)` lets each direction run in its own task
+with no shared `&mut`. The per-direction counter nonce stays ordered because `send` is single-writer
+(`&mut self`) and the writer drains FIFO.
+
+**Backpressure** is an in-memory byte budget (`SEND_BUFFER_BYTES`, ~10 MiB) held as a semaphore: `send`
+reserves the sealed frame's bytes and the writer releases them *after* the frame is flushed. While the
+socket drains normally `send` returns immediately; if the peer/relay stops draining, the budget empties
+and `send` **blocks** until space frees up (bounding memory). This sits under the relay's own per-pipe
+limits (§3.3). WS-level pings stay responsive: the read half forwards `Pong`s to the writer on a
+separate control channel that the budget never throttles. Dropping both halves (or `close()`) tears the
+pipe down — the writer closes the socket once its channels are gone.
+
+### 6.2 Agent-side consumers (by `stream_type`)
+
 - **`http-local-proxy`** — `plugin-mobile-connector` (`src/proxy.rs`) accepts these pipes and
   reverse-proxies each, byte-for-byte, to the local web server at `127.0.0.1:<web_port>`, letting a
-  native WebView render the Skald web UI over the relay (no NAT hole / Tailscale). Destination is
-  pinned (not client-chosen); access is already gated by §3.1 (agent or authorized client). See
+  native WebView render the Skald web UI over the relay (no NAT hole / Tailscale). It `split`s each
+  pipe and runs the two directions in **separate tasks** (remote→local writes to the web server;
+  local→remote reads it and `send`s back, backpressured by the send buffer), so a stalled direction
+  can't block the other. Destination is pinned (not client-chosen); access is already gated by §3.1
+  (agent or authorized client). See
   [../plugins/mobile-connector.md](../plugins/mobile-connector.md#http-reverse-proxy-http-local-proxy).
 
 ## 7. client↔client (deferred)
@@ -178,8 +202,10 @@ cross-dest, not by agent-vs-client. Two things are missing above it, both additi
 - **relay-server** (`tests/pipe.rs`): two raw WS peers → `pending→matched→streaming→teardown`;
   rejects bad signature, cross-dest mismatch, non-member; teardown closes the peer.
 - **relay-client** (`src/pipe.rs` net tests): two `PipeConnection`s stream bytes (incl. a 200 KiB
-  blob) both ways through the **real** relay; a wrong key fails AEAD open (relay never had plaintext).
-  Signaling routing (`src/state.rs`): invite → `incoming_pipes`, accept/reject → the waiter.
+  blob) both ways through the **real** relay; a wrong key fails AEAD open (relay never had plaintext);
+  `split` both ends and stream 1 MiB **each way simultaneously** (full-duplex — neither direction
+  blocks the other). Signaling routing (`src/state.rs`): invite → `incoming_pipes`, accept/reject → the
+  waiter.
 - **Non-regression**: `plugin-mobile-connector` builds unchanged; existing `protocol.rs` /
   `integration.rs` suites still pass.
 

@@ -191,10 +191,13 @@ port, the plugin reuses the relay **pipe** (relayed E2E byte-stream, see
 `proxy.rs` subscribes to `RelayClient::incoming_pipes()` and, for each invite with
 `stream_type == "http-local-proxy"`, accepts the pipe and splices it byte-for-byte
 to a **fresh** `TcpStream` to `127.0.0.1:<web_port>` (`PluginContext::web_port`).
-One spawned task per pipe; a `select!` alternates the two directions (the pipe API
-is half-duplex on `&mut self`, and `recv`/`read` are cancel-safe). Invites of other
-`stream_type`s are **ignored** (not rejected) since `incoming_pipes` is a broadcast
-shared with possible future consumers.
+Per pipe it `split`s the connection into independent send/receive halves and runs
+each direction in its own task (full-duplex, so neither blocks the other;
+`PipeSender::send` is backpressured by the pipe's ~10 MiB send buffer, and
+`recv`/`read` are cancel-safe — see [relay/pipe.md §6.1](../relay/pipe.md#61-full-duplex--client-side-backpressure)).
+When either direction ends it cancels a shared token so the other unwinds. Invites
+of other `stream_type`s are **ignored** (not rejected) since `incoming_pipes` is a
+broadcast shared with possible future consumers.
 
 The native app side (later) opens one pipe per outbound connection and points a
 WebView at it; because the tunnel is a transparent TCP splice, HTTP/1.1 keep-alive,

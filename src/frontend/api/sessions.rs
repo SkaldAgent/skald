@@ -145,21 +145,20 @@ pub async fn web_resolve_tool(
         .unwrap_or(Value::Object(Default::default()));
 
     if body.action == "reject" {
-        let note = if body.note.is_empty() {
-            "Rejected via API.".to_string()
-        } else {
-            format!("Rejected via API: {}", body.note)
-        };
+        // Pass the raw user note to the live session so the loop builds the
+        // canonical message; for the not-live path (no waiting session, e.g.
+        // after a restart) build the same message here and save it directly.
         let live = skald.approval
-            .resolve_for_tool_call(tc_id, ApprovalDecision::Rejected { note: note.clone() })
+            .resolve_for_tool_call(tc_id, ApprovalDecision::Rejected { note: body.note.clone() })
             .await;
+        let msg = ApprovalDecision::rejection_message(&body.note);
         if !live {
-            chat_llm_tools::reject(&skald.db, tc_id, &note).await?;
+            chat_llm_tools::reject(&skald.db, tc_id, &msg).await?;
         }
         return Ok(Json(ResolveToolResponse {
             tool_call_id: tc_id,
             status:       "rejected".to_string(),
-            result:       Some(note),
+            result:       Some(msg),
         }));
     }
 

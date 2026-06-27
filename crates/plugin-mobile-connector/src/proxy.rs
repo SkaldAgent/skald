@@ -102,11 +102,14 @@ async fn accept_and_proxy(
 
 /// Splice a pipe to a fresh local TCP connection until either side closes.
 ///
-/// The pipe API is half-duplex (`&mut self` for both `send`/`recv`); the
-/// `select!` alternates the two directions in one task — only one `&mut pipe`
-/// borrow is live at a time, and both `recv`/`read` are cancel-safe. This is
-/// ample for HTTP request/response plus the small, bursty chat-WS frames.
-async fn proxy_one(conn: u64, mut pipe: PipeConnection, port: u16, cancel: CancellationToken) {
+/// Full-duplex: the pipe is `split` into independent send/receive halves, each
+/// driven by its own task, so the two directions never block each other (a
+/// stalled write on one side can't hold up the other). `PipeSender::send`
+/// applies backpressure internally (it blocks only when the pipe's send buffer
+/// is full), and `recv`/`read` are cancel-safe. When either direction ends it
+/// cancels the shared token so the other unwinds; dropping both pipe halves
+/// closes the socket.
+async fn proxy_one(conn: u64, pipe: PipeConnection, port: u16, cancel: CancellationToken) {
     let tcp = match TcpStream::connect(("127.0.0.1", port)).await {
         Ok(s) => s,
         Err(e) => {
@@ -117,49 +120,85 @@ async fn proxy_one(conn: u64, mut pipe: PipeConnection, port: u16, cancel: Cance
     };
     debug!(plugin = PLUGIN_ID, conn, port, "http-local-proxy: local connection established");
     let (mut rd, mut wr) = tcp.into_split();
-    let mut buf = vec![0u8; READ_BUF];
-    let mut to_local:  u64 = 0; // remote → local bytes
-    let mut to_remote: u64 = 0; // local → remote bytes
-    let reason: &str;
+    let (mut tx, mut rx) = pipe.split();
+    let to_local = Arc::new(AtomicU64::new(0)); // remote → local bytes
+    let to_remote = Arc::new(AtomicU64::new(0)); // local → remote bytes
 
-    loop {
-        tokio::select! {
-            _ = cancel.cancelled() => { reason = "cancelled"; break; }
-            // remote → local: decrypted client bytes forwarded to the web server.
-            r = pipe.recv() => match r {
-                Ok(Some(bytes)) => {
-                    trace!(plugin = PLUGIN_ID, conn, n = bytes.len(), "http-local-proxy: remote→local");
-                    if let Err(e) = wr.write_all(&bytes).await {
-                        debug!(plugin = PLUGIN_ID, conn, error = %e, "http-local-proxy: local write failed");
-                        reason = "local write error"; break;
-                    }
-                    to_local += bytes.len() as u64;
+    // remote → local: decrypted client bytes forwarded to the web server.
+    let mut rl = {
+        let cancel = cancel.clone();
+        let to_local = Arc::clone(&to_local);
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => return "cancelled",
+                    r = rx.recv() => match r {
+                        Ok(Some(bytes)) => {
+                            trace!(plugin = PLUGIN_ID, conn, n = bytes.len(), "http-local-proxy: remote→local");
+                            if let Err(e) = wr.write_all(&bytes).await {
+                                debug!(plugin = PLUGIN_ID, conn, error = %e, "http-local-proxy: local write failed");
+                                return "local write error";
+                            }
+                            to_local.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                        }
+                        Ok(None) => return "remote closed",
+                        Err(e) => {
+                            debug!(plugin = PLUGIN_ID, conn, error = %e, "http-local-proxy: pipe recv error");
+                            return "pipe recv error";
+                        }
+                    },
                 }
-                Ok(None) => { reason = "remote closed"; break; }
-                Err(e) => {
-                    debug!(plugin = PLUGIN_ID, conn, error = %e, "http-local-proxy: pipe recv error");
-                    reason = "pipe recv error"; break;
+            }
+        })
+    };
+
+    // local → remote: web-server bytes sealed back over the pipe.
+    let mut lr = {
+        let cancel = cancel.clone();
+        let to_remote = Arc::clone(&to_remote);
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; READ_BUF];
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => return "cancelled",
+                    r = rd.read(&mut buf) => match r {
+                        Ok(0) => return "local EOF",
+                        Ok(n) => {
+                            trace!(plugin = PLUGIN_ID, conn, n, "http-local-proxy: local→remote");
+                            if let Err(e) = tx.send(&buf[..n]).await {
+                                debug!(plugin = PLUGIN_ID, conn, error = %e, "http-local-proxy: pipe send failed");
+                                return "pipe send error";
+                            }
+                            to_remote.fetch_add(n as u64, Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            debug!(plugin = PLUGIN_ID, conn, error = %e, "http-local-proxy: local read error");
+                            return "local read error";
+                        }
+                    },
                 }
-            },
-            // local → remote: web-server bytes sealed back over the pipe.
-            r = rd.read(&mut buf) => match r {
-                Ok(0) => { reason = "local EOF"; break; }
-                Ok(n) => {
-                    trace!(plugin = PLUGIN_ID, conn, n, "http-local-proxy: local→remote");
-                    if let Err(e) = pipe.send(&buf[..n]).await {
-                        debug!(plugin = PLUGIN_ID, conn, error = %e, "http-local-proxy: pipe send failed");
-                        reason = "pipe send error"; break;
-                    }
-                    to_remote += n as u64;
-                }
-                Err(e) => {
-                    debug!(plugin = PLUGIN_ID, conn, error = %e, "http-local-proxy: local read error");
-                    reason = "local read error"; break;
-                }
-            },
+            }
+        })
+    };
+
+    // First direction to finish decides the reason; cancel the survivor and join
+    // **only** it. The handle resolved inside `select!` is already complete and
+    // must not be polled again (`JoinHandle polled after completion`). Joining
+    // the survivor lets both pipe halves drop so the socket closes cleanly.
+    let reason = tokio::select! {
+        r = &mut rl => {
+            cancel.cancel();
+            let _ = lr.await;
+            r.unwrap_or("remote→local task panic")
         }
-    }
-    pipe.close().await;
-    debug!(plugin = PLUGIN_ID, conn, to_local, to_remote, reason,
-           "http-local-proxy: pipe closed");
+        r = &mut lr => {
+            cancel.cancel();
+            let _ = rl.await;
+            r.unwrap_or("local→remote task panic")
+        }
+    };
+    debug!(plugin = PLUGIN_ID, conn,
+           to_local = to_local.load(Ordering::Relaxed),
+           to_remote = to_remote.load(Ordering::Relaxed),
+           reason, "http-local-proxy: pipe closed");
 }

@@ -36,4 +36,4 @@ pub use db::{ClientRow, ClientState};
 pub use events::RelayEvent;
 pub use identity::Identity;
 pub use pairing::{QrCodeData, SessionState, StartedPairing};
-pub use pipe::{IncomingPipe, PipeConnection, PipeRole};
+pub use pipe::{IncomingPipe, PipeConnection, PipeReceiver, PipeRole, PipeSender};

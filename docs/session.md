@@ -195,7 +195,7 @@ The bypass state lives in `ApprovalManager::session_bypasses` (`Mutex<HashMap<i6
 **GateResult handling in `run_agent_turn`:**
 
 - `Allow` — execute freely.
-- `Deny` — mark tool call `failed`, emit `ToolError`, continue loop.
+- `Deny` — mark tool call `rejected`, emit `ToolRejected`, continue loop.
 - `Require` — pause and ask the human:
   1. Register a `oneshot` channel via `ApprovalManager.register(...)` → `(request_id, rx)`.
   2. Call `emit_approval_event(tx, request_id, tool_call_id, name, args)` which selects the event type:
@@ -205,7 +205,7 @@ The bypass state lives in `ApprovalManager::session_bypasses` (`Mutex<HashMap<i6
      - **everything else**: `ApprovalRequired { tool_name, arguments }`.
   3. Await `rx`.
   4. `Approved` → proceed with tool execution.
-  5. `Rejected { note }` → mark tool call `failed`, emit `ToolError`, continue loop.
+  5. `Rejected { note }` → mark tool call `rejected` with the reason, emit `ToolRejected`, continue loop. The saved reason — including the user's justification — is surfaced to the LLM as the tool-result content on the next request (see [MessageBuilder](#context-building)). Every reject surface (copilot WS, Agent Inbox, REST `/sessions` and `/inbox`, mobile, Telegram) passes the **raw** user note; the canonical message string is built in one place by `ApprovalDecision::rejection_message(note)` → `"User rejected this tool call. Reason: <note>"` (or `"User rejected this tool call."` when the note is empty), so wording stays consistent and no surface-specific prefix leaks into the LLM context.
   6. Channel closed (WS disconnected) → return `Cancelled`.
 
 ---
@@ -254,7 +254,17 @@ See *Context Compaction*.
 
 ### 4. Conversation history
 
-`chat_history` for the stack. When compaction is **disabled**, the list is truncated to `max_history_messages` (oldest dropped first). When compaction is **enabled**, `max_history_messages` has no effect — the compactor owns the token budget and truncating by count would silently discard history that should be summarised instead. Each assistant entry with tool calls in `chat_llm_tools` is reconstructed with a `tool_calls` array and one `tool` result message per call. Tool result hiding (see below) is applied to results from previous turns.
+`chat_history` for the stack. When compaction is **disabled**, the list is truncated to `max_history_messages` (oldest dropped first). When compaction is **enabled**, `max_history_messages` has no effect — the compactor owns the token budget and truncating by count would silently discard history that should be summarised instead. Each assistant entry with tool calls in `chat_llm_tools` is reconstructed with a `tool_calls` array and one `tool` result message per call. The tool-result content is derived from the call's terminal status:
+
+| Status | LLM-visible `tool` content |
+| ------ | -------------------------- |
+| `done` | the saved `result` |
+| `failed` | `Error: <result>` |
+| `rejected` | the saved reason (e.g. `User rejected this tool call. Reason: <note>`) — the human's justification reaches the LLM verbatim |
+| `cancelled` | the saved note (a `/stop` cancellation) |
+| `pending` / `running` (interrupted by a crash or lost connection) | `Error: tool call was interrupted (connection lost before user approval). Please retry the operation.` |
+
+Tool result hiding (see below) is applied to results from previous turns.
 
 ### 5. Dynamic tail system message
 

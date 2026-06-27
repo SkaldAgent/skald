@@ -196,6 +196,22 @@ pub enum ApprovalDecision {
     Rejected { note: String },
 }
 
+impl ApprovalDecision {
+    /// Canonical tool-result text shown to the LLM for a human rejection,
+    /// given the raw user-supplied note (which may be empty). This is the
+    /// single source of truth: every reject path passes the raw note and lets
+    /// this build the message, so the wording stays consistent and the note
+    /// carries the user's justification verbatim — no surface-specific prefixes.
+    pub fn rejection_message(note: &str) -> String {
+        let note = note.trim();
+        if note.is_empty() {
+            "User rejected this tool call.".to_string()
+        } else {
+            format!("User rejected this tool call. Reason: {note}")
+        }
+    }
+}
+
 pub struct ChatSessionHandler {
     pub session_id:              i64,
     pub(super) db:               Arc<SqlitePool>,

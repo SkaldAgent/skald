@@ -53,8 +53,8 @@ pub async fn resolve_approval(
     let info = skald.approval.get_pending(p.request_id).await;
 
     if body.action == "reject" {
-        let note = if body.note.is_empty() { "Rejected via Agent Inbox.".into() } else { body.note.clone() };
-        skald.inbox.reject(p.request_id, note).await;
+        // Pass the raw note; the waiting session builds the canonical message.
+        skald.inbox.reject(p.request_id, body.note.clone()).await;
     } else {
         skald.inbox.approve(p.request_id).await;
 

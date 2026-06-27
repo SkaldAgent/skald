@@ -81,8 +81,8 @@ pub async fn resolve_pending(
     Json(body): Json<ResolveBody>,
 ) -> Result<Json<Value>, ApiError> {
     if body.action == "reject" {
-        let note = if body.note.is_empty() { "Rejected via API.".to_string() } else { body.note.clone() };
-        skald.inbox.reject(p.request_id, note).await;
+        // Pass the raw note; the waiting session builds the canonical message.
+        skald.inbox.reject(p.request_id, body.note.clone()).await;
     } else {
         skald.inbox.approve(p.request_id).await;
     }

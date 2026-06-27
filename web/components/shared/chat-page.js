@@ -57,13 +57,8 @@ export class ChatPage extends ChatSession {
 
   // ── DOM hooks ──────────────────────────────────────────────────────────────
 
-  _getInputContent() {
-    return this.querySelector('.chat-page-textarea')?.value.trim() ?? '';
-  }
-
-  _clearInput() {
-    const t = this.querySelector('.chat-page-textarea');
-    if (t) t.value = '';
+  _inputEl() {
+    return this.querySelector('.chat-page-textarea');
   }
 
   _scrollToBottom() {
@@ -86,13 +81,10 @@ export class ChatPage extends ChatSession {
   }
 
   // ── Input ──────────────────────────────────────────────────────────────────
-
-  _handleKeydown(e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      this._send();
-    }
-  }
+  // Note: unlike the desktop copilot, Enter does NOT send here. On mobile there
+  // is no practical Shift+Enter, so Enter inserts a newline (the textarea's
+  // default) and the explicit send button is the only way to submit — making
+  // multi-line messages possible.
 
   // ── Toggle expand ──────────────────────────────────────────────────────────
 
@@ -121,17 +113,6 @@ export class ChatPage extends ChatSession {
             ` : html`<i class="bi bi-chat-dots-fill"></i> Chat`}
           </span>
           <div class="chat-page-header-actions">
-            ${this._providers.length > 1 ? html`
-              <select
-                class="form-select form-select-sm chat-page-provider-select"
-                .value=${this._selectedClient ?? ''}
-                @change=${(e) => { this._selectClient(e.target.value); }}
-              >
-                ${this._providers.map(p => html`
-                  <option value=${p} ?selected=${p === this._selectedClient}>${p}</option>
-                `)}
-              </select>
-            ` : nothing}
             <button
               class="btn btn-sm btn-outline-secondary"
               title="New conversation"
@@ -157,26 +138,51 @@ export class ChatPage extends ChatSession {
         </div>
 
         <div class="chat-page-input-area">
-          <div class="chat-page-input-row">
+          <div class="chat-page-composer">
             <textarea
-              class="form-control chat-page-textarea"
-              rows="2"
-              placeholder="Message… (Enter to send)"
-              @keydown=${this._handleKeydown}
+              class="chat-page-textarea"
+              rows="1"
+              placeholder="Type a message…"
+              @input=${(e) => this._autoResize(e.target)}
               ?disabled=${this._waiting}
             ></textarea>
-            <div class="chat-page-input-actions">
-              ${this._waiting
-                ? html`<button
-                    class="btn btn-danger chat-page-send"
-                    @click=${() => this._cancel()}
-                    title="Stop"
-                  ><i class="bi bi-stop-fill"></i></button>`
-                : html`<button
-                    class="btn btn-primary chat-page-send"
-                    @click=${() => this._send()}
-                  ><i class="bi bi-send-fill"></i></button>`
-              }
+            <div class="chat-page-toolbar">
+              <div class="chat-page-toolbar-left">
+                ${this._providers.length > 1 ? html`
+                  <select
+                    class="chat-page-model-pill"
+                    .value=${this._selectedClient ?? 'auto'}
+                    @change=${(e) => { this._selectClient(e.target.value); }}
+                  >
+                    ${this._providers.map(p => html`
+                      <option value=${p} ?selected=${p === (this._selectedClient ?? 'auto')}>${p}</option>
+                    `)}
+                  </select>
+                ` : nothing}
+              </div>
+              <div class="chat-page-toolbar-right">
+                ${this._hasTranscribe ? html`
+                  <button
+                    class="chat-page-mic-btn ${this._recording ? 'chat-page-mic-btn--recording' : ''}"
+                    title="${this._recording ? 'Stop recording' : 'Record voice'}"
+                    @click=${() => this._toggleRecording()}
+                  >
+                    <i class="bi ${this._recording ? 'bi-stop-circle-fill' : 'bi-mic-fill'}"></i>
+                  </button>
+                ` : nothing}
+                ${this._waiting
+                  ? html`<button
+                      class="chat-page-send chat-page-send--stop"
+                      @click=${() => this._cancel()}
+                      title="Stop"
+                    ><i class="bi bi-stop-fill"></i></button>`
+                  : html`<button
+                      class="chat-page-send"
+                      @click=${() => this._send()}
+                      title="Send"
+                    ><i class="bi bi-send-fill"></i></button>`
+                }
+              </div>
             </div>
           </div>
         </div>

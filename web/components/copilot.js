@@ -6,8 +6,6 @@ export class AppCopilot extends ChatSession {
   static properties = {
     _collapsed:     { state: true },
     _modelOpen:     { state: true },
-    _recording:     { state: true },
-    _hasTranscribe: { state: true },
     _tabs:          { state: true },
     _activeSource:  { state: true },
   };
@@ -16,11 +14,7 @@ export class AppCopilot extends ChatSession {
     super();
     this._collapsed     = false;
     this._modelOpen     = false;
-    this._hasTranscribe = false;
-    this._recording     = false;
     this._resizing      = false;
-    this._mediaRecorder = null;
-    this._audioChunks   = [];
     // Browser-style tabs: 'General' (the default 'web' source) is always present and
     // not closable; project chats are added on demand and addressed by their source.
     this._tabs          = [{ source: 'web', label: 'General' }];
@@ -34,7 +28,6 @@ export class AppCopilot extends ChatSession {
 
   connectedCallback() {
     super.connectedCallback?.();
-    this._checkTranscribe();
     this._restoreState();
     window.addEventListener('keydown',           this._onKeydown);
     window.addEventListener('keyup',             this._onKeyup);
@@ -98,31 +91,10 @@ export class AppCopilot extends ChatSession {
     if (wasActive) this._switchSource('web');
   }
 
-  async _checkTranscribe() {
-    try {
-      const r = await fetch('/api/transcribe/has');
-      this._hasTranscribe = r.status === 204;
-    } catch {
-      this._hasTranscribe = false;
-    }
-  }
-
   // ── DOM hooks ─────────────────────────────────────────────────────────────────
 
-  _getInputContent() {
-    return this.querySelector('.copilot-textarea')?.value.trim() ?? '';
-  }
-
-  _clearInput() {
-    const t = this.querySelector('.copilot-textarea');
-    if (!t) return;
-    t.value = '';
-    t.style.height = 'auto';
-  }
-
-  _autoResize(el) {
-    el.style.height = 'auto';
-    el.style.height = el.scrollHeight + 'px';
+  _inputEl() {
+    return this.querySelector('.copilot-textarea');
   }
 
   _scrollToBottom() {
@@ -179,7 +151,9 @@ export class AppCopilot extends ChatSession {
     }
   }
 
-  // ── CTRL+SPACE shortcut ───────────────────────────────────────────────────────
+  // ── Ctrl+Space push-to-talk shortcut (desktop only) ──────────────────────────
+  // Voice recording + transcription is owned by the ChatSession base class; the
+  // only desktop-specific bit is the global Ctrl+Space hold-to-record shortcut.
 
   _onKeydown(e) {
     if (!this._hasTranscribe) return;
@@ -194,84 +168,6 @@ export class AppCopilot extends ChatSession {
     if (e.code === 'Space' && this._recording && this._shortcutRecording) {
       e.preventDefault();
       this._stopRecording();
-    }
-  }
-
-  // ── Recording ─────────────────────────────────────────────────────────────────
-
-  async _startRecording(fromShortcut = false) {
-    if (this._recording) return;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      this._audioChunks      = [];
-      this._shortcutRecording = fromShortcut;
-
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : MediaRecorder.isTypeSupported('audio/webm')
-          ? 'audio/webm'
-          : '';
-
-      this._mediaRecorder = mimeType
-        ? new MediaRecorder(stream, { mimeType })
-        : new MediaRecorder(stream);
-
-      this._mediaRecorder.addEventListener('dataavailable', e => {
-        if (e.data.size > 0) this._audioChunks.push(e.data);
-      });
-
-      this._mediaRecorder.addEventListener('stop', () => {
-        stream.getTracks().forEach(t => t.stop());
-        this._submitAudio();
-      });
-
-      this._mediaRecorder.start();
-      this._recording = true;
-    } catch (err) {
-      console.error('mic error:', err);
-    }
-  }
-
-  _stopRecording() {
-    if (!this._recording || !this._mediaRecorder) return;
-    this._mediaRecorder.stop();
-    this._recording = false;
-  }
-
-  _toggleRecording() {
-    if (this._recording) {
-      this._shortcutRecording = false;
-      this._stopRecording();
-    } else {
-      this._startRecording(false);
-    }
-  }
-
-  async _submitAudio() {
-    if (this._audioChunks.length === 0) return;
-
-    const mimeType = this._mediaRecorder?.mimeType ?? 'audio/webm';
-    const blob = new Blob(this._audioChunks, { type: mimeType });
-    // Derive file extension from mimeType, e.g. "audio/webm;codecs=opus" → "webm"
-    const ext = mimeType.split('/')[1]?.split(';')[0] ?? 'webm';
-
-    const form = new FormData();
-    form.append('audio', blob, `recording.${ext}`);
-
-    try {
-      const resp = await fetch('/api/transcribe/audio', { method: 'POST', body: form });
-      if (!resp.ok) throw new Error(await resp.text());
-      const { text } = await resp.json();
-      if (text) {
-        const ta = this.querySelector('.copilot-textarea');
-        if (ta) {
-          ta.value = (ta.value ? ta.value + ' ' : '') + text;
-          this._autoResize(ta);
-          ta.focus();
-        }
-      }
-    } catch (err) {
-      console.error('transcription error:', err);
     }
   }
 

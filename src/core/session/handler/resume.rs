@@ -297,11 +297,7 @@ impl ChatSessionHandler {
                     match rx.await {
                         Ok(ApprovalDecision::Approved) => { /* fall through to execution */ }
                         Ok(ApprovalDecision::Rejected { note }) => {
-                            let msg = if note.is_empty() {
-                                "User rejected this tool call.".to_string()
-                            } else {
-                                format!("User rejected. Reason: {note}")
-                            };
+                            let msg = ApprovalDecision::rejection_message(&note);
                             chat_llm_tools::reject(pool, tc.id, &msg).await?;
                             tx.send(ServerEvent::ToolRejected {
                                 tool_call_id: tc.id, reason: msg,

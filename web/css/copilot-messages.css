@@ -294,6 +294,23 @@
 .copilot-markdown strong { font-weight: 700; }
 .copilot-markdown em     { font-style: italic; }
 
+/* Keep wide content inside the bubble so it never stretches the message list
+   (which would let the whole page pan sideways). Images shrink to the bubble
+   width; tables become their own horizontal scroll box. Code blocks (`pre`)
+   already scroll within themselves (overflow-x: auto above). */
+.copilot-markdown img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.4rem;
+}
+
+.copilot-markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
 /* ── Approval panel ────────────────────────────────────────────────────────── */
 
 .copilot-approval {

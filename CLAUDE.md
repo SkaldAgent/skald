@@ -103,7 +103,9 @@ All extend `LightElement` from `web/lib/base.js` (Lit). `ChatSession` (`web/lib/
 | `sidebar.js` | `<app-sidebar>` | Nav sidebar; polls `/api/inbox` every 10 s for badge |
 | `topbar.js` | `<app-topbar>` | Top nav bar |
 | `home-page.js` | `<home-page>` | Landing / dashboard |
-| `file-viewer-page.js` | `<file-viewer-page>` | Top-level page previewing files (markdown / code / images) via `window.openFile(path)` → `#file_viewer?path=...` |
+| `shared/file-viewer-base.js` | `FileViewerBase` (base) | Shared file-viewer engine (fetch, kind detection, markdown/PDF/SVG/LaTeX, watcher, `_renderBody`); driven by `_show`/`_hide`. Extended by desktop + mobile |
+| `file-viewer-page.js` | `<file-viewer-page>` | Desktop file viewer: `FileViewerBase` + hash routing via `window.openFile(path)` → `#file_viewer?path=...` |
+| `shared/file-viewer-mobile.js` | `<mobile-file-viewer-page>` | Mobile file viewer: `FileViewerBase` + prop-driven (`visible`/`path`), full-screen with back button |
 | `agents.js` | `<agents-page>` | Agent discovery and config |
 | `agent-inbox.js` | `<agent-inbox-page>` | Pending approvals + clarifications from background sessions |
 | `approval-rules.js` | `<approval-rules-page>` | Approval rule management |
