@@ -56,6 +56,12 @@ pub enum ServerEvent {
     ToolDone {
         tool_call_id: i64,
         result:       String,
+        /// Result type tag: `"string"` (plain text) or `"json"` (structured
+        /// payload, e.g. MCP `structuredContent`). The frontend uses it to render
+        /// typed results instead of a raw text blob. Always populated by the
+        /// server; the frontend treats an absent/unknown value as plain text, so
+        /// older clients degrade gracefully.
+        result_type:  String,
     },
     /// A tool call failed. DB status: error.
     ToolError {

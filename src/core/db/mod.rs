@@ -561,6 +561,26 @@ async fn migrate_tables(pool: &SqlitePool) -> Result<()> {
         .await?;
     }
 
+    // v19 — tool-call result type tag on `chat_llm_tools`: `"string"` (plain text,
+    // the default for every built-in tool) or `"json"` (structured payload, e.g.
+    // MCP `structuredContent`). Lets the host/frontend render typed results instead
+    // of a raw text blob. Added here so it also runs on fresh DBs (see v17/v18).
+    if version < 19 {
+        sqlx::query(
+            "ALTER TABLE chat_llm_tools
+             ADD COLUMN result_type TEXT NOT NULL DEFAULT 'string'
+             CHECK(result_type IN ('string', 'json'))",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT OR REPLACE INTO config(key, value, updated_at)
+             VALUES('schema_version', '19', datetime('now'))",
+        )
+        .execute(pool)
+        .await?;
+    }
+
     match existing {
         None => crate::boot::section(format!(
             "Database initialised (schema v{BASELINE_SCHEMA_VERSION})"

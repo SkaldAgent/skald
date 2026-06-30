@@ -222,6 +222,14 @@
 
 .copilot-tool-pre--error { color: #dc2626; }
 
+/* Structured (`result_type === 'json'`) results: keep JSON readable (don't break
+   mid-token) and flag the typed payload with a left accent. */
+.copilot-tool-pre--json {
+  word-break: normal;
+  overflow-x: auto;
+  border-left: 2px solid var(--bs-info, #0dcaf0);
+}
+
 /* ── Markdown rendering ────────────────────────────────────────────────────── */
 
 .copilot-markdown { max-width: 100%; }

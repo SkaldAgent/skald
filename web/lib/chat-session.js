@@ -229,7 +229,7 @@ export class ChatSession extends LightElement {
       }
 
       case 'tool_done':
-        this._updateTool(msg.tool_call_id, { status: 'done', result: msg.result });
+        this._updateTool(msg.tool_call_id, { status: 'done', result: msg.result, result_type: msg.result_type });
         break;
 
       case 'tool_error':
@@ -622,7 +622,7 @@ export class ChatSession extends LightElement {
         return;
       }
       const data = await res.json();
-      this._updateTool(msg.tool_call_id, { status: data.status, result: data.result });
+      this._updateTool(msg.tool_call_id, { status: data.status, result: data.result, result_type: data.result_type });
       if (this._ws?.readyState === WebSocket.OPEN) this._ws.send(JSON.stringify({ type: 'resume' }));
     } catch (e) {
       this._updateTool(msg.tool_call_id, { status: 'error', error: String(e) });

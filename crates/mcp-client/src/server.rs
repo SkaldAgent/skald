@@ -10,9 +10,9 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, Command};
 use tokio::sync::{Mutex, mpsc, oneshot};
-use tracing::debug;
+use tracing::{debug, warn};
 
-use crate::{McpServerClient, McpTool, extract_text, interpolate_env};
+use crate::{McpCallResult, McpServerClient, McpTool, extract_text, interpolate_env};
 use crate::config::McpServerConfig;
 
 /// A server-initiated notification from an MCP server: `(server_name, full JSON-RPC message)`.
@@ -280,31 +280,46 @@ impl McpServer {
             pending_elicitations,
         };
 
-        server.request("initialize", json!({
-            // 2025-06-18 added elicitation; declare the capability so servers
-            // know they may request input mid-call.
-            "protocolVersion": "2025-06-18",
+        let init = server.request("initialize", json!({
+            // Declare the elicitation capability (form mode) so servers know they
+            // may request input mid-call.
+            "protocolVersion": crate::PROTOCOL_VERSION,
             "capabilities":    { "elicitation": {} },
             "clientInfo":      { "name": "skald", "version": env!("CARGO_PKG_VERSION") },
         })).await?;
+        // Tolerate a server that negotiates a different (older) version — warn but
+        // keep going rather than disconnecting.
+        if let Some(v) = init["protocolVersion"].as_str() {
+            if v != crate::PROTOCOL_VERSION {
+                warn!("MCP '{}': server negotiated protocol {v} (we requested {}); proceeding",
+                    server.name, crate::PROTOCOL_VERSION);
+            }
+        }
 
         server.notify("notifications/initialized", json!({})).await?;
 
-        let tools_result = server.request("tools/list", json!({})).await?;
-        let tools: Vec<McpTool> = tools_result["tools"]
-            .as_array()
-            .unwrap_or(&vec![])
-            .iter()
-            .map(|t| McpTool {
-                server_name:  cfg.name.clone(),
-                name:         t["name"].as_str().unwrap_or("").to_string(),
-                description:  t["description"].as_str().unwrap_or("").to_string(),
-                input_schema: t.get("inputSchema").cloned().unwrap_or_else(|| json!({
-                    "type": "object",
-                    "properties": {},
-                })),
-            })
-            .collect();
+        // Follow `nextCursor` across pages so servers with large tool lists aren't
+        // silently truncated; capped at `MAX_TOOL_PAGES` against a stuck cursor.
+        let mut tools: Vec<McpTool> = Vec::new();
+        let mut cursor: Option<String> = None;
+        for page_n in 0..crate::MAX_TOOL_PAGES {
+            let params = match &cursor {
+                Some(c) => json!({ "cursor": c }),
+                None    => json!({}),
+            };
+            let page = server.request("tools/list", params).await?;
+            if let Some(arr) = page["tools"].as_array() {
+                tools.extend(arr.iter().map(|t| McpTool::from_json(&cfg.name, t)));
+            }
+            cursor = page["nextCursor"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+            if cursor.is_none() {
+                break;
+            }
+            if page_n + 1 == crate::MAX_TOOL_PAGES {
+                warn!("MCP '{}': tools/list hit {}-page cap; some tools may be omitted",
+                    server.name, crate::MAX_TOOL_PAGES);
+            }
+        }
 
         Ok(McpServer { tools, ..server })
     }
@@ -313,7 +328,7 @@ impl McpServer {
         &self.tools
     }
 
-    pub async fn call_tool(&self, name: &str, args: Value) -> Result<String> {
+    pub async fn call_tool(&self, name: &str, args: Value) -> Result<McpCallResult> {
         let result = self.request("tools/call", json!({
             "name":      name,
             "arguments": args,
@@ -322,7 +337,7 @@ impl McpServer {
         if result["isError"].as_bool().unwrap_or(false) {
             anyhow::bail!("MCP tool error: {}", extract_text(&result));
         }
-        Ok(extract_text(&result))
+        Ok(crate::extract_call_result(&result))
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value> {
@@ -379,5 +394,5 @@ impl McpServer {
 #[async_trait]
 impl McpServerClient for McpServer {
     fn tools(&self) -> &[McpTool] { self.tools() }
-    async fn call_tool(&self, name: &str, args: Value) -> Result<String> { self.call_tool(name, args).await }
+    async fn call_tool(&self, name: &str, args: Value) -> Result<McpCallResult> { self.call_tool(name, args).await }
 }

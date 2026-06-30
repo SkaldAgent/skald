@@ -56,7 +56,7 @@ use serde_json::Value;
 
 pub use core_api::tool::{
     drive_execution, ExecutionOutcome, SimpleExecution, Tool, ToolCategory,
-    ToolDescriptionLength, ToolExecution, truncate_label,
+    ToolDescriptionLength, ToolExecution, ToolResult, truncate_label,
 };
 
 

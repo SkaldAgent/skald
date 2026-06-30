@@ -8,7 +8,7 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValu
 use serde_json::{Value, json};
 use tracing::{debug, warn};
 
-use crate::{McpServerClient, McpTool, extract_text, interpolate_env};
+use crate::{McpCallResult, McpServerClient, McpTool, extract_text, interpolate_env};
 use crate::config::McpServerConfig;
 
 const CALL_TIMEOUT_SECS: u64 = 120;
@@ -20,6 +20,10 @@ pub struct McpHttpServer {
     headers:    HeaderMap,
     /// Set after the `initialize` response — required by stateful servers like Tavily.
     session_id: Mutex<Option<String>>,
+    /// Protocol version negotiated in the `initialize` response (falls back to
+    /// [`crate::PROTOCOL_VERSION`]). Once set, echoed in the `MCP-Protocol-Version`
+    /// header on every post-initialize request, per the Streamable HTTP spec.
+    protocol_version: Mutex<Option<String>>,
     next_id:    AtomicU64,
     tools:      Vec<McpTool>,
 }
@@ -51,35 +55,55 @@ impl McpHttpServer {
             url,
             client,
             headers,
-            session_id: Mutex::new(None),
+            session_id:       Mutex::new(None),
+            protocol_version: Mutex::new(None),
             next_id:    AtomicU64::new(1),
             tools:      Vec::new(),
         };
 
-        server.request("initialize", json!({
-            "protocolVersion": "2024-11-05",
+        let init = server.request("initialize", json!({
+            // The HTTP transport doesn't service the ElicitationHandler (stdio-only),
+            // so it must NOT advertise the elicitation capability.
+            "protocolVersion": crate::PROTOCOL_VERSION,
             "capabilities":    {},
             "clientInfo":      { "name": "skald", "version": env!("CARGO_PKG_VERSION") },
         })).await?;
+        // Capture the negotiated version (fall back to our own) so post-initialize
+        // requests can echo it in the MCP-Protocol-Version header; tolerate a
+        // downgrade with a warning rather than disconnecting.
+        let negotiated = init["protocolVersion"].as_str().unwrap_or(crate::PROTOCOL_VERSION);
+        if negotiated != crate::PROTOCOL_VERSION {
+            warn!("MCP http '{}': server negotiated protocol {negotiated} (we requested {}); proceeding",
+                server.name, crate::PROTOCOL_VERSION);
+        }
+        *server.protocol_version.lock().unwrap() = Some(negotiated.to_string());
 
         if let Err(e) = server.notify("notifications/initialized", json!({})).await {
             warn!("MCP http '{}': initialized notification failed (ignoring): {e}", server.name);
         }
 
-        let tools_result = server.request("tools/list", json!({})).await?;
-        let tools: Vec<McpTool> = tools_result["tools"]
-            .as_array()
-            .unwrap_or(&vec![])
-            .iter()
-            .map(|t| McpTool {
-                server_name:  cfg.name.clone(),
-                name:         t["name"].as_str().unwrap_or("").to_string(),
-                description:  t["description"].as_str().unwrap_or("").to_string(),
-                input_schema: t.get("inputSchema").cloned().unwrap_or_else(|| json!({
-                    "type": "object", "properties": {},
-                })),
-            })
-            .collect();
+        // Follow `nextCursor` across pages so large tool lists aren't silently
+        // truncated; capped at `MAX_TOOL_PAGES` against a stuck cursor.
+        let mut tools: Vec<McpTool> = Vec::new();
+        let mut cursor: Option<String> = None;
+        for page_n in 0..crate::MAX_TOOL_PAGES {
+            let params = match &cursor {
+                Some(c) => json!({ "cursor": c }),
+                None    => json!({}),
+            };
+            let page = server.request("tools/list", params).await?;
+            if let Some(arr) = page["tools"].as_array() {
+                tools.extend(arr.iter().map(|t| McpTool::from_json(&cfg.name, t)));
+            }
+            cursor = page["nextCursor"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+            if cursor.is_none() {
+                break;
+            }
+            if page_n + 1 == crate::MAX_TOOL_PAGES {
+                warn!("MCP http '{}': tools/list hit {}-page cap; some tools may be omitted",
+                    server.name, crate::MAX_TOOL_PAGES);
+            }
+        }
 
         Ok(McpHttpServer { tools, ..server })
     }
@@ -88,7 +112,7 @@ impl McpHttpServer {
         &self.tools
     }
 
-    pub async fn call_tool(&self, name: &str, args: Value) -> Result<String> {
+    pub async fn call_tool(&self, name: &str, args: Value) -> Result<McpCallResult> {
         let result = self.request("tools/call", json!({
             "name":      name,
             "arguments": args,
@@ -97,7 +121,26 @@ impl McpHttpServer {
         if result["isError"].as_bool().unwrap_or(false) {
             anyhow::bail!("MCP tool error: {}", extract_text(&result));
         }
-        Ok(extract_text(&result))
+        Ok(crate::extract_call_result(&result))
+    }
+
+    /// Builds per-request headers: the static base plus the captured
+    /// `Mcp-Session-Id` and `MCP-Protocol-Version`. Both are set only after the
+    /// `initialize` response, so they're naturally absent on the initialize call
+    /// itself (the spec scopes the version header to post-initialize requests).
+    fn request_headers(&self) -> HeaderMap {
+        let mut headers = self.headers.clone();
+        if let Some(sid) = self.session_id.lock().unwrap().as_deref() {
+            if let Ok(val) = HeaderValue::from_str(sid) {
+                headers.insert("mcp-session-id", val);
+            }
+        }
+        if let Some(ver) = self.protocol_version.lock().unwrap().as_deref() {
+            if let Ok(val) = HeaderValue::from_str(ver) {
+                headers.insert("mcp-protocol-version", val);
+            }
+        }
+        headers
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value> {
@@ -109,12 +152,7 @@ impl McpHttpServer {
             "params":  params,
         });
 
-        let mut req_headers = self.headers.clone();
-        if let Some(sid) = self.session_id.lock().unwrap().as_deref() {
-            if let Ok(val) = HeaderValue::from_str(sid) {
-                req_headers.insert("mcp-session-id", val);
-            }
-        }
+        let req_headers = self.request_headers();
 
         let resp = self.client
             .post(&self.url)
@@ -163,12 +201,7 @@ impl McpHttpServer {
             "params":  params,
         });
 
-        let mut req_headers = self.headers.clone();
-        if let Some(sid) = self.session_id.lock().unwrap().as_deref() {
-            if let Ok(val) = HeaderValue::from_str(sid) {
-                req_headers.insert("mcp-session-id", val);
-            }
-        }
+        let req_headers = self.request_headers();
 
         self.client
             .post(&self.url)
@@ -184,7 +217,7 @@ impl McpHttpServer {
 #[async_trait]
 impl McpServerClient for McpHttpServer {
     fn tools(&self) -> &[McpTool] { self.tools() }
-    async fn call_tool(&self, name: &str, args: Value) -> Result<String> { self.call_tool(name, args).await }
+    async fn call_tool(&self, name: &str, args: Value) -> Result<McpCallResult> { self.call_tool(name, args).await }
 }
 
 async fn parse_sse_response(resp: reqwest::Response) -> Result<Value> {

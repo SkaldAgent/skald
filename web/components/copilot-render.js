@@ -45,6 +45,16 @@ export function truncate(s, max = 400) {
   return str.length > max ? str.slice(0, max) + '\n…' : str;
 }
 
+/**
+ * Pretty-prints a structured (`result_type === 'json'`) tool result for display.
+ * The backend stores `structuredContent` as a compact JSON string; re-indent it
+ * for readability, falling back to the raw string if it isn't valid JSON.
+ */
+function prettyJson(s) {
+  try { return JSON.stringify(JSON.parse(s), null, 2); }
+  catch { return s; }
+}
+
 // ── Diff ─────────────────────────────────────────────────────────────────────
 
 export function renderDiff(oldText, newText) {
@@ -269,7 +279,15 @@ export function renderTool(host, msg) {
                 </div>
               `}
             </div>
-          `) : msg.status !== 'running' ? html`
+          `) : msg.status !== 'running' ? (
+            msg.status === 'done' && msg.result_type === 'json' ? html`
+            <div class="copilot-tool-section">
+              <span class="copilot-tool-label copilot-tool-label--done">result · json</span>
+              <pre class="copilot-tool-pre copilot-tool-pre--done copilot-tool-pre--json">${
+                truncate(prettyJson(msg.result))
+              }</pre>
+            </div>
+          ` : html`
             <div class="copilot-tool-section">
               <span class="copilot-tool-label copilot-tool-label--${msg.status}">
                 ${msg.status === 'done' ? 'result' : 'error'}
@@ -278,7 +296,7 @@ export function renderTool(host, msg) {
                 truncate(msg.status === 'done' ? msg.result : msg.error)
               }</pre>
             </div>
-          ` : nothing}
+          `) : nothing}
         </div>
       ` : nothing}
     </div>

@@ -69,17 +69,26 @@ pub trait Tool: Send + Sync {
         Box::pin(async move { self.execute(args) })
     }
 
+    /// Execute and produce a typed [`ToolResult`]. The default bridges
+    /// [`execute_async`](Self::execute_async) (plain string) into [`ToolResult::Text`],
+    /// so existing tools need no changes. Override to return [`ToolResult::Json`]
+    /// for tools with structured output (e.g. MCP tools exposing `structuredContent`).
+    fn execute_typed<'a>(&'a self, args: Value)
+        -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
+        Box::pin(async move { Ok(ToolResult::Text(self.execute_async(args).await?)) })
+    }
+
     /// Start a single execution of this tool and return a live [`ToolExecution`]
     /// handle. This is the entry point the session driver uses: it lets the tool
     /// own its in-flight state and implement its own `stop()` (e.g. ComfyUI sends
     /// an `/interrupt`; `execute_cmd` relies on `kill_on_drop`).
     ///
-    /// The default wraps `execute_async` in a [`SimpleExecution`], whose `stop()`
+    /// The default wraps `execute_typed` in a [`SimpleExecution`], whose `stop()`
     /// drops the work future — already enough to make `/stop` responsive for any
     /// I/O-bound tool. Tools needing remote/child teardown override this and
     /// return their own `ToolExecution` with a bespoke `stop()`.
     fn run<'a>(&'a self, args: Value) -> Box<dyn ToolExecution + 'a> {
-        Box::new(SimpleExecution::new(self.execute_async(args)))
+        Box::new(SimpleExecution::new(self.execute_typed(args)))
     }
 
     /// Logical category of this tool.
@@ -153,6 +162,55 @@ impl ToolExecutionState {
     }
 }
 
+// ── ToolResult ────────────────────────────────────────────────────────────────
+
+/// The typed result of a successful tool execution.
+///
+/// Most tools produce plain text ([`ToolResult::Text`], persisted as
+/// `result_type = "string"`). Tools with structured output — notably MCP servers
+/// returning `structuredContent` — produce [`ToolResult::Json`] (persisted as
+/// `result_type = "json"`), so the host/frontend can render the typed payload
+/// instead of a raw text blob. At the LLM wire both variants become the same
+/// `{"role":"tool","content": <string>}` bytes (see [`ToolResult::to_wire`]); the
+/// type tag only matters to the host.
+#[derive(Debug, Clone)]
+pub enum ToolResult {
+    /// Plain-text result. The default for every built-in tool.
+    Text(String),
+    /// Structured JSON result (e.g. MCP `structuredContent`).
+    Json(serde_json::Value),
+}
+
+impl ToolResult {
+    /// Tag persisted in `chat_llm_tools.result_type` and sent over the WS as
+    /// `ServerEvent::ToolDone.result_type`. Either `"string"` or `"json"`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Text(_) => "string",
+            Self::Json(_) => "json",
+        }
+    }
+
+    /// Wire content for the LLM tool message: text as-is, Json serialized to a
+    /// compact JSON string. Both OpenAI and Anthropic encode tool results as
+    /// text/JSON, so this is the canonical string form persisted in
+    /// `chat_llm_tools.result` and replayed by the message builder.
+    pub fn to_wire(&self) -> String {
+        match self {
+            Self::Text(s)  => s.clone(),
+            Self::Json(v)  => serde_json::to_string(v).unwrap_or_else(|_| "null".to_string()),
+        }
+    }
+}
+
+impl From<String> for ToolResult {
+    fn from(s: String) -> Self { Self::Text(s) }
+}
+
+impl From<&str> for ToolResult {
+    fn from(s: &str) -> Self { Self::Text(s.to_string()) }
+}
+
 // ── ExecutionOutcome ──────────────────────────────────────────────────────────
 
 /// Terminal outcome produced by [`ToolExecution::wait`]. A running execution can
@@ -160,7 +218,7 @@ impl ToolExecutionState {
 /// by the approval gate *before* the work runs and never appear here.
 #[derive(Debug, Clone)]
 pub enum ExecutionOutcome {
-    Completed(String),
+    Completed(ToolResult),
     Failed(String),
     Cancelled,
 }
@@ -175,9 +233,9 @@ impl ExecutionOutcome {
     }
 }
 
-/// A boxed, owned unit of asynchronous tool work producing a string result.
-/// This is exactly what `execute_async` returns; [`SimpleExecution`] wraps one.
-pub type ToolWork<'a> = Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
+/// A boxed, owned unit of asynchronous tool work producing a typed [`ToolResult`].
+/// This is what [`Tool::execute_typed`] returns; [`SimpleExecution`] wraps one.
+pub type ToolWork<'a> = Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>>;
 
 // ── ToolExecution ─────────────────────────────────────────────────────────────
 

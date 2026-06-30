@@ -657,7 +657,7 @@ impl ChatHub {
                 Err(e) => { error!(error = %e, "notification consumer: append tool call failed"); continue; }
             };
 
-            if let Err(e) = chat_llm_tools::complete(&hub.db, tool_call_id, &result_json).await {
+            if let Err(e) = chat_llm_tools::complete(&hub.db, tool_call_id, &result_json, "string").await {
                 error!(error = %e, "notification consumer: complete tool call failed"); continue;
             }
 

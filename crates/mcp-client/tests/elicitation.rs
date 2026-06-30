@@ -16,6 +16,7 @@ use mcp_client::config::{McpServerConfig, McpTransport};
 use mcp_client::server::{
     ElicitationAction, ElicitationHandler, ElicitationReply, ElicitationRequest, McpServer,
 };
+use mcp_client::McpCallResult;
 
 const FAKE_SERVER: &str = r#"
 import sys, json
@@ -119,7 +120,11 @@ async fn elicitation_roundtrip_returns_secret_to_server() {
         .await
         .expect("tool call should succeed");
 
-    assert_eq!(result, "got:hunter2");
+    // The fake server returns text content (no structuredContent) → Text variant.
+    match result {
+        McpCallResult::Text(s) => assert_eq!(s, "got:hunter2"),
+        other => panic!("expected Text, got {other:?}"),
+    }
 
     let _ = std::fs::remove_file(&script_path);
 }

@@ -59,6 +59,68 @@ them available for diagnostics via `RUST_LOG=mcp_client=debug`.
 
 ---
 
+## Protocol version, header & pagination
+
+**Protocol version** is a single shared constant — `PROTOCOL_VERSION` in
+`crates/mcp-client/src/lib.rs` (currently **`2025-11-25`**, the revision Skald
+targets). Both transports advertise it in their `initialize` request, so they can
+never drift apart. **Capabilities are per-transport**, not shared: stdio declares
+`{ "elicitation": {} }` (form mode — see Elicitation below); HTTP declares `{}`
+because it does not service the `ElicitationHandler` (stdio-only) and must not
+claim a capability it can't honour.
+
+**Version negotiation is tolerant.** Skald reads `protocolVersion` from the
+`initialize` response and, if the server negotiates a different (older) version,
+logs a `warn!` and proceeds rather than disconnecting.
+
+**`MCP-Protocol-Version` header (HTTP only).** Per the Streamable HTTP spec, every
+*post-initialize* request must carry `MCP-Protocol-Version: <negotiated>`. The HTTP
+transport captures the negotiated version into `protocol_version: Mutex<Option<String>>`
+(mirroring how `session_id` is captured) and `request_headers()` injects it on every
+`request`/`notify`. It is `None` only during the `initialize` call itself, so the
+header is naturally omitted there (the spec scopes it to post-initialize requests).
+
+**`tools/list` pagination.** Both transports follow the cursor: `tools/list` is
+requested with `{ "cursor": <nextCursor> }` until the response omits `nextCursor`,
+accumulating every page (previously only the first page was read, silently
+truncating large servers). A `MAX_TOOL_PAGES` (50) cap guards against a server that
+never clears the cursor. The per-tool field mapping lives in one place,
+`McpTool::from_json`, shared by both transports.
+
+---
+
+## Structured tool results
+
+MCP tools with an `outputSchema` return `structuredContent` (a JSON object) in
+addition to (or instead of) text. Skald preserves the type end-to-end instead of
+flattening everything to a string:
+
+- `McpCallResult` (`crates/mcp-client/src/lib.rs`) — the transport-level result:
+  `Text(String)` or `Json(Value)`. `extract_call_result` **prefers
+  `structuredContent`** when present (canonical per spec) and falls back to the
+  joined `text` items — which also fixes the silent empty-result case for servers
+  that return only `structuredContent` without the recommended text mirror.
+  > Tradeoff: when a server returns *both* a text mirror and `structuredContent`,
+  > the LLM sees the (compact) JSON, not the text. With a single `result` column +
+  > a type tag this is the correct one-representation choice (JSON is lossless and
+  > LLM-readable; the mirror is usually just `JSON.stringify` of the same object).
+- `McpManager::call` maps `McpCallResult` → `ToolResult` (`crates/core-api/src/tool.rs`),
+  the host-side equivalent (`Text`/`Json`). `ToolResult::to_wire()` is the string
+  persisted in `chat_llm_tools.result` and replayed to the LLM (Json → compact JSON
+  string); `ToolResult::kind()` is the `"string"`/`"json"` tag.
+- The tag is persisted in `chat_llm_tools.result_type` (schema **v19**, `DEFAULT
+  'string'`, `CHECK IN ('string','json')`) and sent to the frontend both live
+  (`ServerEvent::ToolDone.result_type`) and on history replay / approval-resolve
+  (`/api/sessions` items + `ResolveToolResponse`).
+- Frontend: `copilot-render.js` renders a `result_type === 'json'` result as
+  pretty-printed JSON (`.copilot-tool-pre--json`); everything else stays plain text.
+
+`McpTool` also captures `title`, `output_schema`, and `annotations` (2025-06-18+).
+These are stored but **not yet** validated/surfaced (output-schema validation,
+`readOnlyHint`/`destructiveHint` UI hints are future work).
+
+---
+
 ## Tool Naming Convention
 
 MCP tools are exposed to the LLM as **`mcp__<server_name>__<tool_name>`**.
@@ -215,8 +277,11 @@ request, distinct from the unsolicited notifications above. Primary use case: th
 SSH MCP asking for a sudo password on demand (see `data/mcp_ssh.md`). The value
 never reaches the LLM, is never logged, and is never persisted.
 
-Skald advertises the capability in `initialize` (`"capabilities": { "elicitation": {} }`,
-`protocolVersion` `2025-06-18`) and surfaces requests in the Agent Inbox.
+Skald advertises the capability on the **stdio** transport's `initialize`
+(`"capabilities": { "elicitation": {} }`) and surfaces requests in the Agent Inbox.
+The `protocolVersion` is the shared `PROTOCOL_VERSION` const (see *Protocol version,
+header & pagination*); `{ "elicitation": {} }` is form mode, which is what Skald
+supports (URL-mode elicitation, new in 2025-11-25, is not yet handled).
 
 ### Elicitation protocol
 
@@ -387,6 +452,9 @@ Sub-agents that don't include `<!-- MCP_LIST -->` in their `AGENT.md` receive no
 ## When to Update This File
 
 - A new transport type is added
+- `PROTOCOL_VERSION` is bumped, the `MCP-Protocol-Version` header logic changes, or version-negotiation handling changes
+- `tools/list` pagination (cursor loop, `MAX_TOOL_PAGES`) or `McpTool::from_json` changes
+- The structured-result pipeline changes (`McpCallResult`/`ToolResult`, `result_type` column/event, `extract_call_result` preference, or the frontend JSON rendering)
 - The tool naming convention changes
 - `SERVER_START_TIMEOUT_SECS` changes
 - `register_mcp` tool parameters change (schema, required fields, description, friendly_name)

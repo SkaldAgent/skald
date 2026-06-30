@@ -2,12 +2,15 @@ use sqlx::SqlitePool;
 
 #[derive(Debug, Clone)]
 pub struct LlmToolCall {
-    pub id:         i64,
-    pub message_id: i64,
-    pub name:       String,
-    pub arguments:  Option<String>,
-    pub result:     Option<String>,
-    pub status:     String,
+    pub id:          i64,
+    pub message_id:  i64,
+    pub name:        String,
+    pub arguments:   Option<String>,
+    pub result:      Option<String>,
+    /// Result type tag: `"string"` (plain text, default) or `"json"` (structured
+    /// payload, e.g. MCP `structuredContent`). Drives frontend rendering.
+    pub result_type: String,
+    pub status:      String,
 }
 
 /// Inserts a tool call in `running` state and returns its id.
@@ -40,11 +43,12 @@ pub async fn set_approval_pending(pool: &SqlitePool, id: i64) -> anyhow::Result<
     Ok(())
 }
 
-pub async fn complete(pool: &SqlitePool, id: i64, result: &str) -> anyhow::Result<()> {
+pub async fn complete(pool: &SqlitePool, id: i64, result: &str, result_type: &str) -> anyhow::Result<()> {
     sqlx::query(
-        "UPDATE chat_llm_tools SET result = ?, status = 'done' WHERE id = ?",
+        "UPDATE chat_llm_tools SET result = ?, result_type = ?, status = 'done' WHERE id = ?",
     )
     .bind(result)
+    .bind(result_type)
     .bind(id)
     .execute(pool)
     .await?;
@@ -98,8 +102,8 @@ pub async fn pending_for_stack(
     pool:             &SqlitePool,
     session_stack_id: i64,
 ) -> anyhow::Result<Vec<LlmToolCall>> {
-    let rows = sqlx::query_as::<_, (i64, i64, String, Option<String>, Option<String>, String)>(
-        "SELECT t.id, t.message_id, t.name, t.arguments, t.result, t.status
+    let rows = sqlx::query_as::<_, (i64, i64, String, Option<String>, Option<String>, String, String)>(
+        "SELECT t.id, t.message_id, t.name, t.arguments, t.result, t.result_type, t.status
          FROM   chat_llm_tools t
          JOIN   chat_history h ON t.message_id = h.id
          WHERE  h.session_stack_id = ?
@@ -118,8 +122,8 @@ pub async fn for_message(
     pool:       &SqlitePool,
     message_id: i64,
 ) -> anyhow::Result<Vec<LlmToolCall>> {
-    let rows = sqlx::query_as::<_, (i64, i64, String, Option<String>, Option<String>, String)>(
-        "SELECT id, message_id, name, arguments, result, status
+    let rows = sqlx::query_as::<_, (i64, i64, String, Option<String>, Option<String>, String, String)>(
+        "SELECT id, message_id, name, arguments, result, result_type, status
          FROM   chat_llm_tools
          WHERE  message_id = ?
          ORDER  BY id ASC",
@@ -132,9 +136,9 @@ pub async fn for_message(
 }
 
 fn row_to_tool(
-    (id, message_id, name, arguments, result, status): (
-        i64, i64, String, Option<String>, Option<String>, String,
+    (id, message_id, name, arguments, result, result_type, status): (
+        i64, i64, String, Option<String>, Option<String>, String, String,
     ),
 ) -> LlmToolCall {
-    LlmToolCall { id, message_id, name, arguments, result, status }
+    LlmToolCall { id, message_id, name, arguments, result, result_type, status }
 }

@@ -6,7 +6,7 @@ use tracing::{error, info, warn};
 use crate::core::approval::GateResult;
 use crate::core::db::{chat_history, chat_llm_tools, chat_sessions_stack};
 use crate::core::events::ServerEvent;
-use crate::core::tools::{drive_execution, ExecutionOutcome, ToolDescriptionLength, tool_names as tn};
+use crate::core::tools::{drive_execution, ExecutionOutcome, ToolDescriptionLength, ToolResult, tool_names as tn};
 
 use super::{ApprovalDecision, ChatSessionHandler, TurnOutcome};
 use super::interface_tools::{AgentRunConfig, InterfaceTool};
@@ -15,11 +15,11 @@ impl ChatSessionHandler {
     /// Dispatches a single tool call by name+args without going through the LLM loop.
     /// Used by the REST `resolve` endpoint and by `resume_pending_tools`.
     /// Does NOT update the DB — caller is responsible for `complete` / `fail`.
-    pub async fn execute_tool(&self, name: &str, args: Value) -> anyhow::Result<String> {
+    pub async fn execute_tool(&self, name: &str, args: Value) -> anyhow::Result<ToolResult> {
         if let Some((srv, mcp_tool)) = crate::core::mcp::parse_mcp_tool_name(name) {
             return self.mcp.call(srv, mcp_tool, args).await;
         }
-        self.tools.dispatch(name, args).await
+        self.tools.dispatch(name, args).await.map(ToolResult::Text)
     }
 
     /// Resumes the LLM loop for the current session WITHOUT appending a new user message.
@@ -104,7 +104,7 @@ impl ChatSessionHandler {
             if is_error {
                 chat_llm_tools::fail(pool, parent_tool_call_id, &result_str).await?;
             } else {
-                chat_llm_tools::complete(pool, parent_tool_call_id, &result_str).await?;
+                chat_llm_tools::complete(pool, parent_tool_call_id, &result_str, "string").await?;
             }
 
             // Terminate the child stack so active_for_session() returns the parent next.
@@ -120,6 +120,7 @@ impl ChatSessionHandler {
                 tx.send(ServerEvent::ToolDone {
                     tool_call_id: parent_tool_call_id,
                     result: result_str,
+                    result_type: "string".to_string(),
                 }).await.ok();
             }
 
@@ -234,8 +235,8 @@ impl ChatSessionHandler {
                 let result = self.dispatch_ask_user_clarification(tc.id, &args, tx).await;
                 match result {
                     Ok(answer) => {
-                        chat_llm_tools::complete(pool, tc.id, &answer).await?;
-                        tx.send(ServerEvent::ToolDone { tool_call_id: tc.id, result: answer }).await.ok();
+                        chat_llm_tools::complete(pool, tc.id, &answer, "string").await?;
+                        tx.send(ServerEvent::ToolDone { tool_call_id: tc.id, result: answer, result_type: "string".to_string() }).await.ok();
                     }
                     Err(e) if matches!(e.downcast_ref::<super::AgentFlowSignal>(), Some(super::AgentFlowSignal::QuestionChannelClosed)) => {
                         // WS disconnected again mid-resume. Tool stays 'pending' — next resume re-asks.
@@ -319,10 +320,11 @@ impl ChatSessionHandler {
             // `restart` calls process::exit and never returns — mark done first.
             if tc.name == tn::RESTART {
                 info!(session_id = self.session_id, tool_call_id = tc.id, "restart approved (resume) — marking done then exiting");
-                chat_llm_tools::complete(pool, tc.id, "Riavvio avviato.").await?;
+                chat_llm_tools::complete(pool, tc.id, "Riavvio avviato.", "string").await?;
                 tx.send(ServerEvent::ToolDone {
                     tool_call_id: tc.id,
                     result: "Riavvio avviato.".to_string(),
+                    result_type: "string".to_string(),
                 }).await.ok();
                 // Use _exit() to skip C atexit handlers (e.g. Metal GPU cleanup in
                 // whisper-rs/ggml, which aborts with SIGABRT and yields exit code 134
@@ -339,9 +341,11 @@ impl ChatSessionHandler {
             };
             match outcome {
                 ExecutionOutcome::Completed(result) => {
-                    chat_llm_tools::complete(pool, tc.id, &result).await?;
+                    let wire = result.to_wire();
+                    let kind = result.kind();
+                    chat_llm_tools::complete(pool, tc.id, &wire, kind).await?;
                     tx.send(ServerEvent::ToolDone {
-                        tool_call_id: tc.id, result,
+                        tool_call_id: tc.id, result: wire, result_type: kind.to_string(),
                     }).await.ok();
                 }
                 ExecutionOutcome::Failed(msg) => {

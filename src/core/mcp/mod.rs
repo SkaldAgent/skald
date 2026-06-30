@@ -9,9 +9,11 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use crate::core::tools::ToolResult;
+
 pub use mcp_client::{
     ElicitationHandler,
-    McpServerClient, McpServerConfig, McpServerInfo, McpServerStatus, McpTool, McpTransport as McpTransportKind,
+    McpCallResult, McpServerClient, McpServerConfig, McpServerInfo, McpServerStatus, McpTool, McpTransport as McpTransportKind,
     parse_mcp_tool_name,
     http_server::McpHttpServer,
     server::{McpNotification, McpServer},
@@ -277,11 +279,14 @@ impl McpManager {
             .collect()
     }
 
-    pub async fn call(&self, server: &str, tool: &str, args: Value) -> Result<String> {
+    pub async fn call(&self, server: &str, tool: &str, args: Value) -> Result<ToolResult> {
         let s = self.servers.read().unwrap()
             .get(server)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("MCP server '{server}' not found"))?;
-        s.call_tool(tool, args).await
+        match s.call_tool(tool, args).await? {
+            McpCallResult::Text(t) => Ok(ToolResult::Text(t)),
+            McpCallResult::Json(v) => Ok(ToolResult::Json(v)),
+        }
     }
 }

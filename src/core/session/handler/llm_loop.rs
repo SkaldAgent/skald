@@ -12,7 +12,7 @@ use crate::core::db::{chat_history, chat_llm_tools};
 use crate::core::events::ServerEvent;
 use crate::core::tools::{
     drive_execution, is_file_read_tool, is_file_write_tool, ExecutionOutcome,
-    SimpleExecution, ToolDescriptionLength, ToolExecution,
+    SimpleExecution, ToolDescriptionLength, ToolExecution, ToolResult,
 };
 use crate::core::run_context::RunContext;
 
@@ -335,8 +335,8 @@ impl ChatSessionHandler {
                         // so it doesn't reappear as `pending` after the supervisor relaunches.
                         if call.name == tn::RESTART {
                             info!(session_id = self.session_id, tool_call_id, "restart approved — marking done then exiting");
-                            chat_llm_tools::complete(pool, tool_call_id, "Riavvio avviato.").await?;
-                            tx.send(ServerEvent::ToolDone { tool_call_id, result: "Riavvio avviato.".to_string() }).await.ok();
+                            chat_llm_tools::complete(pool, tool_call_id, "Riavvio avviato.", "string").await?;
+                            tx.send(ServerEvent::ToolDone { tool_call_id, result: "Riavvio avviato.".to_string(), result_type: "string".to_string() }).await.ok();
                             // Use _exit() to skip C atexit handlers (e.g. Metal GPU cleanup in
                             // whisper-rs/ggml, which aborts with SIGABRT and yields exit code 134
                             // instead of 255 — breaking the run.sh restart supervisor).
@@ -360,7 +360,7 @@ impl ChatSessionHandler {
                             plain_outcome(self.dispatch_write_todos(&effective_args).await)
                         } else if call.name == tn::ASK_USER_CLARIFICATION {
                             match self.dispatch_ask_user_clarification(tool_call_id, &effective_args, tx).await {
-                                Ok(answer) => ExecutionOutcome::Completed(answer),
+                                Ok(answer) => ExecutionOutcome::Completed(ToolResult::Text(answer)),
                                 Err(err) => {
                                     // WS disconnected while waiting for a clarification answer.
                                     // Tool stays 'pending' in DB — resume_pending_tools re-dispatches on reconnect.
@@ -375,7 +375,7 @@ impl ChatSessionHandler {
                             // Defensive stub: if the LLM somehow calls this itself, return a hint.
                             // Real delivery is via inject_async_result (synthetic message from the system).
                             let task_id = effective_args["task_id"].as_i64().unwrap_or(0);
-                            ExecutionOutcome::Completed(format!(r#"{{"status":"not_ready","task_id":{task_id},"message":"This tool is invoked by the system, not by you. Do not call it again — the result will arrive automatically as a new message in this conversation."}}"#))
+                            ExecutionOutcome::Completed(ToolResult::Text(format!(r#"{{"status":"not_ready","task_id":{task_id},"message":"This tool is invoked by the system, not by you. Do not call it again — the result will arrive automatically as a new message in this conversation."}}"#)))
                         } else {
                             // Unified cancellable path. The execution owns its
                             // in-flight state and its own stop(); on /stop the work
@@ -389,19 +389,23 @@ impl ChatSessionHandler {
 
                         match outcome {
                             ExecutionOutcome::Completed(result) => {
-                                debug!(session_id = self.session_id, tool = %call.name, tool_call_id, result_len = result.len(), "tool done");
-                                chat_llm_tools::complete(pool, tool_call_id, &result).await?;
+                                let wire = result.to_wire();
+                                let kind = result.kind();
+                                debug!(session_id = self.session_id, tool = %call.name, tool_call_id, result_len = wire.len(), "tool done");
+                                chat_llm_tools::complete(pool, tool_call_id, &wire, kind).await?;
                                 if is_file_write_tool(&call.name) {
                                     if let Some(p) = effective_args["path"].as_str() {
                                         let path = crate::core::approval::normalize_path(p);
                                         tx.send(ServerEvent::FileChanged { path }).await.ok();
                                     }
                                 }
-                                tx.send(ServerEvent::ToolDone { tool_call_id, result: result.clone() }).await.ok();
+                                tx.send(ServerEvent::ToolDone {
+                                    tool_call_id, result: wire.clone(), result_type: kind.to_string(),
+                                }).await.ok();
                                 all_tool_calls.push(ToolCallEvent {
                                     name:      call.name.clone(),
                                     arguments: Some(serde_json::to_string(&effective_args).unwrap_or_default()),
-                                    result:    Some(result),
+                                    result:    Some(wire),
                                     status:    "done".to_string(),
                                 });
                             }
@@ -449,7 +453,10 @@ impl ChatSessionHandler {
     ) -> Option<Box<dyn ToolExecution + 'a>> {
         // Interface tools (closures injected per-interface, e.g. show_mcp_tools).
         if let Some(tool) = config.interface_tools.iter().find(|t| t.name() == name) {
-            return Some(Box::new(SimpleExecution::new((tool.handler)(args))));
+            let handler = std::sync::Arc::clone(&tool.handler);
+            return Some(Box::new(SimpleExecution::new(
+                Box::pin(async move { handler(args).await.map(ToolResult::Text) }),
+            )));
         }
         // Memory + image tools (registered ad-hoc on the config).
         if let Some(tool) = config.memory_tools.iter().find(|t| t.name() == name) {
@@ -463,7 +470,7 @@ impl ChatSessionHandler {
             let mcp      = std::sync::Arc::clone(&self.mcp);
             let srv      = srv.to_string();
             let mcp_tool = mcp_tool.to_string();
-            let fut: std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send>> =
+            let fut: std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<ToolResult>> + Send>> =
                 Box::pin(async move { mcp.call(&srv, &mcp_tool, args).await });
             return Some(Box::new(SimpleExecution::new(fut)));
         }
@@ -478,7 +485,7 @@ impl ChatSessionHandler {
 /// complete or fail — never `Cancelled`.
 fn plain_outcome(result: anyhow::Result<String>) -> ExecutionOutcome {
     match result {
-        Ok(s)  => ExecutionOutcome::Completed(s),
+        Ok(s)  => ExecutionOutcome::Completed(ToolResult::Text(s)),
         Err(e) => ExecutionOutcome::Failed(e.to_string()),
     }
 }

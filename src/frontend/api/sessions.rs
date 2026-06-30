@@ -104,6 +104,9 @@ pub struct ResolveToolResponse {
     pub tool_call_id: i64,
     pub status:       String,
     pub result:       Option<String>,
+    /// Result type tag (`"string"` | `"json"`) so the frontend keeps rich JSON
+    /// rendering after resolving an approval, matching the live `ToolDone` event.
+    pub result_type:  String,
 }
 
 /// Approve or reject a `pending` tool call from an interrupted session.
@@ -159,12 +162,13 @@ pub async fn web_resolve_tool(
             tool_call_id: tc_id,
             status:       "rejected".to_string(),
             result:       Some(msg),
+            result_type:  "string".to_string(),
         }));
     }
 
     // `restart` calls process::exit — mark done in DB first.
     if tc_name == tn::RESTART {
-        chat_llm_tools::complete(&skald.db, tc_id, "Riavvio avviato.").await?;
+        chat_llm_tools::complete(&skald.db, tc_id, "Riavvio avviato.", "string").await?;
         // Use _exit() to skip C atexit handlers (e.g. Metal GPU cleanup in
         // whisper-rs/ggml, which aborts with SIGABRT and yields exit code 134
         // instead of 255 — breaking the run.sh restart supervisor).
@@ -180,6 +184,7 @@ pub async fn web_resolve_tool(
             tool_call_id: tc_id,
             status:       "running".to_string(),
             result:       None,
+            result_type:  "string".to_string(),
         }));
     }
 
@@ -187,11 +192,14 @@ pub async fn web_resolve_tool(
     let handler = skald.chat_hub.session_handler("web").await?;
     match handler.execute_tool(&tc_name, args).await {
         Ok(result) => {
-            chat_llm_tools::complete(&skald.db, tc_id, &result).await?;
+            let wire = result.to_wire();
+            let kind = result.kind();
+            chat_llm_tools::complete(&skald.db, tc_id, &wire, kind).await?;
             Ok(Json(ResolveToolResponse {
                 tool_call_id: tc_id,
                 status:       "done".to_string(),
-                result:       Some(result),
+                result:       Some(wire),
+                result_type:  kind.to_string(),
             }))
         }
         Err(e) => {
@@ -404,6 +412,7 @@ fn build_debug_items<'a>(
                                 "arguments":    args,
                                 "status":       status,
                                 "result":       result,
+                                "result_type":  tc.result_type,
                                 "error":        error,
                             }));
 
@@ -513,6 +522,7 @@ fn build_items<'a>(
                                 "arguments":    args,
                                 "status":       status,
                                 "result":       result,
+                                "result_type":  tc.result_type,
                                 "error":        error,
                             }));
 

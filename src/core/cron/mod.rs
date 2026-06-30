@@ -555,7 +555,7 @@ async fn inject_async_result(
         Err(e)  => { error!("inject_async_result: append tool call failed: {e}"); return; }
     };
 
-    if let Err(e) = crate::core::db::chat_llm_tools::complete(pool, tool_call_id, &result_json).await {
+    if let Err(e) = crate::core::db::chat_llm_tools::complete(pool, tool_call_id, &result_json, "string").await {
         error!("inject_async_result: complete tool call failed: {e}"); return;
     }
 
