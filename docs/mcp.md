@@ -208,6 +208,100 @@ Start a daemon polling thread in `main()` before entering the MCP serve loop. Th
 
 ---
 
+## Elicitation — server-initiated input (spec 2025-06-18)
+
+An MCP server can ask the user for input **during** a tool call — a server→client
+request, distinct from the unsolicited notifications above. Primary use case: the
+SSH MCP asking for a sudo password on demand (see `data/mcp_ssh.md`). The value
+never reaches the LLM, is never logged, and is never persisted.
+
+Skald advertises the capability in `initialize` (`"capabilities": { "elicitation": {} }`,
+`protocolVersion` `2025-06-18`) and surfaces requests in the Agent Inbox.
+
+### Elicitation protocol
+
+A server→client request has **both** `method` and `id`:
+
+```json
+{"jsonrpc":"2.0","id":"e1","method":"elicitation/create","params":{
+  "message":"Enter sudo password",
+  "requestedSchema":{"type":"object","properties":{
+    "password":{"type":"string","format":"password"}}}}}
+```
+
+Skald replies on the same stdin: `{action: "accept"|"decline"|"cancel", content?: {…}}`.
+
+### Elicitation flow
+
+```text
+MCP server writes elicitation/create (method + id) to stdout
+  → McpServer reader loop routes it to handle_server_request (BEFORE the id/response
+    branch, since it has both method and id) and spawns a task (the user may take minutes)
+  → ElicitationHandler bridge (src/core/elicitation) → ElicitationManager::register
+  → ServerEvent::ElicitationRequested → Agent Inbox card ("Secrets" section)
+  → user enters a value (masked if sensitive) and confirms / rejects
+  → POST /api/inbox/elicitations/{id}/resolve → ElicitationManager::resolve
+  → bridge maps the outcome → reader loop writes the JSON-RPC reply to the server's stdin
+```
+
+While an elicitation is in flight, the underlying `tools/call` does **not** time out
+(`pending_elicitations` counter re-arms the call timeout). On a 5-min user-response
+deadline, channel drop, or `decline`/`cancel`, the server receives a non-accept reply.
+
+The schema is **v1-scoped**: a single field (masked when `format: password`,
+`writeOnly: true`, or the name contains `password`/`passphrase`/`secret`/`token`),
+or an empty `properties` ⇒ a yes/no confirmation. Elicitation is **stdio-only**.
+
+A dependency-free demo server lives at `scripts/elicitation_demo_mcp.py`.
+
+---
+
+## SSH MCP Server
+
+`scripts/ssh_mcp_server.py` is a stdio MCP server (depends on `paramiko>=3.4`) that
+operates on remote hosts. Its filesystem tools intentionally produce the **same output
+format** as Skald's native fs tools (`read_file`, `list_files`, `grep_files`, `edit_file`,
+`replace_lines`) so the LLM treats local and remote uniformly — the only difference is a
+leading `alias` argument. Full design notes: `data/mcp_ssh.md`.
+
+**13 tools** (bare names; Skald prefixes `mcp__ssh__`):
+
+- Aliases: `list_aliases`, `add_alias`, `remove_alias`.
+- Filesystem (SFTP, login user): `read_file`, `list_files`, `grep_files`, `edit_file`, `replace_lines`.
+- Exec/transfer: `exec` (with `sudo`/`sudo_user`), `upload`, `download` (both recursive on directories).
+- Diagnostics: `sysinfo`, `systemd`.
+
+**Aliases** live in `secrets/ssh_aliases.json` (auto-managed by the tools, written
+atomically at `0600`, gitignored). The file holds **no secrets** (no password, ever).
+Host keys are checked against `~/.ssh/known_hosts`; unknown hosts are rejected unless the
+alias was added with `accept_new_host_key=true`. Connections are pooled per alias with
+lazy TTL eviction (`SSH_MCP_POOL_TTL`, default 300s).
+
+**Login auth** (per-alias `auth`, default `key`):
+
+- `key` → SSH key / ssh-agent. If the chosen private key is encrypted, its passphrase is
+  requested **lazily** via elicitation (only when paramiko reports the key needs one).
+  `SSH_MCP_KEY_PASSPHRASE` still works as a non-interactive override.
+- `password` → login password requested on demand via **elicitation** (a masked field in
+  the Agent Inbox); agent/key probing is skipped so paramiko goes straight to the password.
+
+Elicited login secrets are cached only in the server's RAM (`SSH_MCP_LOGIN_PW_TTL`, default
+300s), never sent to the LLM, never written to disk, and dropped on an authentication
+failure so the next attempt re-prompts.
+
+**sudo** (per-alias `sudo.method`, default `prompt`):
+
+- `nopasswd` → `sudo -n`: non-interactive, fails fast if NOPASSWD isn't configured (no hung channel).
+- `prompt` → `sudo -S`: the password is requested on demand via **elicitation** (see above),
+  a masked single field; fed to sudo's stdin, cached only in the server's RAM
+  (`SSH_MCP_SUDO_PW_TTL`, default 300s), never sent to the LLM, never written to disk.
+- `none`: sudo disabled.
+
+SFTP tools run as the login user (no root). For privileged writes the LLM is told to use
+`exec(..., sudo=true)` with `tee`/`install`.
+
+Register like any stdio server: `command: python3`, `args: ["scripts/ssh_mcp_server.py"]`.
+
 ---
 
 ## Lazy MCP Tool Loading
@@ -298,5 +392,7 @@ Sub-agents that don't include `<!-- MCP_LIST -->` in their `AGENT.md` receive no
 - `register_mcp` tool parameters change (schema, required fields, description, friendly_name)
 - `list_items` (type=mcp) return format changes (McpServerInfo fields)
 - A new notification source is implemented
+- The elicitation flow changes (capability/protocol version, schema parsing, the resolve route, or the in-flight timeout behaviour)
+- The SSH MCP server changes (tools, alias schema, sudo methods, or pooling/host-key behaviour in `scripts/ssh_mcp_server.py`)
 - Lazy loading logic changes (`build_agent_config`, `dispatch_sub_agent`, `show_mcp_tools`, grant tables)
 - `ClientMessage` loses or gains fields relevant to MCP

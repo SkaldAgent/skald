@@ -3,11 +3,16 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::Serialize;
 
-use core_api::inbox::{InboxApi, InboxApprovalItem, InboxClarificationItem, InboxSnapshot};
+use serde_json::Value;
+
+use core_api::inbox::{
+    InboxApi, InboxApprovalItem, InboxClarificationItem, InboxElicitationItem, InboxSnapshot,
+};
 use core_api::tool::ToolDescriptionLength;
 
 use crate::core::approval::{ApprovalManager, PendingApprovalInfo};
 use crate::core::clarification::{ClarificationManager, PendingClarificationInfo};
+use crate::core::elicitation::{ElicitationManager, ElicitationOutcome, PendingElicitationInfo};
 use crate::core::tools::ToolRegistry;
 
 #[derive(Serialize)]
@@ -15,12 +20,14 @@ pub struct InboxItems {
     pub total:          usize,
     pub approvals:      Vec<PendingApprovalInfo>,
     pub clarifications: Vec<PendingClarificationInfo>,
+    pub elicitations:   Vec<PendingElicitationInfo>,
 }
 
 #[derive(Clone)]
 pub struct Inbox {
     pub approval:  Arc<ApprovalManager>,
     clarification: Arc<ClarificationManager>,
+    elicitation:   Arc<ElicitationManager>,
     /// Used to humanise approval tool calls (`describe`) when building snapshots.
     tools:         Arc<ToolRegistry>,
 }
@@ -29,16 +36,18 @@ impl Inbox {
     pub fn new(
         approval:      Arc<ApprovalManager>,
         clarification: Arc<ClarificationManager>,
+        elicitation:   Arc<ElicitationManager>,
         tools:         Arc<ToolRegistry>,
     ) -> Self {
-        Self { approval, clarification, tools }
+        Self { approval, clarification, elicitation, tools }
     }
 
     pub async fn list_pending(&self) -> InboxItems {
         let approvals      = self.approval.list_pending().await;
         let clarifications = self.clarification.list_pending().await;
-        let total          = approvals.len() + clarifications.len();
-        InboxItems { total, approvals, clarifications }
+        let elicitations   = self.elicitation.list_pending().await;
+        let total          = approvals.len() + clarifications.len() + elicitations.len();
+        InboxItems { total, approvals, clarifications, elicitations }
     }
 
     pub async fn approve(&self, request_id: i64) {
@@ -51,6 +60,10 @@ impl Inbox {
 
     pub async fn answer(&self, request_id: i64, answer: String) -> bool {
         self.clarification.resolve(request_id, answer).await
+    }
+
+    pub async fn resolve_elicitation(&self, request_id: i64, action: String, content: Option<Value>) -> bool {
+        self.elicitation.resolve(request_id, ElicitationOutcome { action, content }).await
     }
 }
 
@@ -86,7 +99,16 @@ impl InboxApi for Inbox {
             suggested_answers: c.suggested_answers,
             created_at:        c.created_at,
         }).collect();
-        InboxSnapshot { total: items.total, approvals, clarifications }
+        let elicitations = items.elicitations.into_iter().map(|e| InboxElicitationItem {
+            request_id:      e.request_id,
+            server_name:     e.server_name,
+            message:         e.message,
+            field_name:      e.field_name,
+            sensitive:       e.sensitive,
+            is_confirmation: e.is_confirmation,
+            created_at:      e.created_at,
+        }).collect();
+        InboxSnapshot { total: items.total, approvals, clarifications, elicitations }
     }
 
     async fn approve(&self, request_id: i64) {
@@ -99,5 +121,9 @@ impl InboxApi for Inbox {
 
     async fn answer(&self, request_id: i64, answer: String) -> bool {
         self.answer(request_id, answer).await
+    }
+
+    async fn resolve_elicitation(&self, request_id: i64, action: String, content: Option<Value>) -> bool {
+        self.resolve_elicitation(request_id, action, content).await
     }
 }

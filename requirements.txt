@@ -5,6 +5,9 @@ googlemaps
 requests
 httpx
 
+# SSH MCP server (scripts/ssh_mcp_server.py)
+paramiko>=3.4
+
 # Kokoro ONNX TTS (plugin-tts-kokoro)
 kokoro-onnx
 soundfile

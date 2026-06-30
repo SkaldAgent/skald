@@ -1,6 +1,6 @@
 # Mobile Connector Plugin (`mobile-connector`)
 
-Bridges Skald's **Inbox** (approvals + clarifications) to mobile apps over the
+Bridges Skald's **Inbox** (approvals + clarifications + MCP elicitations) to mobile apps over the
 **relay**, implementing the **agent** role of the v2 relay protocol. The plugin is
 the namespace owner and the sole authority over authorized devices. Skald is
 never exposed on the internet: only this plugin connects out, and only to the
@@ -151,9 +151,10 @@ device sends the complete list including it; revoking sends it without.
 
 ## Message flows
 
-- **Inbox → clients:** the bus subscriber reacts to the four Inbox events
+- **Inbox → clients:** the bus subscriber reacts to the six Inbox events
   (`approval_requested`, `approval_resolved`, `clarification_requested`,
-  `clarification_resolved`) and routes them through the **debouncer** (see
+  `clarification_resolved`, `elicitation_requested`, `elicitation_resolved`) and
+  routes them through the **debouncer** (see
   [Delayed push](#delayed-push)) before building an `InboxSnapshot` via
   `inbox.list_pending()` and sending a sealed `inbox_update` to every Authorized
   client. Each approval
@@ -161,12 +162,16 @@ device sends the complete list including it; revoking sends it without.
   `Inbox::list_pending`) for the card/notification plus the raw `arguments`
   (untruncated) for the detail dialog — so the user sees the full `execute_cmd`
   command, not a truncated label. Each clarification carries its
-  `suggested_answers`.
+  `suggested_answers`. Each elicitation carries **only** its prompt metadata
+  (`server_name`, `message`, `field_name`, `sensitive`, `is_confirmation`) — never
+  a value; the value is supplied by the device in `elicitation_response.content`.
 - **Clients → Inbox:** inbound `message` is checked (`from` ∈ Authorized,
   nonce direction + counter > `recv_counter`), opened, and dispatched by `kind`:
   `approval_response` → `inbox.approve/reject`, `clarification_response` →
-  `inbox.answer`, `hello` → persist `device_info`, `inbox_request` → send a
-  **targeted** `inbox_update` back to `from` only (see below), `logout` → revoke.
+  `inbox.answer`, `elicitation_response` → `inbox.resolve_elicitation` (its
+  `content` may be a secret — never logged/persisted in clear), `hello` → persist
+  `device_info`, `inbox_request` → send a **targeted** `inbox_update` back to
+  `from` only (see below), `logout` → revoke.
   After any response the Inbox is re-snapshotted. `request_id` is mapped
   `string ↔ i64` (non-parsing ids are dropped). Inbox ops are idempotent by
   `request_id`.
@@ -224,14 +229,14 @@ closes active tunnels; `stop_inner` also `shutdown()`s the relay client.
 ## Delayed push
 
 A phone push is only valuable when the user is *away* from the computer. When
-they're at the chat, every approval/clarification would otherwise fire an
+they're at the chat, every approval/clarification/elicitation would otherwise fire an
 instant — and pointless — notification, since they answer on the computer within
 seconds. `DelayedNotifier` (`notifier.rs`) debounces this between the bus events
 and `broadcast_inbox()`:
 
 - **`*_requested`** arms a timer (`notify_delay_secs`, default 20s) keyed by
-  `(kind, request_id)` — approvals and clarifications use independent id
-  counters, so the kind is part of the key. If the timer elapses unresolved, the
+  `(kind, request_id)` — approvals, clarifications, and elicitations use
+  independent id counters, so the kind is part of the key. If the timer elapses unresolved, the
   key is marked *notified* and the Inbox is pushed (`broadcast_inbox`, `live=false`
   → store-and-forward / offline push).
 - **`*_resolved`** before the timer fires ⇒ the timer is cancelled and **nothing

@@ -453,7 +453,8 @@ export class HomePage extends InboxMixin(LightElement) {
     const noModels   = this._models !== null && this._models.length === 0;
     const approvals  = this._inboxData?.approvals      ?? [];
     const clarifs    = this._inboxData?.clarifications ?? [];
-    const inboxTotal = approvals.length + clarifs.length;
+    const elicits    = this._inboxData?.elicitations   ?? [];
+    const inboxTotal = approvals.length + clarifs.length + elicits.length;
 
     return html`
       <div class="home-page">

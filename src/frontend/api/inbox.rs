@@ -21,6 +21,7 @@ pub async fn list(State(skald): State<Arc<Skald>>) -> Json<Value> {
         "total":          items.total,
         "approvals":      items.approvals,
         "clarifications": items.clarifications,
+        "elicitations":   items.elicitations,
     }))
 }
 
@@ -120,5 +121,41 @@ pub async fn resolve_clarification(
         Ok(Json(json!({ "ok": true, "request_id": p.request_id })))
     } else {
         Err(ApiError::not_found("clarification request not found"))
+    }
+}
+
+// ── POST /api/inbox/elicitations/:request_id/resolve ──────────────────────────
+//
+// Resolve a server-initiated MCP elicitation. `action` is "accept"/"decline"/
+// "cancel"; on "accept", `content` carries the field values (e.g. a password).
+// The value is forwarded to the MCP server and is never logged or persisted.
+
+#[derive(Deserialize)]
+pub struct ElicitPath { pub request_id: i64 }
+
+#[derive(Deserialize)]
+pub struct ElicitBody {
+    #[serde(default = "default_elicit_action")]
+    pub action:  String,
+    #[serde(default)]
+    pub content: Option<Value>,
+}
+
+fn default_elicit_action() -> String { "decline".to_string() }
+
+pub async fn resolve_elicitation(
+    State(skald): State<Arc<Skald>>,
+    Path(p):      Path<ElicitPath>,
+    Json(body):   Json<ElicitBody>,
+) -> Result<Json<Value>, ApiError> {
+    let action = match body.action.as_str() {
+        "accept" | "decline" | "cancel" => body.action.clone(),
+        other => return Err(ApiError::bad_request(format!("invalid action: {other}"))),
+    };
+    let resolved = skald.inbox.resolve_elicitation(p.request_id, action.clone(), body.content).await;
+    if resolved {
+        Ok(Json(json!({ "ok": true, "request_id": p.request_id, "action": action })))
+    } else {
+        Err(ApiError::not_found("elicitation request not found"))
     }
 }

@@ -95,6 +95,29 @@ export const InboxMixin = (Base) => class extends Base {
     }
   }
 
+  /**
+   * Resolve a server-initiated MCP elicitation. On `accept` with a field, the
+   * input value is packed into `content` ({ [field]: value }); the secret is
+   * sent once and never echoed back into the UI. `decline`/`cancel` send no value.
+   */
+  async _resolveElicitation(item, action, inputEl) {
+    let content = null;
+    if (action === 'accept' && item.field_name) {
+      content = { [item.field_name]: inputEl ? inputEl.value : '' };
+    }
+    try {
+      const res = await fetch(`/api/inbox/elicitations/${item.request_id}/resolve`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ action, content }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      await this._loadInbox();
+    } catch (e) {
+      this._inboxError = e.message;
+    }
+  }
+
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   _toggleRaw(id) {
@@ -260,12 +283,64 @@ export const InboxMixin = (Base) => class extends Base {
     `;
   }
 
+  _renderElicitationCard(item) {
+    const masked  = item.sensitive;
+    const confirm = item.is_confirmation;
+
+    return html`
+      <div class="inbox-card elicitation-card">
+        <div class="inbox-card-header">
+          <span class="badge bg-secondary">
+            <i class="bi ${masked ? 'bi-shield-lock' : 'bi-question-circle'}"></i>
+            ${confirm ? 'Conferma' : 'Input'}
+          </span>
+          <span class="inbox-card-origin" title="${item.server_name}">${item.server_name}</span>
+          <span class="inbox-card-time">${this._fmt(item.created_at)}</span>
+        </div>
+
+        <div class="inbox-card-body">
+          <div class="inbox-question">${item.message}</div>
+
+          ${confirm ? nothing : html`
+            <div class="inbox-answer-area">
+              <input class="inbox-answer-input inbox-secret-input"
+                type="${masked ? 'password' : 'text'}"
+                autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+                placeholder="${masked ? '••••••••' : 'Value…'}"
+                @keydown=${(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    this._resolveElicitation(item, 'accept', e.target);
+                  }
+                }}>
+            </div>
+          `}
+        </div>
+
+        <div class="inbox-card-footer approval-footer">
+          <button class="btn btn-success"
+                  @click=${(e) => {
+                    const inp = e.target.closest('.inbox-card')?.querySelector('.inbox-secret-input');
+                    this._resolveElicitation(item, 'accept', inp);
+                  }}>
+            <i class="bi bi-check-lg"></i> ${confirm ? 'Conferma' : 'Invia'}
+          </button>
+          <button class="btn btn-outline-danger"
+                  @click=${() => this._resolveElicitation(item, 'decline', null)}>
+            <i class="bi bi-x-lg"></i> Rifiuta
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
   // ── Section renderer (used by both full page and home embed) ─────────────
 
   _renderInboxSection() {
     const approvals      = this._inboxData?.approvals      ?? [];
     const clarifications = this._inboxData?.clarifications ?? [];
-    const total          = approvals.length + clarifications.length;
+    const elicitations   = this._inboxData?.elicitations   ?? [];
+    const total          = approvals.length + clarifications.length + elicitations.length;
 
     return html`
       ${this._inboxError ? html`
@@ -295,6 +370,15 @@ export const InboxMixin = (Base) => class extends Base {
               <span class="section-line"></span>
             </div>
             ${clarifications.map(item => this._renderClarificationCard(item))}
+          ` : nothing}
+
+          ${elicitations.length > 0 ? html`
+            <div class="inbox-section-header">
+              <h6>Secrets</h6>
+              <span class="badge bg-secondary">${elicitations.length}</span>
+              <span class="section-line"></span>
+            </div>
+            ${elicitations.map(item => this._renderElicitationCard(item))}
           ` : nothing}
         </div>
       `}

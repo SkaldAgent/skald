@@ -170,6 +170,7 @@ To add a new extracted crate: create `crates/<name>/`, add it to the `[workspace
 ### MCP (Model Context Protocol)
 
 - [mcp.md](mcp.md) — McpManager, transports, naming convention, enable/disable, integration
+- [mcp/specs/index.md](mcp/specs/index.md) — Specification reference: one file per official MCP spec revision (2024-11-05 Legacy → 2025-06-18 Stable → 2025-11-25 Latest Stable → 2026-07-28 draft), with a comparative feature matrix
 - [mcp/servers/gmail.md](mcp/servers/gmail.md) — Gmail read+modify MCP server (custom Python)
 - [mcp/servers/gcal.md](mcp/servers/gcal.md) — Google Calendar read-only MCP server (custom Python)
 - [mcp/servers/gmaps.md](mcp/servers/gmaps.md) — Google Maps transit/directions MCP server (custom Python)

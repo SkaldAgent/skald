@@ -190,6 +190,18 @@ pub enum ServerEvent {
     ClarificationResolved {
         request_id: i64,
     },
+    /// A server-initiated MCP elicitation entered the Inbox (e.g. an MCP server
+    /// asking for a sudo password mid tool-call). Carries only `request_id` +
+    /// `title` — never the requested value.
+    ElicitationRequested {
+        request_id: i64,
+        title:      String,
+    },
+    /// A pending elicitation was resolved (accepted / declined / cancelled).
+    /// Emitted on the global bus so all clients can update their Inbox view.
+    ElicitationResolved {
+        request_id: i64,
+    },
     /// The active session for a source was replaced (e.g. /new, /clear).
     NewSession {
         session_id: i64,
@@ -251,6 +263,8 @@ impl ServerEvent {
             Self::ApprovalResolved   { .. } => "approval_resolved",
             Self::ClarificationRequested { .. } => "clarification_requested",
             Self::ClarificationResolved  { .. } => "clarification_resolved",
+            Self::ElicitationRequested   { .. } => "elicitation_requested",
+            Self::ElicitationResolved    { .. } => "elicitation_resolved",
             Self::NewSession         { .. } => "new_session",
             Self::UserMessage        { .. } => "user_message",
             Self::TurnRunning        { .. } => "turn_running",

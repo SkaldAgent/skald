@@ -102,6 +102,12 @@ impl RelayApp {
                 self.inbox.answer(request_id, answer).await;
                 let _ = self.broadcast_inbox().await;
             }
+            ClientPayload::ElicitationResponse { request_id, action, content } => {
+                // `content` may hold a secret (SSH/sudo password): hand it straight
+                // to the Inbox; never log/persist it in clear (payloads.md §3.1).
+                self.inbox.resolve_elicitation(request_id, action, content).await;
+                let _ = self.broadcast_inbox().await;
+            }
             ClientPayload::Hello { device_info } => {
                 if let Err(e) = self.client.set_device_info(from, &device_info.to_string()).await {
                     warn!(plugin = PLUGIN_ID, error = %e, "failed to persist device_info");

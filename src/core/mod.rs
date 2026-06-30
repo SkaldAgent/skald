@@ -8,6 +8,7 @@ pub mod chat_hub;
 pub mod chatbot;
 pub mod clarification;
 pub mod compactor;
+pub mod elicitation;
 pub mod cron;
 pub mod db;
 pub mod events;

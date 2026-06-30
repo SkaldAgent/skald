@@ -51,7 +51,8 @@ export class AgentInboxPage extends InboxMixin(LightElement) {
   render() {
     const approvals      = this._inboxData?.approvals      ?? [];
     const clarifications = this._inboxData?.clarifications ?? [];
-    const total          = approvals.length + clarifications.length;
+    const elicitations   = this._inboxData?.elicitations   ?? [];
+    const total          = approvals.length + clarifications.length + elicitations.length;
 
     return html`
       <div class="page-panel">

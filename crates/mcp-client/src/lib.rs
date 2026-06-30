@@ -6,7 +6,9 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 pub use config::{McpServerConfig, McpTransport};
-pub use server::McpNotification;
+pub use server::{
+    ElicitationAction, ElicitationHandler, ElicitationReply, ElicitationRequest, McpNotification,
+};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 

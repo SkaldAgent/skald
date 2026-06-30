@@ -15,6 +15,7 @@ use super::chat_event_bus::ChatEventBus;
 use super::config_store::GlobalConfigManager;
 use super::chat_hub::ChatHub;
 use super::clarification::ClarificationManager;
+use super::elicitation::{ElicitationBridge, ElicitationManager};
 use super::inbox::Inbox;
 use super::compactor::ContextCompactor;
 use super::cron::TaskManager;
@@ -60,6 +61,7 @@ pub struct Skald {
     pub(crate) event_bus:        Arc<ChatEventBus>,
     pub memory_manager:          Arc<MemoryManager>,
     pub clarification:           Arc<ClarificationManager>,
+    pub elicitation:             Arc<ElicitationManager>,
     pub manager:                 Arc<ChatSessionManager>,
     pub catalog:                 ToolCatalog,
     pub chat_hub:                Arc<ChatHub>,
@@ -169,9 +171,10 @@ impl Skald {
         let secrets = SecretsStore::new(Arc::clone(&pool));
         info!("secrets store ready");
 
+        // MCP servers connect in the background. `initialize()` is spawned later,
+        // once the elicitation handler is wired (so stdio servers start with a
+        // handler for server-initiated `elicitation/create` requests).
         let mcp = Arc::new(McpManager::new(Arc::clone(&pool), shutdown_token.clone()));
-        let mcp_init = Arc::clone(&mcp);
-        tokio::spawn(async move { mcp_init.initialize().await; });
 
         // TaskManager is created before ToolRegistry so cron tools can
         // be registered before ChatSessionManager is built.
@@ -290,6 +293,13 @@ impl Skald {
 
         let clarification = ClarificationManager::new(event_tx.clone());
 
+        // Elicitation: wire the bridge into the MCP manager, then kick off server
+        // connections now that stdio servers can handle `elicitation/create`.
+        let elicitation = ElicitationManager::new(event_tx.clone());
+        mcp.set_elicitation_handler(ElicitationBridge::new(Arc::clone(&elicitation)));
+        let mcp_init = Arc::clone(&mcp);
+        tokio::spawn(async move { mcp_init.initialize().await; });
+
         let manager = Arc::new(ChatSessionManager::new(
             Arc::clone(&pool),
             Arc::clone(&llm_manager),
@@ -352,6 +362,7 @@ impl Skald {
         let inbox = Inbox::new(
             Arc::clone(&approval),
             Arc::clone(&clarification),
+            Arc::clone(&elicitation),
             Arc::clone(&tools),
         );
 
@@ -427,6 +438,7 @@ impl Skald {
             event_bus,
             memory_manager,
             clarification,
+            elicitation,
             manager,
             chat_hub,
             transcribe_manager,

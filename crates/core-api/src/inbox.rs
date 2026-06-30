@@ -46,12 +46,27 @@ pub struct InboxClarificationItem {
     pub created_at:        String,
 }
 
+/// One pending elicitation, surfaced to plugins (mirrors the main crate's
+/// `PendingElicitationInfo`). Holds only prompt metadata — never the value.
+#[derive(Debug, Clone, Serialize)]
+pub struct InboxElicitationItem {
+    pub request_id:      i64,
+    pub server_name:     String,
+    pub message:         String,
+    pub field_name:      Option<String>,
+    pub sensitive:       bool,
+    pub is_confirmation: bool,
+    /// ISO-8601 timestamp string (UTC).
+    pub created_at:      String,
+}
+
 /// A snapshot of all pending Inbox items.
 #[derive(Debug, Clone, Serialize)]
 pub struct InboxSnapshot {
     pub total:          usize,
     pub approvals:      Vec<InboxApprovalItem>,
     pub clarifications: Vec<InboxClarificationItem>,
+    pub elicitations:   Vec<InboxElicitationItem>,
 }
 
 /// Inbox operations available to plugins.
@@ -69,4 +84,9 @@ pub trait InboxApi: Send + Sync {
     /// Answer a pending clarification. Returns `true` if a pending entry was
     /// found and resolved, `false` otherwise (idempotent).
     async fn answer(&self, request_id: i64, answer: String) -> bool;
+
+    /// Resolve a pending MCP elicitation. `action` is `"accept"`/`"decline"`/
+    /// `"cancel"`; `content` carries the field values for `accept` (it may hold
+    /// a secret — do not log it). Returns `true` if a pending entry was found.
+    async fn resolve_elicitation(&self, request_id: i64, action: String, content: Option<Value>) -> bool;
 }

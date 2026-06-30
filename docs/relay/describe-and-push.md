@@ -88,7 +88,7 @@ Rendering notes:
 | **APNs/FCM push** | A minimal `notification` (kind §3.2 in payloads.md) with `body` = `summary` (`describe`), **no blocks/args** |
 
 Flow: the app receives the notification with the `summary` line → user taps → app opens WS and
-sends `inbox_request` ([payloads.md §4.5](payloads.md)) → receives the complete `inbox_update`
+sends `inbox_request` ([payloads.md §4.6](payloads.md)) → receives the complete `inbox_update`
 with `blocks` → shows the detail screen.
 
 ### Why (zero-trust + size)

@@ -166,6 +166,12 @@ impl MobileConnectorPlugin {
                                 ClarificationResolved { request_id } => {
                                     notifier.on_resolved((Kind::Clarification, request_id)).await;
                                 }
+                                ElicitationRequested { request_id, .. } => {
+                                    notifier.on_requested((Kind::Elicitation, request_id)).await;
+                                }
+                                ElicitationResolved { request_id } => {
+                                    notifier.on_resolved((Kind::Elicitation, request_id)).await;
+                                }
                                 _ => {}
                             },
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {

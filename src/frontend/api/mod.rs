@@ -92,6 +92,7 @@ pub fn router() -> Router<Arc<Skald>> {
         .route("/inbox",                                          get(inbox::list))
         .route("/inbox/approvals/{request_id}/resolve",           post(inbox::resolve_approval))
         .route("/inbox/clarifications/{request_id}/resolve",      post(inbox::resolve_clarification))
+        .route("/inbox/elicitations/{request_id}/resolve",        post(inbox::resolve_elicitation))
         // Approval — pending list + cross-session resolve (kept for backwards compat)
         .route("/approval/pending",             get(approval::list_pending))
         .route("/approval/pending/{request_id}/resolve", post(approval::resolve_pending))

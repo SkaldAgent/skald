@@ -72,6 +72,25 @@ pub fn build_inbox_update(snapshot: &InboxSnapshot) -> Value {
         })
         .collect();
 
+    // MCP server-initiated input requests (e.g. an SSH/sudo password). We ship
+    // only the prompt metadata — never the value; the value is supplied by the
+    // device in `elicitation_response.content` and travels E2E (payloads.md §3.1).
+    let elicitations: Vec<Value> = snapshot
+        .elicitations
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "request_id":      e.request_id.to_string(),
+                "server_name":     e.server_name,
+                "message":         e.message,
+                "field_name":      e.field_name,        // Option<String> → null if absent
+                "sensitive":       e.sensitive,
+                "is_confirmation": e.is_confirmation,
+                "created_at":      iso_to_ms(&e.created_at),
+            })
+        })
+        .collect();
+
     serde_json::json!({
         "v": 1,
         "kind": "inbox_update",
@@ -80,6 +99,7 @@ pub fn build_inbox_update(snapshot: &InboxSnapshot) -> Value {
         "badge": snapshot.total,
         "approvals": approvals,
         "clarifications": clarifications,
+        "elicitations": elicitations,
     })
 }
 
@@ -107,6 +127,10 @@ pub enum ClientPayload {
     ApprovalResponse { request_id: i64, approved: bool, reason: Option<String> },
     /// `clarification_response`.
     ClarificationResponse { request_id: i64, answer: String },
+    /// `elicitation_response`: the device's reply to an MCP elicitation. `action`
+    /// is `"accept"`/`"decline"`/`"cancel"`; `content` (present only for `accept`)
+    /// is an object keyed by `field_name` whose value may be a secret — never log it.
+    ElicitationResponse { request_id: i64, action: String, content: Option<Value> },
     /// `inbox_request`: client asks for the current Inbox snapshot (payloads.md
     /// §4.6). Sent after every `auth_ok`; the agent replies with a targeted
     /// `inbox_update`. No fields beyond the common envelope.
@@ -152,6 +176,17 @@ pub fn parse_client_payload(plaintext: &[u8]) -> ClientPayload {
                 None => ClientPayload::Unknown,
             }
         }
+        "elicitation_response" => {
+            let Some(rid) = parse_request_id(&v) else { return ClientPayload::Unknown };
+            let action = match v.get("action").and_then(Value::as_str) {
+                Some(a @ ("accept" | "decline" | "cancel")) => a.to_string(),
+                _ => return ClientPayload::Unknown,
+            };
+            // `content` is meaningful only for `accept` and must be an object
+            // (keyed by `field_name`); anything else is dropped.
+            let content = v.get("content").filter(|c| c.is_object()).cloned();
+            ClientPayload::ElicitationResponse { request_id: rid, action, content }
+        }
         "inbox_request" => ClientPayload::InboxRequest,
         "logout" => ClientPayload::Logout,
         _ => ClientPayload::Unknown,
@@ -161,4 +196,78 @@ pub fn parse_client_payload(plaintext: &[u8]) -> ClientPayload {
 /// Parse the `request_id` decimal string into an i64 (plugin.md §2).
 fn parse_request_id(v: &Value) -> Option<i64> {
     v.get("request_id").and_then(Value::as_str)?.parse::<i64>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `accept` carries the secret under `content`, keyed by `field_name`.
+    #[test]
+    fn elicitation_response_accept_with_content() {
+        let raw = br#"{
+            "v": 1, "kind": "elicitation_response", "id": "abc", "ts": 1750000000000,
+            "request_id": "123", "action": "accept",
+            "content": { "password": "hunter2" }
+        }"#;
+        match parse_client_payload(raw) {
+            ClientPayload::ElicitationResponse { request_id, action, content } => {
+                assert_eq!(request_id, 123);
+                assert_eq!(action, "accept");
+                let content = content.expect("accept must carry content");
+                assert_eq!(content["password"], "hunter2");
+            }
+            other => panic!("expected ElicitationResponse, got {other:?}"),
+        }
+    }
+
+    /// `decline`/`cancel` have no `content`; a missing object yields `None`.
+    #[test]
+    fn elicitation_response_decline_without_content() {
+        let raw = br#"{
+            "v": 1, "kind": "elicitation_response", "id": "abc", "ts": 1750000000000,
+            "request_id": "7", "action": "decline"
+        }"#;
+        match parse_client_payload(raw) {
+            ClientPayload::ElicitationResponse { request_id, action, content } => {
+                assert_eq!(request_id, 7);
+                assert_eq!(action, "decline");
+                assert!(content.is_none());
+            }
+            other => panic!("expected ElicitationResponse, got {other:?}"),
+        }
+    }
+
+    /// A non-object `content` is dropped rather than forwarded.
+    #[test]
+    fn elicitation_response_non_object_content_dropped() {
+        let raw = br#"{
+            "v": 1, "kind": "elicitation_response", "id": "abc", "ts": 1750000000000,
+            "request_id": "9", "action": "accept", "content": "not-an-object"
+        }"#;
+        match parse_client_payload(raw) {
+            ClientPayload::ElicitationResponse { content, .. } => assert!(content.is_none()),
+            other => panic!("expected ElicitationResponse, got {other:?}"),
+        }
+    }
+
+    /// An unknown `action` is rejected as `Unknown` (no resolution attempted).
+    #[test]
+    fn elicitation_response_bad_action_is_unknown() {
+        let raw = br#"{
+            "v": 1, "kind": "elicitation_response", "id": "abc", "ts": 1750000000000,
+            "request_id": "1", "action": "approve"
+        }"#;
+        assert!(matches!(parse_client_payload(raw), ClientPayload::Unknown));
+    }
+
+    /// A missing/non-string `request_id` is rejected as `Unknown`.
+    #[test]
+    fn elicitation_response_missing_request_id_is_unknown() {
+        let raw = br#"{
+            "v": 1, "kind": "elicitation_response", "id": "abc", "ts": 1750000000000,
+            "action": "accept", "content": { "x": "y" }
+        }"#;
+        assert!(matches!(parse_client_payload(raw), ClientPayload::Unknown));
+    }
 }

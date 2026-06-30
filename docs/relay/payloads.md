@@ -46,12 +46,13 @@ Common rules:
 
 | `kind` | Direction | Purpose |
 |--------|-----------|---------|
-| `inbox_update` | agent → client | Full Inbox snapshot (pending approvals + clarifications). |
+| `inbox_update` | agent → client | Full Inbox snapshot (pending approvals + clarifications + elicitations). |
 | `notification` | agent → client | Generic notification (title/body), for informational pushes. |
 | `hello` | client → agent | First message after pairing: detailed `device_info`. |
 | `inbox_request` | client → agent | Explicit Inbox snapshot request; agent responds with a **targeted** `inbox_update`. |
 | `approval_response` | client → agent | Outcome of an approval request. |
 | `clarification_response` | client → agent | Answer to a clarification. |
+| `elicitation_response` | client → agent | Reply to an MCP elicitation (carries the requested value E2E). |
 | `logout` | client → agent | Device removes itself from the namespace. |
 | `ack` | bidirectional | Delivery confirmation (optional, for reliability). |
 
@@ -92,13 +93,24 @@ realigns.
       "agent_label": "Skald",
       "created_at": 1749999991000
     }
+  ],
+  "elicitations": [
+    {
+      "request_id": "elic_5d7e…",
+      "server_name": "ssh",
+      "message": "Enter the SSH password for deploy@host",
+      "field_name": "password",
+      "sensitive": true,
+      "is_confirmation": false,
+      "created_at": 1749999992000
+    }
   ]
 }
 ```
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| `badge` | int | yes | Total pending item count (= len(approvals)+len(clarifications)). Used by the client for badge. |
+| `badge` | int | yes | Total pending item count (= len(approvals)+len(clarifications)+len(elicitations)). Used by the client for badge. |
 | `approvals[]` | array | yes | May be empty. |
 | `approvals[].request_id` | string | yes | **Action identifier.** Stable while the item is pending. Used for response idempotency. |
 | `approvals[].tool_name` | string | yes | Name of the tool requesting approval (e.g. `send_email`, `execute_cmd`). |
@@ -114,7 +126,19 @@ realigns.
 | `clarifications[].suggested_answers` | array of strings | no | Pre-defined answers suggested by the LLM. May be empty/absent. The client shows them as quick-tap options; free-form input is always possible too. The choice is sent as `clarification_response.answer` (§4.3). |
 | `clarifications[].agent_label` | string | yes | Origin label. |
 | `clarifications[].created_at` | int (unix ms) | yes | — |
+| `elicitations[]` | array | yes | May be empty. MCP server-initiated input requests (e.g. an SSH/sudo password). |
+| `elicitations[].request_id` | string | yes | Action identifier. Echoed back in `elicitation_response` (§4.4). |
+| `elicitations[].server_name` | string | yes | MCP server that asked for input (e.g. `"ssh"`). |
+| `elicitations[].message` | string | yes | Prompt to display to the user. |
+| `elicitations[].field_name` | string \| null | no | Key the requested value must be stored under in `elicitation_response.content`. `null` for a bare confirmation. |
+| `elicitations[].sensitive` | bool | yes | When `true`, the value is a secret: the client SHOULD mask input and MUST NOT cache/persist it. |
+| `elicitations[].is_confirmation` | bool | yes | When `true`, this is a yes/no confirmation (no value field); `accept`/`decline` suffice and `content` is omitted. |
+| `elicitations[].created_at` | int (unix ms) | yes | — |
 
+> **Elicitation values never appear here.** This snapshot carries only the *prompt* metadata. The
+> value the user supplies travels **only** in the client→agent `elicitation_response.content`
+> (§4.4) and is handed straight to the MCP server; the agent never logs or persists it in clear.
+>
 > **Push privacy.** When this snapshot is sent to an offline client, the relay delivers it
 > (encrypted) in the push *content-in-push* if it fits the APNs/FCM limit. Keep `summary`/`detail`
 > short. If it exceeds the limit, the relay sends a *wake* and the client downloads the snapshot
@@ -224,7 +248,38 @@ Agent behaviour (see [../plugins/mobile-connector.md](../plugins/mobile-connecto
 
 Same `request_id` idempotency as §4.2.
 
-### 4.4 `logout` — Device Self-Removal
+### 4.4 `elicitation_response` — MCP Elicitation Reply
+
+Reply to an `elicitations[]` entry (§3.1): an MCP server asked for an input the LLM must not see
+(e.g. an SSH/sudo password). The requested value travels **only** in this payload's `content`,
+sealed E2E — the relay never sees it and the agent hands it straight to the MCP server without
+logging or persisting it.
+
+```json
+{
+  "v": 1, "kind": "elicitation_response", "id": "…", "ts": …,
+  "request_id": "elic_5d7e…",
+  "action": "accept",
+  "content": { "password": "hunter2" }
+}
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `request_id` | string | yes | MUST match an `elicitations[].request_id`. |
+| `action` | enum string | yes | **Only** `"accept"` \| `"decline"` \| `"cancel"`. Other values → agent discards. `decline` rejects the prompt; `cancel` aborts the whole request. |
+| `content` | object \| null | conditional | Present **only** with `action="accept"` for a value prompt: a single key equal to the elicitation's `field_name`, whose value is the user's input (possibly a secret). Absent/null for `decline`/`cancel` and for confirmations (`is_confirmation=true`). A non-object `content` is dropped. |
+
+Agent behaviour:
+1. Resolves the request via Skald's Inbox (`resolve_elicitation(request_id, action, content)`), which
+   forwards the outcome to the `ElicitationManager` and unblocks the waiting MCP call.
+2. **Idempotency**: a `request_id` already resolved (or no longer pending) is a **no-op**.
+3. Sends a new `inbox_update` to realign clients.
+
+> **Secret hygiene.** `content` may carry a secret. It is never written to logs, the DB, or any
+> trace on the agent side; it lives only long enough to satisfy the MCP `elicitation/create` call.
+
+### 4.5 `logout` — Device Self-Removal
 
 ```json
 { "v":1, "kind":"logout", "id":"…", "ts":… }
@@ -241,7 +296,7 @@ The agent, on receipt:
 > the Skald UI and the agent sends `Authorize` without that device. `logout` E2E is only the
 > "device-initiated" case.
 
-### 4.5 `inbox_request` — Explicit Inbox Snapshot Request
+### 4.6 `inbox_request` — Explicit Inbox Snapshot Request
 
 The client sends this payload to ask the agent for the current Inbox state.
 **MUST be sent after `AuthOk` on every WS (re)connection** (including app open from a push),
@@ -266,7 +321,7 @@ Agent behaviour:
 > Inbox snapshot is useless, so route-or-fail is correct — if the agent is offline, the client
 > learns immediately via `PeerOffline`.
 
-### 4.6 `ack` (optional)
+### 4.7 `ack` (optional)
 
 Same as §3.3, opposite direction.
 
@@ -316,6 +371,14 @@ agent  → inbox_update { clarifications:[{request_id:"clar_9", question:"Procee
          (relay: client offline → push with encrypted blob)
 client → (NSE decrypts, shows notification) → user opens app → clarification_response { request_id:"clar_9", answer:"Yes" }
 agent  → inbox_update { clarifications:[], badge:0 }
+```
+
+**MCP elicitation (SSH password, secret E2E):**
+```
+         (MCP `ssh` server calls elicitation/create → agent blocks the tool call)
+agent  → inbox_update { elicitations:[{request_id:"elic_5", server_name:"ssh", field_name:"password", sensitive:true}], badge:1 }
+client → (masked input) → elicitation_response { request_id:"elic_5", action:"accept", content:{ "password":"hunter2" } }
+agent  → (hands content to the MCP server, unblocks the call; value never logged) → inbox_update { elicitations:[], badge:0 }
 ```
 
 **App opened from notification (reconnect):**

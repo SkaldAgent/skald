@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 pub use mcp_client::{
+    ElicitationHandler,
     McpServerClient, McpServerConfig, McpServerInfo, McpServerStatus, McpTool, McpTransport as McpTransportKind,
     parse_mcp_tool_name,
     http_server::McpHttpServer,
@@ -28,6 +29,9 @@ pub struct McpManager {
     errors:          RwLock<HashMap<String, String>>,
     descriptions:    RwLock<HashMap<String, Option<String>>>,
     notification_tx: mpsc::UnboundedSender<McpNotification>,
+    /// Bridges server-initiated `elicitation/create` requests to the Inbox.
+    /// Set once via `set_elicitation_handler` before `initialize` runs.
+    elicitation_handler: RwLock<Option<Arc<dyn ElicitationHandler>>>,
 }
 
 impl McpManager {
@@ -43,7 +47,18 @@ impl McpManager {
             errors:       RwLock::new(HashMap::new()),
             descriptions: RwLock::new(HashMap::new()),
             notification_tx,
+            elicitation_handler: RwLock::new(None),
         }
+    }
+
+    /// Wire the elicitation bridge. Must be called before `initialize` so that
+    /// stdio servers are started with a handler for `elicitation/create`.
+    pub fn set_elicitation_handler(&self, handler: Arc<dyn ElicitationHandler>) {
+        *self.elicitation_handler.write().unwrap() = Some(handler);
+    }
+
+    fn elicitation_handler(&self) -> Option<Arc<dyn ElicitationHandler>> {
+        self.elicitation_handler.read().unwrap().clone()
     }
 
     async fn notification_consumer(
@@ -91,10 +106,13 @@ impl McpManager {
     async fn start_one(
         cfg: &McpServerConfig,
         notification_tx: Option<mpsc::UnboundedSender<McpNotification>>,
+        elicitation_handler: Option<Arc<dyn ElicitationHandler>>,
     ) -> Result<Arc<dyn McpServerClient>> {
         match cfg.transport {
             McpTransport::Stdio => {
-                McpServer::start(cfg, notification_tx).await
+                // Elicitation is stdio-only for now (server→client request on the
+                // same pipe). HTTP/SSE transports ignore the handler.
+                McpServer::start(cfg, notification_tx, elicitation_handler).await
                     .map(|s| Arc::new(s) as Arc<dyn McpServerClient>)
             }
             McpTransport::Http | McpTransport::Sse => {
@@ -128,11 +146,12 @@ impl McpManager {
         ));
         let handles: Vec<_> = cfgs.into_iter().map(|cfg| {
             let tx = self.notification_tx.clone();
+            let eh = self.elicitation_handler();
             tokio::spawn(async move {
                 info!("MCP server '{}': starting…", cfg.name);
                 let result = tokio::time::timeout(
                     Duration::from_secs(SERVER_START_TIMEOUT_SECS),
-                    Self::start_one(&cfg, Some(tx)),
+                    Self::start_one(&cfg, Some(tx), eh),
                 ).await;
                 (cfg.name, cfg.transport, result)
             })
@@ -175,7 +194,7 @@ impl McpManager {
 
         let client = tokio::time::timeout(
             Duration::from_secs(SERVER_START_TIMEOUT_SECS),
-            Self::start_one(&cfg, Some(self.notification_tx.clone())),
+            Self::start_one(&cfg, Some(self.notification_tx.clone()), self.elicitation_handler()),
         ).await
         .map_err(|_| anyhow::anyhow!("MCP server '{}' timed out during connection", name))?
         .map_err(|e| anyhow::anyhow!("MCP server '{}' failed to start: {e}", name))?;

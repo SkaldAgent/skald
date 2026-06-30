@@ -212,6 +212,26 @@ Cancel message (abort current turn): `{"type":"cancel"}`
 
 ---
 
+## Elicitation Flow (MCP server-initiated input)
+
+An MCP server can request input *during* a tool call (e.g. a sudo password). Unlike
+clarification, this is driven by the **server**, not an agent tool call, and supports
+`accept`/`decline`/`cancel` with a masked input. See `docs/mcp.md` for the protocol.
+
+1. The MCP server sends `elicitation/create`; the `mcp-client` read-loop bridges it to
+   `ElicitationManager::register` (in-memory, no session binding).
+2. The entry appears in `GET /api/inbox` under `elicitations` and as a global
+   `elicitation_requested` event (so the Inbox badge / mobile push update).
+3. The Agent Inbox renders a **"Secrets"** card (`_renderElicitationCard` in
+   `web/lib/inbox-mixin.js`): a masked `<input type="password">` when `sensitive`, a
+   plain input otherwise, or just Confirm/Reject when `is_confirmation`.
+4. User confirms or rejects → `POST /api/inbox/elicitations/:request_id/resolve` with
+   `{action, content?}`. On `accept` the value is packed as `{ [field_name]: value }`.
+5. `ElicitationManager::resolve` unblocks the bridge, which writes the JSON-RPC reply to
+   the server's stdin. The value is **never** logged, broadcast, or persisted.
+
+---
+
 ## Lit Component Inventory
 
 | File | Element | Responsibility |
@@ -228,7 +248,7 @@ Cancel message (abort current turn): `{"type":"cancel"}`
 | `web/components/file-viewer-page.js` | `<file-viewer-page>` | Desktop subclass of `FileViewerBase`. Self-routes off the hash (`#file_viewer?path=...`) via the `llm-page-change` + `hashchange` events; renders in the main workspace. Opened by `window.openFile(path)`. Preview only — editor + watcher tabs planned |
 | `web/components/shared/file-viewer-mobile.js` | `<mobile-file-viewer-page>` | Mobile subclass of `FileViewerBase`. Prop-driven (`visible` / `path`, set by `<mobile-app>`'s hash router); full-screen with a mobile header + back button |
 | `web/components/cron-jobs.js` | `<cron-jobs-page>` | Cron job management UI — columns: Title (+ one-shot badge), Cron, Agent, Last run, Next run, Enabled, Actions |
-| `web/components/agent-inbox.js` | `<agent-inbox-page>` | Unified inbox for pending approvals and clarifications from background sessions; polls `/api/inbox` every 8 s when open |
+| `web/components/agent-inbox.js` | `<agent-inbox-page>` | Unified inbox for pending approvals, clarifications, and MCP elicitations ("Secrets"); polls `/api/inbox` every 8 s when open |
 | `web/components/models-hub.js` | `<models-hub-page>` | Models hub — 3-card landing page (LLM / Transcription / Image Generation) with live model counts; internal navigation to sub-sections |
 | `web/components/models-llm.js` | `<models-llm-section>` | LLM model management: drag-and-drop priority, catalog picker (OpenRouter/Ollama/…), add/edit/delete |
 | `web/components/models-transcribe.js` | `<models-transcribe-section>` | Transcription model CRUD; filters providers by `supported_types.includes('transcribe')` |

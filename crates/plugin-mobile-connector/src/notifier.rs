@@ -29,6 +29,7 @@ use crate::app::RelayApp;
 pub enum Kind {
     Approval,
     Clarification,
+    Elicitation,
 }
 
 /// `(kind, request_id)` — unique across both Inbox managers.
