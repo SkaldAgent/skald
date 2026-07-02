@@ -229,16 +229,21 @@ closes active tunnels; `stop_inner` also `shutdown()`s the relay client.
 ## Delayed push
 
 A phone push is only valuable when the user is *away* from the computer. When
-they're at the chat, every approval/clarification/elicitation would otherwise fire an
+they're at the chat, every approval/clarification would otherwise fire an
 instant — and pointless — notification, since they answer on the computer within
 seconds. `DelayedNotifier` (`notifier.rs`) debounces this between the bus events
-and `broadcast_inbox()`:
+and `broadcast_inbox()`. (Elicitations are not chat-inline, so they are exempt —
+see below.)
 
 - **`*_requested`** arms a timer (`notify_delay_secs`, default 20s) keyed by
   `(kind, request_id)` — approvals, clarifications, and elicitations use
   independent id counters, so the kind is part of the key. If the timer elapses unresolved, the
   key is marked *notified* and the Inbox is pushed (`broadcast_inbox`, `live=false`
   → store-and-forward / offline push).
+  - **Elicitations are the exception**: they live *only* in the Inbox (never
+    inline in the chat, unlike approvals/clarifications), so there is no
+    computer-side answer to debounce against. They skip the timer and are pushed
+    **immediately**, regardless of `notify_delay_secs`.
 - **`*_resolved`** before the timer fires ⇒ the timer is cancelled and **nothing
   is sent**. If the push already went out, the resolution is broadcast so the
   phone clears the item. (Untracked ids fall back to a broadcast for snapshot

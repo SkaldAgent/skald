@@ -4,7 +4,7 @@ External tool integration via Model Context Protocol servers.
 
 ## Files
 
-- [mcp.md](../mcp.md) — McpManager, transports (stdio/HTTP), protocol version + `MCP-Protocol-Version` header, `tools/list` pagination, structured tool results, enable/disable, tool registration
+- [mcp.md](../mcp.md) — McpManager, transports (stdio/HTTP), protocol version + `MCP-Protocol-Version` header, `tools/list` pagination, structured tool results, media tool results (image/audio/resource → `data/mcp_media/` + `/api/mcp-media/`), cancellation (`notifications/cancelled`) + Tasks (block-and-poll `tasks/get`/`result`/`cancel`), enable/disable, tool registration
 - **Specification reference** (in `specs/` subdirectory) — one file per official MCP spec revision, as background for future Skald MCP work. See [specs/index.md](specs/index.md) for the comparative overview:
   - [specs/2026-07-28-draft.md](specs/2026-07-28-draft.md) — Draft / RC: stateless redesign, per-request negotiation, extensions framework
   - [specs/2025-11-25.md](specs/2025-11-25.md) — Latest Stable: OIDC Discovery, icons, URL-mode elicitation, experimental Tasks

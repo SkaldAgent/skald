@@ -139,6 +139,75 @@ fn handle_server_request(
     }
 }
 
+/// Guards an in-flight `tools/call`: if this is dropped while still armed — the
+/// caller aborted the tool (a `/stop` drops the work future) or the call timed out
+/// — it tells the server to stop via `notifications/cancelled` and drops the now
+/// orphaned `pending` entry (which would otherwise leak). Disarmed once the server
+/// replies or disconnects, where cancelling is pointless. The spec forbids
+/// cancelling `initialize`, so only `tools/call` arms a guard.
+struct CancelOnDrop {
+    id:      u64,
+    stdin:   Arc<Mutex<ChildStdin>>,
+    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
+    name:    String,
+    reason:  &'static str,
+    armed:   bool,
+}
+
+impl CancelOnDrop {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let (id, stdin, pending, name, reason) =
+            (self.id, Arc::clone(&self.stdin), Arc::clone(&self.pending), self.name.clone(), self.reason);
+        tokio::spawn(async move {
+            pending.lock().await.remove(&id);
+            debug!(target: "mcp_client", "[{name}] notifications/cancelled for request {id} ({reason})");
+            write_json_line(&stdin, &crate::cancelled_notification(id, reason)).await;
+        });
+    }
+}
+
+/// Cooperative `tasks/cancel` for a block-and-poll `poll_task`: if the poll future
+/// is dropped while still polling (a `/stop`) or hits its deadline, tell the server
+/// to abandon the task. Fire-and-forget — the response carries no `pending` entry,
+/// so the read-loop simply discards it. Disarmed once the task reaches a terminal
+/// state (or fails), where cancelling is pointless.
+struct TaskCancelOnDrop {
+    request_id: u64,
+    task_id:    String,
+    stdin:      Arc<Mutex<ChildStdin>>,
+    name:       String,
+    armed:      bool,
+}
+
+impl TaskCancelOnDrop {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TaskCancelOnDrop {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let (request_id, task_id, stdin, name) =
+            (self.request_id, self.task_id.clone(), Arc::clone(&self.stdin), self.name.clone());
+        tokio::spawn(async move {
+            debug!(target: "mcp_client", "[{name}] tasks/cancel for task {task_id}");
+            write_json_line(&stdin, &crate::tasks_cancel_request(request_id, &task_id)).await;
+        });
+    }
+}
+
 pub struct McpServer {
     name:    String,
     stdin:   Arc<Mutex<ChildStdin>>,
@@ -149,6 +218,9 @@ pub struct McpServer {
     /// While > 0, an in-flight `tools/call` on this server must not time out
     /// (the user may still be typing a password into the Inbox).
     pending_elicitations: Arc<AtomicUsize>,
+    /// Capabilities the server advertised in its `InitializeResult`. Captured so a
+    /// future Tasks polling loop can gate on `tasks` support; unused for now.
+    server_capabilities: Value,
 }
 
 impl McpServer {
@@ -278,13 +350,22 @@ impl McpServer {
             next_id: AtomicU64::new(1),
             tools:   Vec::new(),
             pending_elicitations,
+            server_capabilities: json!({}),
         };
 
         let init = server.request("initialize", json!({
             // Declare the elicitation capability (form mode) so servers know they
             // may request input mid-call.
             "protocolVersion": crate::PROTOCOL_VERSION,
-            "capabilities":    { "elicitation": {} },
+            "capabilities":    {
+                "elicitation": {},
+                // Experimental Tasks marker: we *recognise* a CreateTaskResult
+                // (see McpCallResult::Task) but don't poll yet, so we deliberately
+                // avoid claiming the full `tasks` capability — that could make a
+                // server defer results we can't retrieve. Kept under `experimental`
+                // until the polling loop lands.
+                "experimental": { "tasks": {} },
+            },
             "clientInfo":      { "name": "skald", "version": env!("CARGO_PKG_VERSION") },
         })).await?;
         // Tolerate a server that negotiates a different (older) version — warn but
@@ -295,6 +376,8 @@ impl McpServer {
                     server.name, crate::PROTOCOL_VERSION);
             }
         }
+        // Capture the server's advertised capabilities for a future Tasks poller.
+        let server_capabilities = init.get("capabilities").cloned().unwrap_or_else(|| json!({}));
 
         server.notify("notifications/initialized", json!({})).await?;
 
@@ -321,18 +404,98 @@ impl McpServer {
             }
         }
 
-        Ok(McpServer { tools, ..server })
+        Ok(McpServer { tools, server_capabilities, ..server })
     }
 
     pub fn tools(&self) -> &[McpTool] {
         &self.tools
     }
 
+    /// Capabilities the server advertised at `initialize`. Exposed for a future
+    /// Tasks polling loop to gate on `tasks` support.
+    pub fn server_capabilities(&self) -> &Value {
+        &self.server_capabilities
+    }
+
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<McpCallResult> {
-        let result = self.request("tools/call", json!({
-            "name":      name,
-            "arguments": args,
-        })).await?;
+        let mut params = json!({ "name": name, "arguments": args });
+        if self.wants_task(name) {
+            // Opt into deferred execution for a task-capable tool (experimental
+            // Tasks). Per spec, adding the `task` field to the request is the
+            // opt-in for `tools/call` (the client is the requestor).
+            params["task"] = json!({});
+        }
+        let result = self.request("tools/call", params).await?;
+
+        if result["isError"].as_bool().unwrap_or(false) {
+            anyhow::bail!("MCP tool error: {}", extract_text(&result));
+        }
+        match crate::extract_call_result(&result) {
+            McpCallResult::Task(task) => self.poll_task(task).await,
+            other => Ok(other),
+        }
+    }
+
+    /// True when tool `name` advertises `execution.taskSupport` as `required`/
+    /// `optional`, so we opt into deferred (Task) execution.
+    fn wants_task(&self, name: &str) -> bool {
+        self.tools.iter()
+            .find(|t| t.name == name)
+            .and_then(|t| t.task_support.as_deref())
+            .is_some_and(|s| s == "required" || s == "optional")
+    }
+
+    /// Drives a deferred Task to completion (experimental Tasks, block-and-poll):
+    /// polls `tasks/get` until a terminal status, then fetches the real result via
+    /// `tasks/result`. A [`TaskCancelOnDrop`] guard sends `tasks/cancel` if this
+    /// future is dropped (a `/stop`) or the deadline is hit. Each poll request is a
+    /// normal short `request()` (subject to the 120s timeout); the *overall* wait is
+    /// bounded only by the task's `ttl` — so long tasks no longer hit that wall.
+    async fn poll_task(&self, task: crate::CreateTaskResult) -> Result<McpCallResult> {
+        let task_id  = task.task_id.as_str();
+        let cancel_id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let mut guard = TaskCancelOnDrop {
+            request_id: cancel_id,
+            task_id:    task.task_id.clone(),
+            stdin:      Arc::clone(&self.stdin),
+            name:       self.name.clone(),
+            armed:      true,
+        };
+
+        let deadline     = crate::poll_deadline(task.ttl_ms);
+        let mut interval = task.poll_interval_ms;
+
+        loop {
+            tokio::time::sleep(crate::clamp_poll_interval(interval)).await;
+            if std::time::Instant::now() >= deadline {
+                anyhow::bail!("MCP '{}' task '{task_id}' exceeded max wait", self.name);
+            }
+            let get = self.request("tasks/get", json!({ "taskId": task_id })).await?;
+            let Some(state) = crate::CreateTaskResult::parse(&get) else {
+                anyhow::bail!("MCP '{}' task '{task_id}': malformed tasks/get response", self.name);
+            };
+            interval = state.poll_interval_ms.or(interval);
+            match state.status {
+                crate::TaskStatus::Working    => continue,
+                crate::TaskStatus::Completed  => break,
+                crate::TaskStatus::Failed => {
+                    guard.disarm();
+                    anyhow::bail!("MCP '{}' task '{task_id}' failed: {}", self.name, extract_text(&get));
+                }
+                crate::TaskStatus::Cancelled => {
+                    guard.disarm();
+                    anyhow::bail!("MCP '{}' task '{task_id}' was cancelled by the server", self.name);
+                }
+                // Still alive but blocked on input we can't supply mid-task: abandon
+                // it (guard stays armed → tasks/cancel). See follow-up.
+                crate::TaskStatus::InputRequired =>
+                    anyhow::bail!("MCP '{}' task '{task_id}' requires input mid-task, which isn't supported yet", self.name),
+            }
+        }
+
+        // Task is terminal (completed) — nothing left to cancel.
+        guard.disarm();
+        let result = self.request("tasks/result", json!({ "taskId": task_id })).await?;
 
         if result["isError"].as_bool().unwrap_or(false) {
             anyhow::bail!("MCP tool error: {}", extract_text(&result));
@@ -344,6 +507,18 @@ impl McpServer {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
+
+        // Arm a cancellation guard for cancellable operations only (`tools/call`):
+        // if this future is dropped by a `/stop` or times out before the server
+        // replies, the guard notifies the server. Disarmed on a real reply.
+        let mut cancel_guard = (method == "tools/call").then(|| CancelOnDrop {
+            id,
+            stdin:   Arc::clone(&self.stdin),
+            pending: Arc::clone(&self.pending),
+            name:    self.name.clone(),
+            reason:  "cancelled by client",
+            armed:   true,
+        });
 
         let msg = json!({
             "jsonrpc": "2.0",
@@ -361,16 +536,28 @@ impl McpServer {
         tokio::pin!(rx);
         let response = loop {
             tokio::select! {
-                res = &mut rx => break res
-                    .map_err(|_| anyhow::anyhow!("MCP '{}' disconnected", self.name))?,
+                res = &mut rx => match res {
+                    Ok(v) => break v,
+                    Err(_) => {
+                        // Server disconnected: nothing to cancel.
+                        if let Some(g) = cancel_guard.as_mut() { g.disarm(); }
+                        anyhow::bail!("MCP '{}' disconnected", self.name);
+                    }
+                },
                 _ = tokio::time::sleep(Duration::from_secs(CALL_TIMEOUT_SECS)) => {
                     if self.pending_elicitations.load(Ordering::SeqCst) == 0 {
+                        // Leave the guard armed so it fires `notifications/cancelled`;
+                        // tag the reason as a timeout.
+                        if let Some(g) = cancel_guard.as_mut() { g.reason = "timeout"; }
                         anyhow::bail!("MCP '{}' timed out on '{method}'", self.name);
                     }
                     // Elicitation pending: keep waiting for the user.
                 }
             }
         };
+
+        // Server replied (even with an error): the request completed — disarm.
+        if let Some(g) = cancel_guard.as_mut() { g.disarm(); }
 
         if let Some(error) = response.get("error") {
             anyhow::bail!("MCP '{}' protocol error: {error}", self.name);

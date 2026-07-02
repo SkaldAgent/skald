@@ -10,6 +10,10 @@
 //! (`broadcast_inbox`). If the user resolves it on the computer first, the timer
 //! is cancelled and **no** push is sent. Once a push *has* gone out, the eventual
 //! resolution is broadcast so the phone clears the item.
+//!
+//! Elicitations are the exception: they live only in the Inbox (never inline in
+//! the chat), so there is no computer-side answer to debounce against and they
+//! are pushed immediately regardless of `delay`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -57,7 +61,30 @@ impl DelayedNotifier {
 
     /// A request entered the Inbox: arm a timer. If `delay` elapses before a
     /// matching `on_resolved`, push the Inbox to the phone.
+    ///
+    /// Exception: elicitations (e.g. MCP password prompts) live *only* in the
+    /// Inbox — never inline in the chat — so there is no computer-side answer to
+    /// debounce against. Waiting `delay` would just delay a push that is always
+    /// warranted, so they are pushed immediately (marked *notified* so the
+    /// eventual `on_resolved` refreshes the phone to clear the item).
     pub async fn on_requested(self: &Arc<Self>, key: Key) {
+        if key.0 == Kind::Elicitation {
+            let newly_notified = {
+                let mut st = self.state.lock().await;
+                // Drop any stale armed timer, then mark notified.
+                if let Some(old) = st.pending.remove(&key) {
+                    old.cancel();
+                }
+                st.notified.insert(key)
+            };
+            if newly_notified {
+                if let Err(e) = self.app.broadcast_inbox().await {
+                    warn!(plugin = PLUGIN_ID, error = %e, "immediate elicitation push failed");
+                }
+            }
+            return;
+        }
+
         let token = CancellationToken::new();
         {
             let mut st = self.state.lock().await;

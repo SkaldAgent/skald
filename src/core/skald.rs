@@ -174,7 +174,7 @@ impl Skald {
         // MCP servers connect in the background. `initialize()` is spawned later,
         // once the elicitation handler is wired (so stdio servers start with a
         // handler for server-initiated `elicitation/create` requests).
-        let mcp = Arc::new(McpManager::new(Arc::clone(&pool), shutdown_token.clone()));
+        let mcp = Arc::new(McpManager::new(Arc::clone(&pool), shutdown_token.clone(), "data"));
 
         // TaskManager is created before ToolRegistry so cron tools can
         // be registered before ChatSessionManager is built.

@@ -270,7 +270,7 @@ impl Plugin for MobileConnectorPlugin {
                     "default": DEFAULT_NOTIFY_DELAY_SECS,
                     "minimum": 0,
                     "title": "Notification delay (seconds)",
-                    "description": "Wait this long before pushing an approval/clarification to the phone. If you answer on the computer within the window, no phone notification is sent. Set 0 to push immediately.",
+                    "description": "Wait this long before pushing an approval/clarification to the phone. If you answer on the computer within the window, no phone notification is sent. Set 0 to push immediately. (MCP elicitations are Inbox-only and always pushed immediately, regardless of this setting.)",
                 }
             }
         })

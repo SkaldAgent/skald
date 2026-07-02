@@ -65,9 +65,12 @@ them available for diagnostics via `RUST_LOG=mcp_client=debug`.
 `crates/mcp-client/src/lib.rs` (currently **`2025-11-25`**, the revision Skald
 targets). Both transports advertise it in their `initialize` request, so they can
 never drift apart. **Capabilities are per-transport**, not shared: stdio declares
-`{ "elicitation": {} }` (form mode — see Elicitation below); HTTP declares `{}`
-because it does not service the `ElicitationHandler` (stdio-only) and must not
-claim a capability it can't honour.
+`{ "elicitation": {}, "experimental": { "tasks": {} } }` (form mode — see
+Elicitation below); HTTP declares `{ "experimental": { "tasks": {} } }` because it
+does not service the `ElicitationHandler` (stdio-only) and must not claim a
+capability it can't honour. The `experimental.tasks` marker signals Skald is
+task-*aware* (it recognises a deferred `CreateTaskResult`) without claiming the
+full `tasks` capability — see *Cancellation & Tasks* below.
 
 **Version negotiation is tolerant.** Skald reads `protocolVersion` from the
 `initialize` response and, if the server negotiates a different (older) version,
@@ -96,7 +99,8 @@ addition to (or instead of) text. Skald preserves the type end-to-end instead of
 flattening everything to a string:
 
 - `McpCallResult` (`crates/mcp-client/src/lib.rs`) — the transport-level result:
-  `Text(String)` or `Json(Value)`. `extract_call_result` **prefers
+  `Text(String)`, `Json(Value)`, or `Media { text, structured, items }` (see
+  *Media tool results* below). `extract_call_result` **prefers
   `structuredContent`** when present (canonical per spec) and falls back to the
   joined `text` items — which also fixes the silent empty-result case for servers
   that return only `structuredContent` without the recommended text mirror.
@@ -115,9 +119,99 @@ flattening everything to a string:
 - Frontend: `copilot-render.js` renders a `result_type === 'json'` result as
   pretty-printed JSON (`.copilot-tool-pre--json`); everything else stays plain text.
 
-`McpTool` also captures `title`, `output_schema`, and `annotations` (2025-06-18+).
-These are stored but **not yet** validated/surfaced (output-schema validation,
-`readOnlyHint`/`destructiveHint` UI hints are future work).
+---
+
+## Media tool results
+
+MCP tool results can carry non-text content blocks — `image`, `audio`, embedded
+`resource` (base64 `blob`), and `resource_link` (a remote URI). Previously these
+were dropped: `extract_text` read only `content[].text`, so an MCP server that
+generated an image returned an empty result unless it also mirrored the bytes in
+`structuredContent`.
+
+Now they are preserved end-to-end, **saved to disk and surfaced as a URL** (the
+same model as the built-in `image_generate` tool — the bytes never enter the LLM
+wire format):
+
+- `crates/mcp-client/` stays a generic transport: `classify_content` walks
+  `content[]`, decodes the base64 of `image`/`audio`/`resource` blocks into bytes
+  and passes through `resource_link` URIs, producing `McpCallResult::Media { text,
+  structured, items: Vec<McpMedia> }`. The `Media` variant is emitted **only** when
+  at least one media block is present; pure text/JSON results are unchanged (no
+  regression).
+- `McpManager::persist_media` (`src/core/mcp/mod.rs`) writes each inline item to
+  `data/mcp_media/<id>.<ext>` (`<ext>` from the MIME via `ext_for_mime`) and
+  composes a **markdown** `ToolResult::Text` referencing each item by URL
+  (`![image](/api/mcp-media/<id>.png) (image/png, 412 KB)`, `[audio](…)`,
+  `[file](…)`); `resource_link`s become `[<mime>](<uri>)`. Markdown (not JSON) so
+  the model can relay the URL into its message, where `renderMarkdown` displays it.
+- Serving: `GET /api/mcp-media/{file}` (`src/frontend/api/mcp_media.rs`) reads from
+  `McpManager::media_dir()` with the `Content-Type` inferred by
+  `content_type_for_ext`; the filename is path-sanitized (flat `<id>.<ext>` only).
+- **Not** sent to the model as a multimodal content block (the model does not
+  "see" the pixels) and **not** rendered inline in the tool card yet — both are
+  possible future enhancements.
+
+`McpTool` also captures `title`, `output_schema`, `annotations` (2025-06-18+), and
+`task_support` (`execution.taskSupport`, 2025-11-25). These are stored but **not
+yet** validated/surfaced (output-schema validation, `readOnlyHint`/`destructiveHint`
+UI hints, and per-tool task negotiation are future work).
+
+---
+
+## Cancellation & Tasks
+
+Two 2025-11-25 base utilities the client now covers (`crates/mcp-client/`):
+
+**`notifications/cancelled`.** When an in-flight `tools/call` is abandoned, the
+client tells the server to stop instead of silently leaving it working. Both
+transports arm a drop-guard **only for `tools/call`** (the spec forbids cancelling
+`initialize`):
+
+- `CancelOnDrop` (`server.rs`, stdio) / `HttpCancelOnDrop` (`http_server.rs`, HTTP)
+  hold the request `id`; if dropped while still *armed* they emit
+  `notifications/cancelled { requestId, reason }` (built by the shared
+  `cancelled_notification` helper in `lib.rs`, so the two transports can't drift).
+- Fires in exactly two cases: a `/stop` drops the work future (`SimpleExecution`
+  → `mcp.call` → `request()` future), and the 120 s `CALL_TIMEOUT_SECS` elapses
+  (reason `"timeout"`). Disarmed once the server replies or disconnects, where
+  cancelling is pointless.
+- stdio also drops the now-orphaned `pending` entry (a small leak fix). HTTP is
+  **best-effort**: `requestId`↔POST correlation is weaker over Streamable HTTP, and
+  a non-timeout send error (server never received the request) disarms instead.
+
+**Tasks (experimental, block-and-poll).** A server MAY defer an expensive
+`tools/call` and return a `CreateTaskResult` (durable `taskId`, `status`,
+`pollInterval`, `ttl`) instead of blocking. The client drives it to completion
+synchronously:
+
+- **Opt-in per request.** `call_tool` adds a `task` field to `tools/call` when the
+  tool advertises `execution.taskSupport` as `required`/`optional` (`McpTool.task_support`,
+  captured in `from_json`). Adding the field is the spec's opt-in for `tools/call`
+  (the client is the *requestor*), so no extra capability declaration is needed —
+  the `tasks` marker stays under `capabilities.experimental`.
+- **Recognise.** `CreateTaskResult::parse` (top-level or nested under `task`) runs in
+  `extract_call_result` **before** the media/text logic, yielding `McpCallResult::Task`
+  so a handle isn't mistaken for an empty result.
+- **Poll (`poll_task`, per transport).** Sleep `clamp_poll_interval` (server
+  `pollInterval`, clamped to [500 ms, 30 s]), then `tasks/get` until a terminal
+  status: `completed` → fetch the real result via `tasks/result` (parsed like any
+  normal result); `failed`/`cancelled` → error; `input_required` → error (mid-task
+  input is a follow-up). Bounded by `poll_deadline` (the task's `ttl`, else a 1 h
+  cap). **Each poll request is a normal short `request()`; only the overall wait is
+  unbounded — so a task-mode call no longer hits the 120 s `CALL_TIMEOUT_SECS` wall.**
+- **Cooperative cancel.** A `TaskCancelOnDrop` / `HttpTaskCancelOnDrop` guard sends
+  `tasks/cancel { taskId }` (shared `tasks_cancel_request` helper) if the poll future
+  is dropped (a `/stop`, between polls) or the deadline is hit; disarmed on a terminal
+  status. Server-caps captured at `initialize` (`server_capabilities()`) remain for a
+  future poller to gate on.
+
+**Trade-offs (v1, block-and-poll).** The session holds its `processing` lock for the
+whole task (like any long tool call), and polling does **not** survive a Skald
+self-restart. A *detached/durable* variant (DB-persisted tasks + a background poller
+delivering via `inject_async_result`/`resume_turn`, surviving restart and freeing the
+session) is the tracked follow-up. `McpManager::call`'s `McpCallResult::Task` arm is
+now only a **defensive fallback** (polling normally resolves the task in `call_tool`).
 
 ---
 
@@ -461,6 +555,7 @@ Sub-agents that don't include `<!-- MCP_LIST -->` in their `AGENT.md` receive no
 - `list_items` (type=mcp) return format changes (McpServerInfo fields)
 - A new notification source is implemented
 - The elicitation flow changes (capability/protocol version, schema parsing, the resolve route, or the in-flight timeout behaviour)
+- Cancellation (`notifications/cancelled`, the `CancelOnDrop`/`HttpCancelOnDrop` guards) or Tasks (`CreateTaskResult` parsing, `McpCallResult::Task`, the block-and-poll `poll_task`, `wants_task` opt-in, `TaskCancelOnDrop`/`tasks/cancel`, `clamp_poll_interval`/`poll_deadline`, `server_capabilities`, the `experimental.tasks` marker) changes
 - The SSH MCP server changes (tools, alias schema, sudo methods, or pooling/host-key behaviour in `scripts/ssh_mcp_server.py`)
 - Lazy loading logic changes (`build_agent_config`, `dispatch_sub_agent`, `show_mcp_tools`, grant tables)
 - `ClientMessage` loses or gains fields relevant to MCP
